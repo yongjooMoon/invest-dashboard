@@ -7,6 +7,7 @@ import FinanceDataReader as fdr
 import pandas as pd
 from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
+from datetime import datetime  # 💡 [버그 픽스] 누락되었던 datetime 라이브러리 추가
 
 # --- 팩터 마스터 사전 설정 ---
 CORE_CONVICTION_ASSETS = {"삼화콘덴서": 200000, "광전자": 20000}
@@ -130,7 +131,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
         if st.button("장부 조율 및 매수 결제", type="primary"):
             ticker = krx_map[s_name]
-            # 💡 [버그 픽스] user_id 컬럼을 username으로 완벽 교체
             supabase.table("user_portfolio").upsert({
                 "username": username, "ticker": ticker, "name": s_name, "buy_price": buy_p, "qty": qty
             }).execute()
@@ -138,7 +138,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             st.rerun()
 
     # 2. 유저 계정 포트폴리오 로드
-    # 💡 [버그 픽스] eq("user_id", ...) 를 eq("username", username) 으로 수정
     db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
     portfolio_data = db_res.data
     
