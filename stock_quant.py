@@ -106,9 +106,14 @@ def calculate_bm_score(fund_data, core_product, stock_name):
     return score, report
 
 def insert_log(supabase, username, module, summary, details):
-    supabase.table("user_logs").insert({
-        "username": username, "module": module, "summary": summary, "details": details
-    }).execute()
+    # 💡 [버그 픽스] 로그 기록에 실패하더라도 메인 엔진이 다운되지 않도록 방어 로직 추가
+    try:
+        supabase.table("user_logs").insert({
+            "username": username, "module": module, "summary": summary, "details": details
+        }).execute()
+    except Exception as e:
+        print(f"로그 기록 실패 (무시됨): {e}")
+        pass
 
 # --- [메인 진입 페이지 함수] ---
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
