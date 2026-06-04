@@ -106,14 +106,13 @@ def calculate_bm_score(fund_data, core_product, stock_name):
     return score, report
 
 def insert_log(supabase, username, module, summary, details):
-    # 💡 [버그 픽스] 로그 기록에 실패하더라도 메인 엔진이 다운되지 않도록 방어 로직 추가
+    # 💡 [핵심 패치 1] 에러가 나더라도 앱이 다운되지 않고 통과되도록 방어 로직 추가
     try:
         supabase.table("user_logs").insert({
             "username": username, "module": module, "summary": summary, "details": details
         }).execute()
     except Exception as e:
-        print(f"로그 기록 실패 (무시됨): {e}")
-        pass
+        print(f"로그 기록 실패 (앱 정상 작동 계속됨): {e}")
 
 # --- [메인 진입 페이지 함수] ---
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
@@ -128,14 +127,14 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
     tab_port, tab_hist, tab_log = st.tabs(["💼 보유 자산", "📝 판매 내역", "⚙️ 엔진 기록"])
 
     with tab_port:
-        # 1. 전역 동기화 버튼 (상단 배치)
         st.write("⚡ **전체 자산 동기화 스위치**")
         col_sync1, col_sync2, col_sync3 = st.columns(3)
         
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
         portfolio_data = db_res.data
 
-        if col_sync1.button("🔄 전체 시세 갱신", use_container_width=True):
+        # 💡 [핵심 패치 2] 스트림릿 경고 해결 (use_container_width=True -> width="stretch")
+        if col_sync1.button("🔄 전체 시세 갱신", width="stretch"):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 시세 트래킹 중...", expanded=True) as status:
                 for row in portfolio_data:
@@ -157,7 +156,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             insert_log(supabase, username, "전역 동기화", f"{len(portfolio_data)}종목 시세 갱신", "주가 및 변동률 업데이트 성공")
             st.rerun()
 
-        if col_sync2.button("📰 전체 뉴스 스캔", use_container_width=True):
+        if col_sync2.button("📰 전체 뉴스 스캔", width="stretch"):
             if not naver_id or not naver_secret: st.error("네이버 API 키가 없습니다."); st.stop()
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 네이버 AI 뉴스 스캔 중...", expanded=True) as status:
@@ -178,7 +177,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             insert_log(supabase, username, "뉴스 스캔", f"{len(portfolio_data)}종목 모멘텀 평가", "감성 점수 및 뉴스 리스트 업데이트 성공")
             st.rerun()
 
-        if col_sync3.button("📊 전체 실적 매핑", use_container_width=True):
+        if col_sync3.button("📊 전체 실적 매핑", width="stretch"):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 펀더멘탈 긁어오는 중...", expanded=True) as status:
                 for row in portfolio_data:
@@ -209,7 +208,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         st.divider()
 
-        # 2. 신규 자산 편입 시스템
         with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
             col1, col2, col3 = st.columns(3)
             with col1: s_name = st.selectbox("종목 선택", list(krx_map.keys()))
@@ -242,7 +240,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             day_pct = cache.get('pct_change', 0.0)
             target_price = cache.get('target_2026', b_price)
             
-            # 모멘텀 상태 강세/보합/약세 텍스트 생성 부활
             net_sent = cache.get('net_sentiment', 0)
             bm_scr = cache.get('bm_score', 0)
             status_text = "강세🔥" if (net_sent + bm_scr) > 1 else ("약세❄️" if (net_sent + bm_scr) < -1 else "보합➖")
@@ -269,9 +266,10 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         st.write("💡 아래의 표에서 **원하는 종목 줄(Row)을 클릭**하시면 수정/청산 및 심층 리포트가 열립니다.")
         df_disp = pd.DataFrame(display_rows).drop(columns=["raw_data", "티커"])
         
+        # 💡 [핵심 패치 2] 스트림릿 경고 해결 (use_container_width=True -> width="stretch")
         selection_event = st.dataframe(
             df_disp, 
-            use_container_width=True, 
+            width="stretch", 
             on_select="rerun", 
             selection_mode="single-row"
         )
@@ -287,10 +285,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             
             st.markdown(f"### 🛠️ [{s_name}] 장부 관리 및 심층 리포트")
             
-            # --- [장부 수정 및 정밀 매도 로직] ---
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
-                with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
+                with st.popover("✏️ 장부 평단/수량 수정", width="stretch"):
                     new_p = st.number_input("수정할 평단가", value=int(raw_row['buy_price']))
                     new_q = st.number_input("수정할 보유수량", value=int(raw_row['qty']))
                     if st.button("수정 장부 인가", key="btn_edit_confirm"):
@@ -299,7 +296,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.success("수정 완료!")
                         st.rerun()
             with col_btn2:
-                with st.popover("🛒 분할 추가매수", use_container_width=True):
+                with st.popover("🛒 분할 추가매수", width="stretch"):
                     add_p = st.number_input("추가 매수가격", value=selected_stock["현재가"])
                     add_q = st.number_input("추가 매수수량", value=10)
                     if st.button("추가매수 체결", key="btn_buy_confirm"):
@@ -312,7 +309,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.success("추가 매수 장부 합성 성공!")
                         st.rerun()
             with col_btn3:
-                with st.popover("❌ 자산 매도(청산)", use_container_width=True):
+                with st.popover("❌ 자산 매도(청산)", width="stretch"):
                     st.write(f"현재 보유 수량: **{raw_row['qty']}주** (평단가: {raw_row['buy_price']}원)")
                     sell_p = st.number_input("매도 단가", value=selected_stock["현재가"])
                     sell_q = st.number_input("매도 수량", min_value=1, max_value=raw_row['qty'], value=raw_row['qty'])
@@ -320,14 +317,15 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         profit_amt = (sell_p - raw_row['buy_price']) * sell_q
                         profit_pct = round(((sell_p - raw_row['buy_price']) / raw_row['buy_price']) * 100, 2)
                         
-                        # 히스토리에 기록 남기기
-                        supabase.table("user_history").insert({
-                            "username": username, "ticker": raw_row['ticker'], "name": s_name,
-                            "buy_price": raw_row['buy_price'], "sell_price": sell_p, "qty": sell_q,
-                            "profit_amt": profit_amt, "profit_pct": profit_pct
-                        }).execute()
+                        try:
+                            supabase.table("user_history").insert({
+                                "username": username, "ticker": raw_row['ticker'], "name": s_name,
+                                "buy_price": raw_row['buy_price'], "sell_price": sell_p, "qty": sell_q,
+                                "profit_amt": profit_amt, "profit_pct": profit_pct
+                            }).execute()
+                        except Exception as e:
+                            print(f"히스토리 기록 실패 (무시됨): {e}")
                         
-                        # 전부 매도하면 삭제, 아니면 수량 감소
                         if sell_q == raw_row['qty']:
                             supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
                         else:
@@ -339,7 +337,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
             st.divider()
             
-            # --- [개별 심층 리포트 출력] ---
             t1, t2, t3 = st.tabs(["📉 가치평가 및 뉴스", "📰 전방 사업 명세", "📊 실적 트렌드 차트"])
             with t1:
                 st.markdown(f"**• 앵커 밸류에이션 (1년 최고가):** `{s_cache.get('year_high', raw_row['buy_price']):,}`원")
@@ -388,7 +385,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_hist['created_at'] = pd.to_datetime(df_hist['created_at']).dt.strftime('%Y-%m-%d %H:%M')
             df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
             df_hist.columns = ['매도일시', '종목명', '진입가', '청산가', '수량', '실현손익', '수익률(%)']
-            st.dataframe(df_hist, use_container_width=True)
+            st.dataframe(df_hist, width="stretch")
 
     with tab_log:
         st.subheader("⚙️ 시스템 엔진 처리 기록")
@@ -400,4 +397,4 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_log['created_at'] = pd.to_datetime(df_log['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
             df_log = df_log[['created_at', 'module', 'summary', 'details']]
             df_log.columns = ['시간', '모듈', '요약', '상세내역']
-            st.dataframe(df_log, use_container_width=True)
+            st.dataframe(df_log, width="stretch")
