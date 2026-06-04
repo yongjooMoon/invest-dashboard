@@ -23,8 +23,8 @@ def fetch_dynamic_company_bm(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        res.encoding = 'utf-8' 
-        soup = BeautifulSoup(res.text, 'html.parser')
+        html_text = res.content.decode('utf-8', 'ignore')
+        soup = BeautifulSoup(html_text, 'html.parser')
         bm_list = []
         for table in soup.find_all('table'):
             if "매출비중" in table.text or "제품/서비스명" in table.text:
@@ -41,8 +41,9 @@ def fetch_naver_fundamentals(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        res.encoding = 'utf-8'
-        soup = BeautifulSoup(res.text, 'html.parser')
+        # 💡 [버그 픽스] 네이버 금융 전용 EUC-KR 바이트 강제 디코딩 (글자 깨짐 원천 차단)
+        html_text = res.content.decode('euc-kr', 'ignore')
+        soup = BeautifulSoup(html_text, 'html.parser')
         
         summary_div = soup.select_one('.summary_info')
         company_summary = summary_div.text.replace('\n', ' ').strip() if summary_div else ""
@@ -127,7 +128,6 @@ def insert_log(supabase, username, module, summary, details):
     except Exception as e:
         print(f"로그 기록 실패: {e}")
 
-# 💡 [백그라운드 자동 동기화 봇 엔진]
 def auto_sync_job(supabase, username, naver_id, naver_secret):
     last_sync_minute = None
     while True:
@@ -325,7 +325,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             pnl_amt = (curr_price - b_price) * s_qty
             pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
             
-            # 💡 [핵심 패치] 웹 한계를 돌파하는 직관적 상태(음영/색상 대체) 로직
             stop_line = int(b_price * 0.92)
             status_emoji = ""
             if name in CORE_CONVICTION_ASSETS:
@@ -342,11 +341,19 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             total_invest += b_price * s_qty
             total_value += curr_price * s_qty
             
+            # 💡 [핵심 패치] 금액 포맷(₩ 기호 + 콤마 마스킹) 및 수량/비율 기호 추가
             display_rows.append({
-                "상태": status_emoji, "종목명": name, "티커": ticker, 
-                "현재가": int(curr_price), "전일비(%)": round(day_pct, 2),
-                "평단가": int(b_price), "수량": int(s_qty), "평가손익": int(pnl_amt), "수익률(%)": round(pnl_pct, 2),
-                "적정타깃가": int(target_price), "raw_data": row
+                "상태": status_emoji, 
+                "종목명": name, 
+                "티커": ticker, 
+                "현재가": f"₩ {int(curr_price):,}", 
+                "전일비(%)": f"{day_pct:+.2f}%",
+                "평단가": f"₩ {int(b_price):,}", 
+                "수량": f"{int(s_qty):,} 주", 
+                "평가손익": f"₩ {int(pnl_amt):,}", 
+                "수익률(%)": f"{pnl_pct:+.2f}%",
+                "적정타깃가": f"₩ {int(target_price):,}", 
+                "raw_data": row
             })
 
         total_pnl = total_value - total_invest
@@ -372,8 +379,8 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             selected_idx = selected_indices[0]
             selected_stock = display_rows[selected_idx]
             s_name = selected_stock["종목명"]
-            s_ticker = selected_stock["티커"]
             raw_row = selected_stock["raw_data"]
+            s_ticker = raw_row['ticker']
             s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
             
             st.markdown(f"### 🛠️ [{s_name}] 장부 관리 및 심층 리포트")
@@ -426,7 +433,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.rerun()
             with col_btn2:
                 with st.popover("🛒 분할 추가매수", width="stretch"):
-                    add_p = st.number_input("추가 매수가격", value=int(selected_stock["현재가"]))
+                    add_p = st.number_input("추가 매수가격", value=int(s_cache.get('current_price', raw_row['buy_price'])))
                     add_q = st.number_input("추가 매수수량", value=10)
                     if st.button("추가매수 체결", key="btn_buy_confirm"):
                         current_total_cost = raw_row['buy_price'] * raw_row['qty']
@@ -440,7 +447,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             with col_btn3:
                 with st.popover("❌ 자산 매도(청산)", width="stretch"):
                     st.write(f"현재 보유 수량: **{raw_row['qty']}주** (평단가: {raw_row['buy_price']:,}원)")
-                    sell_p = st.number_input("매도 단가", value=int(selected_stock["현재가"]))
+                    sell_p = st.number_input("매도 단가", value=int(s_cache.get('current_price', raw_row['buy_price'])))
                     sell_q = st.number_input("매도 수량", min_value=1, max_value=raw_row['qty'], value=raw_row['qty'])
                     if st.button("🚨 매도 집행", key="btn_sell_confirm"):
                         profit_amt = (sell_p - raw_row['buy_price']) * sell_q
@@ -460,7 +467,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                             supabase.table("user_portfolio").update({"qty": raw_row['qty'] - sell_q}).eq("id", raw_row['id']).execute()
                             
                         insert_log(supabase, username, "자산 매도", f"[{s_name}] {sell_q}주 매도", f"수익 {profit_amt:,}원 ({profit_pct:+.2f}%)")
-                        st.success("청산 완료 및 내역 기록되었습니다.")
+                        st.success("성공적으로 청산 및 내역 기록되었습니다.")
                         st.rerun()
 
             st.divider()
@@ -471,7 +478,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 st.markdown(f"**• 앵커 밸류에이션 (1년 최고가):** `{s_cache.get('year_high', raw_row['buy_price']):,}`원")
                 st.markdown(f"**• 뉴스 감성 모멘텀 가중:** `{s_cache.get('net_sentiment', 0):+}` 점")
                 st.markdown(f"**• 산업 사이클 점수 가중:** `{s_cache.get('bm_score', 0):+}` 점")
-                st.markdown(f"**🚀 최종 적정 타깃 목표가:** `{selected_stock['적정타깃가']:,}`원")
+                st.markdown(f"**🚀 최종 적정 타깃 목표가:** `{s_cache.get('target_2026', raw_row['buy_price']):,}`원")
                 st.write("**실시간 추적 뉴스**")
                 for idx, news in enumerate(s_cache.get('news_list', []), 1):
                     st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
@@ -515,6 +522,14 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_hist['created_at'] = df_hist['created_at'].dt.strftime('%Y-%m-%d %H:%M')
             df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
             df_hist.columns = ['매도일시', '종목명', '진입가', '청산가', '수량', '실현손익', '수익률(%)']
+            
+            # 💡 [핵심 패치] 히스토리 그리드 콤마 및 마스킹 적용
+            df_hist['진입가'] = df_hist['진입가'].apply(lambda x: f"₩ {int(x):,}")
+            df_hist['청산가'] = df_hist['청산가'].apply(lambda x: f"₩ {int(x):,}")
+            df_hist['수량'] = df_hist['수량'].apply(lambda x: f"{int(x):,} 주")
+            df_hist['실현손익'] = df_hist['실현손익'].apply(lambda x: f"₩ {int(x):,}")
+            df_hist['수익률(%)'] = df_hist['수익률(%)'].apply(lambda x: f"{x:+.2f} %")
+            
             st.dataframe(df_hist, width="stretch")
 
     with tab_log:
