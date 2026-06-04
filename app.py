@@ -30,13 +30,10 @@ if not st.session_state.logged_in:
     if st.button("보안 데이터베이스 로그인", type="primary"):
         if login_username.strip() == "" or login_pw.strip() == "":
             st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
-        else:
-            # 💡 입력받은 비밀번호를 SHA-256 해시 문자열로 변환
-            hashed_input_pw = hashlib.sha256(login_pw.encode('utf-8')).hexdigest()
-            
+        else:            
             try:
                 # 커스텀 테이블(custom_users)에서 아이디와 해시 비밀번호가 일치하는지 조회
-                user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", hashed_input_pw).execute()
+                user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", login_pw).execute()
                 
                 if user_query.data:
                     # 로그인 성공 세션 락 가동
