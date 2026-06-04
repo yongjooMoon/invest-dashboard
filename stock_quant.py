@@ -41,7 +41,6 @@ def fetch_naver_fundamentals(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        # 💡 [버그 픽스 완결판] 네이버 최신 서버 환경에 맞게 UTF-8로 인코딩 방식 전면 교체!
         res.encoding = 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
         
@@ -133,7 +132,6 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
     last_sync_minute = None
     while True:
         now_kst = datetime.utcnow() + timedelta(hours=9)
-        
         if 8 <= now_kst.hour <= 18 and now_kst.minute % 10 == 0:
             if now_kst.hour == 18 and now_kst.minute > 0:
                 time.sleep(30)
@@ -148,7 +146,6 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                     if portfolio_data:
                         for row in portfolio_data:
                             cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
-                            
                             df_p = fdr.DataReader(row['ticker'], start=(now_kst - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
                             if not df_p.empty:
                                 cache['current_price'] = int(df_p['Close'].iloc[-1])
@@ -183,8 +180,7 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                             
                         insert_log(supabase, username, "🤖 오토 스케줄러", f"{len(portfolio_data)}종목 자동 스캔", f"한국시간 {now_kst.strftime('%H:%M')} 정각 스케줄러 작동 완료 (시세/뉴스/실적)")
                 except Exception as e:
-                    print(f"Auto Sync Job Error: {e}")
-                    
+                    pass
         time.sleep(30)
 
 
@@ -295,12 +291,15 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
             if st.button("장부 조율 및 매수 결제", type="primary"):
                 ticker = krx_map[s_name]
-                supabase.table("user_portfolio").upsert({
-                    "username": username, "ticker": ticker, "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}
-                }).execute()
-                insert_log(supabase, username, "신규 편입", f"[{s_name}] 매수", f"단가 {buy_p}원, 수량 {qty}주")
-                st.success(f"[{s_name}] 편입 완료!")
-                st.rerun()
+                try:
+                    supabase.table("user_portfolio").upsert({
+                        "username": username, "ticker": ticker, "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}
+                    }).execute()
+                    insert_log(supabase, username, "신규 편입", f"[{s_name}] 매수", f"단가 {buy_p}원, 수량 {qty}주")
+                    st.success(f"[{s_name}] 편입 완료!")
+                    st.rerun()
+                except Exception as e:
+                    st.error("자산 편입 실패! SQL에서 user_portfolio 테이블의 RLS를 해제했는지 확인해주세요.")
 
         if not portfolio_data:
             st.info("현재 장부에 등록된 보유 주식이 없습니다.")
@@ -322,18 +321,32 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             
             net_sent = cache.get('net_sentiment', 0)
             bm_scr = cache.get('bm_score', 0)
-            status_text = "강세🔥" if (net_sent + bm_scr) > 1 else ("약세❄️" if (net_sent + bm_scr) < -1 else "보합➖")
             
             pnl_amt = (curr_price - b_price) * s_qty
             pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
+            
+            # 💡 [핵심 패치] 웹 한계를 돌파하는 직관적 상태(음영/색상 대체) 로직
+            stop_line = int(b_price * 0.92)
+            status_emoji = ""
+            if name in CORE_CONVICTION_ASSETS:
+                if pnl_pct < -30: status_emoji = "☢️ 코어 침범 (독성)"
+                else: status_emoji = "💎 VIP 강홀딩"
+            else:
+                if bm_scr >= 2 and pnl_pct < 0: status_emoji = "🛒 저점 추매"
+                elif bm_scr <= -2 and pnl_pct < -5: status_emoji = "☢️ 맹독성 손절"
+                elif curr_price < stop_line: status_emoji = "⚠️ 청산 시그널"
+                else:
+                    if target_price > 0 and curr_price >= target_price * 0.9: status_emoji = "🔥 청산 임박"
+                    else: status_emoji = "🔴 흑자(상승)" if pnl_pct >= 0 else "🔵 적자(하락)"
             
             total_invest += b_price * s_qty
             total_value += curr_price * s_qty
             
             display_rows.append({
-                "종목명": name, "티커": ticker, "현재가": curr_price, "전일비(%)": day_pct,
-                "평단가": b_price, "수량": s_qty, "평가손익": pnl_amt, "수익률(%)": round(pnl_pct, 2),
-                "적정타깃가": target_price, "모멘텀": status_text, "raw_data": row
+                "상태": status_emoji, "종목명": name, "티커": ticker, 
+                "현재가": int(curr_price), "전일비(%)": round(day_pct, 2),
+                "평단가": int(b_price), "수량": int(s_qty), "평가손익": int(pnl_amt), "수익률(%)": round(pnl_pct, 2),
+                "적정타깃가": int(target_price), "raw_data": row
             })
 
         total_pnl = total_value - total_invest
@@ -343,7 +356,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         c2.metric("평가 금액", f"{total_value:,} 원")
         c3.metric("총 평가 손익", f"{total_pnl:,} 원", f"{total_pnl_pct:+.2f}%")
         
-        st.write("💡 아래의 표에서 **원하는 종목 줄(Row)을 클릭**하시면 수정/청산 및 심층 리포트가 열립니다.")
+        st.write("💡 **열 제목(예: 수익률, 종목명 등)을 클릭하시면 오름차순/내림차순으로 자동 정렬됩니다.**")
         df_disp = pd.DataFrame(display_rows).drop(columns=["raw_data", "티커"])
         
         selection_event = st.dataframe(
@@ -432,7 +445,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     if st.button("🚨 매도 집행", key="btn_sell_confirm"):
                         profit_amt = (sell_p - raw_row['buy_price']) * sell_q
                         profit_pct = round(((sell_p - raw_row['buy_price']) / raw_row['buy_price']) * 100, 2)
-                        
                         try:
                             supabase.table("user_history").insert({
                                 "username": username, "ticker": raw_row['ticker'], "name": s_name,
@@ -440,7 +452,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                                 "profit_amt": profit_amt, "profit_pct": profit_pct
                             }).execute()
                         except Exception as e:
-                            print(f"히스토리 기록 실패 (무시됨): {e}")
+                            print(f"히스토리 기록 실패: {e}")
                         
                         if sell_q == raw_row['qty']:
                             supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
@@ -448,14 +460,14 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                             supabase.table("user_portfolio").update({"qty": raw_row['qty'] - sell_q}).eq("id", raw_row['id']).execute()
                             
                         insert_log(supabase, username, "자산 매도", f"[{s_name}] {sell_q}주 매도", f"수익 {profit_amt:,}원 ({profit_pct:+.2f}%)")
-                        st.success("성공적으로 청산 및 내역 기록되었습니다.")
+                        st.success("청산 완료 및 내역 기록되었습니다.")
                         st.rerun()
 
             st.divider()
             
             t1, t2, t3 = st.tabs(["📉 가치평가 및 뉴스", "📰 전방 사업 명세", "📊 실적 트렌드 차트"])
             with t1:
-                st.markdown(f"**• 현재 종합 모멘텀:** {selected_stock['모멘텀']}")
+                st.markdown(f"**• 현재 종합 모멘텀:** {selected_stock['상태']}")
                 st.markdown(f"**• 앵커 밸류에이션 (1년 최고가):** `{s_cache.get('year_high', raw_row['buy_price']):,}`원")
                 st.markdown(f"**• 뉴스 감성 모멘텀 가중:** `{s_cache.get('net_sentiment', 0):+}` 점")
                 st.markdown(f"**• 산업 사이클 점수 가중:** `{s_cache.get('bm_score', 0):+}` 점")
