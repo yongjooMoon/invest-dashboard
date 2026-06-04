@@ -16,7 +16,6 @@ GLOBAL_MEGATRENDS = {
     "HBM": 3, "CXL": 3, "NPU": 3, "유리기판": 3, "MLCC": 3, "AI": 2, "로봇": 2
 }
 
-# --- 백그라운드 자동 스케줄러를 위한 전역 변수 ---
 _active_threads = {}
 
 def fetch_dynamic_company_bm(raw_code):
@@ -24,6 +23,7 @@ def fetch_dynamic_company_bm(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
+        res.encoding = 'utf-8' # FnGuide 인코딩 명시
         soup = BeautifulSoup(res.text, 'html.parser')
         bm_list = []
         for table in soup.find_all('table'):
@@ -41,9 +41,8 @@ def fetch_naver_fundamentals(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        # 💡 [버그 픽스] 네이버 전용 EUC-KR 강제 디코딩 적용 (글자 깨짐 완벽 해결)
-        html_text = res.content.decode('euc-kr', 'replace')
-        soup = BeautifulSoup(html_text, 'html.parser')
+        res.encoding = 'euc-kr' # 💡 [버그픽스 1] 네이버 금융 전용 인코딩 고정
+        soup = BeautifulSoup(res.text, 'html.parser')
         
         summary_div = soup.select_one('.summary_info')
         company_summary = summary_div.text.replace('\n', ' ').strip() if summary_div else ""
@@ -60,6 +59,13 @@ def fetch_naver_fundamentals(raw_code):
         q_headers = [th.text.strip() for th in thead.select('tr')[1].select('th')[5:10]]
         q_revenues = [parse_num(td.text) for td in rows[0].select('td')[5:10]]
         q_op_profits = [parse_num(td.text) for td in rows[1].select('td')[5:10]]
+        
+        # 💡 [버그픽스 2] 값이 0인 미발표 미래 분기를 제거하는 로직 원복! (이게 빠져서 0억/ -100% 가 나왔습니다)
+        valid_indices = [i for i, rev in enumerate(q_revenues) if rev != 0.0]
+        if valid_indices:
+            q_headers = [q_headers[i] for i in valid_indices]
+            q_revenues = [q_revenues[i] for i in valid_indices]
+            q_op_profits = [q_op_profits[i] for i in valid_indices]
         
         return {"q_headers": q_headers, "q_revenues": q_revenues, "q_op_profits": q_op_profits, "summary": company_summary}
     except Exception as e: 
@@ -126,22 +132,16 @@ def insert_log(supabase, username, module, summary, details):
 def auto_sync_job(supabase, username, naver_id, naver_secret):
     last_sync_minute = None
     while True:
-        # 글로벌 서버(UTC) 환경을 고려하여 한국 표준시(KST)로 정확하게 변환
         now_kst = datetime.utcnow() + timedelta(hours=9)
         
-        # 8시(08:00)부터 18시(18:00) 정각까지만 실행
         if 8 <= now_kst.hour <= 18 and now_kst.minute % 10 == 0:
-            # 오후 6시 10분부터는 실행 차단
             if now_kst.hour == 18 and now_kst.minute > 0:
                 time.sleep(30)
                 continue
                 
             current_min_stamp = f"{now_kst.hour}:{now_kst.minute}"
-            
-            # 같은 분(minute) 안에 중복 실행 방지
             if last_sync_minute != current_min_stamp:
                 last_sync_minute = current_min_stamp
-                
                 try:
                     db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
                     portfolio_data = db_res.data
@@ -149,7 +149,6 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                         for row in portfolio_data:
                             cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                             
-                            # 1. 시세 동기화
                             df_p = fdr.DataReader(row['ticker'], start=(now_kst - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
                             if not df_p.empty:
                                 cache['current_price'] = int(df_p['Close'].iloc[-1])
@@ -157,13 +156,11 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                 prev_close = float(df_p['Close'].iloc[-2])
                                 cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
                             
-                            # 2. 뉴스 및 감성 분석 동기화
                             score, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
                             cache['score'] = score
                             cache['net_sentiment'] = net_sent
                             cache['news_list'] = n_list
                             
-                            # 3. 펀더멘탈 동기화
                             fund = fetch_naver_fundamentals(row['ticker'])
                             bm_list = fetch_dynamic_company_bm(row['ticker'])
                             core_prod = bm_list[0][1] if bm_list else "기반 사업"
@@ -178,27 +175,23 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                 cache['q_op_profits'] = fund['q_op_profits']
                                 cache['summary'] = fund['summary']
                                 
-                            # 목표가 리밸런싱
                             total_multiplier = 1 + (net_sent * 0.01) + (bm_score * 0.02)
                             cache['target_2026'] = int(cache.get('year_high', row['buy_price']) * total_multiplier)
                             if row['name'] in CORE_CONVICTION_ASSETS: cache['target_2026'] = CORE_CONVICTION_ASSETS[row['name']]
                             
-                            # DB 덮어쓰기
                             supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
                             
-                        # 엔진 로그 저장
                         insert_log(supabase, username, "🤖 오토 스케줄러", f"{len(portfolio_data)}종목 자동 스캔", f"한국시간 {now_kst.strftime('%H:%M')} 정각 스케줄러 작동 완료 (시세/뉴스/실적)")
                 except Exception as e:
                     print(f"Auto Sync Job Error: {e}")
                     
-        time.sleep(30) # 30초마다 시간 체크 (서버 부담 없음)
+        time.sleep(30)
 
 
 # --- [메인 진입 페이지 함수] ---
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
     st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진")
     
-    # 💡 [자동 스케줄러 봇 가동] 현재 로그인한 유저의 봇이 없으면 백그라운드 스레드 생성
     if username not in _active_threads:
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
         t.start()
@@ -218,10 +211,10 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         st.write("⚡ **수동 동기화 제어판** (버튼을 누르면 즉시 최신 데이터를 수집합니다)")
         col_sync1, col_sync2, col_sync3 = st.columns(3)
         
-        db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
+        db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
         portfolio_data = db_res.data
 
-        if col_sync1.button("🔄 전체 시세 갱신", width="stretch"):
+        if col_sync1.button("🔄 전체 시세 갱신", use_container_width=True):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 시세 트래킹 중...", expanded=True) as status:
                 for row in portfolio_data:
@@ -243,7 +236,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             insert_log(supabase, username, "수동 전역 동기화", f"{len(portfolio_data)}종목 시세 갱신", "사용자 명령으로 주가 및 변동률 업데이트 성공")
             st.rerun()
 
-        if col_sync2.button("📰 전체 뉴스 스캔", width="stretch"):
+        if col_sync2.button("📰 전체 뉴스 스캔", use_container_width=True):
             if not naver_id or not naver_secret: st.error("네이버 API 키가 없습니다."); st.stop()
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 네이버 AI 뉴스 스캔 중...", expanded=True) as status:
@@ -264,7 +257,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             insert_log(supabase, username, "수동 뉴스 스캔", f"{len(portfolio_data)}종목 모멘텀 평가", "사용자 명령으로 감성 점수 및 뉴스 리스트 업데이트 성공")
             st.rerun()
 
-        if col_sync3.button("📊 전체 실적 매핑", width="stretch"):
+        if col_sync3.button("📊 전체 실적 매핑", use_container_width=True):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 펀더멘탈 긁어오는 중...", expanded=True) as status:
                 for row in portfolio_data:
@@ -355,7 +348,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         
         selection_event = st.dataframe(
             df_disp, 
-            width="stretch", 
+            use_container_width=True, 
             on_select="rerun", 
             selection_mode="single-row"
         )
@@ -366,14 +359,52 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             selected_idx = selected_indices[0]
             selected_stock = display_rows[selected_idx]
             s_name = selected_stock["종목명"]
+            s_ticker = selected_stock["티커"]
             raw_row = selected_stock["raw_data"]
             s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
             
             st.markdown(f"### 🛠️ [{s_name}] 장부 관리 및 심층 리포트")
             
+            # 💡 [버그픽스 3] 개별 종목 수동 동기화 버튼 부활!
+            col_indi1, col_indi2, col_indi3 = st.columns(3)
+            with col_indi1:
+                if st.button(f"[{s_name}] 시세 단독 갱신", use_container_width=True):
+                    df_p = fdr.DataReader(s_ticker, start=(datetime.utcnow() + timedelta(hours=9) - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
+                    if not df_p.empty:
+                        s_cache['current_price'] = int(df_p['Close'].iloc[-1])
+                        s_cache['year_high'] = int(df_p['High'].max())
+                        prev_close = float(df_p['Close'].iloc[-2])
+                        s_cache['pct_change'] = round(((s_cache['current_price'] - prev_close) / prev_close) * 100, 2)
+                        total_multiplier = 1 + (s_cache.get('net_sentiment', 0) * 0.01) + (s_cache.get('bm_score', 0) * 0.02)
+                        s_cache['target_2026'] = int(s_cache['year_high'] * total_multiplier)
+                        if s_name in CORE_CONVICTION_ASSETS: s_cache['target_2026'] = CORE_CONVICTION_ASSETS[s_name]
+                        supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
+                        st.rerun()
+            with col_indi2:
+                if st.button(f"[{s_name}] 실적 단독 매핑", use_container_width=True):
+                    fund = fetch_naver_fundamentals(s_ticker)
+                    bm_list = fetch_dynamic_company_bm(s_ticker)
+                    core_prod = bm_list[0][1] if bm_list else "기반 사업"
+                    bm_score, bm_summary = calculate_bm_score(fund, core_prod, s_name)
+                    s_cache['bm_list'] = bm_list
+                    s_cache['bm_score'] = bm_score
+                    s_cache['bm_summary'] = bm_summary
+                    if fund:
+                        s_cache['q_headers'] = fund['q_headers']
+                        s_cache['q_revenues'] = fund['q_revenues']
+                        s_cache['q_op_profits'] = fund['q_op_profits']
+                        s_cache['summary'] = fund['summary']
+                    total_multiplier = 1 + (s_cache.get('net_sentiment', 0) * 0.01) + (bm_score * 0.02)
+                    s_cache['target_2026'] = int(s_cache.get('year_high', raw_row['buy_price']) * total_multiplier)
+                    if s_name in CORE_CONVICTION_ASSETS: s_cache['target_2026'] = CORE_CONVICTION_ASSETS[s_name]
+                    supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
+                    st.rerun()
+
+            st.divider()
+
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
-                with st.popover("✏️ 장부 평단/수량 수정", width="stretch"):
+                with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
                     new_p = st.number_input("수정할 평단가", value=int(raw_row['buy_price']))
                     new_q = st.number_input("수정할 보유수량", value=int(raw_row['qty']))
                     if st.button("수정 장부 인가", key="btn_edit_confirm"):
@@ -382,8 +413,8 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.success("수정 완료!")
                         st.rerun()
             with col_btn2:
-                with st.popover("🛒 분할 추가매수", width="stretch"):
-                    add_p = st.number_input("추가 매수가격", value=selected_stock["현재가"])
+                with st.popover("🛒 분할 추가매수", use_container_width=True):
+                    add_p = st.number_input("추가 매수가격", value=int(selected_stock["현재가"]))
                     add_q = st.number_input("추가 매수수량", value=10)
                     if st.button("추가매수 체결", key="btn_buy_confirm"):
                         current_total_cost = raw_row['buy_price'] * raw_row['qty']
@@ -395,9 +426,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.success("추가 매수 장부 합성 성공!")
                         st.rerun()
             with col_btn3:
-                with st.popover("❌ 자산 매도(청산)", width="stretch"):
+                with st.popover("❌ 자산 매도(청산)", use_container_width=True):
                     st.write(f"현재 보유 수량: **{raw_row['qty']}주** (평단가: {raw_row['buy_price']:,}원)")
-                    sell_p = st.number_input("매도 단가", value=selected_stock["현재가"])
+                    sell_p = st.number_input("매도 단가", value=int(selected_stock["현재가"]))
                     sell_q = st.number_input("매도 수량", min_value=1, max_value=raw_row['qty'], value=raw_row['qty'])
                     if st.button("🚨 매도 집행", key="btn_sell_confirm"):
                         profit_amt = (sell_p - raw_row['buy_price']) * sell_q
@@ -469,12 +500,11 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             h2.metric("매매 승률", f"{win_rate:.1f} %")
             
             df_hist = pd.DataFrame(hist_res.data)
-            # 글로벌 환경에 맞게 KST(한국시간)로 변환 표시
             df_hist['created_at'] = pd.to_datetime(df_hist['created_at']) + pd.Timedelta(hours=9)
             df_hist['created_at'] = df_hist['created_at'].dt.strftime('%Y-%m-%d %H:%M')
             df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
             df_hist.columns = ['매도일시', '종목명', '진입가', '청산가', '수량', '실현손익', '수익률(%)']
-            st.dataframe(df_hist, width="stretch")
+            st.dataframe(df_hist, use_container_width=True)
 
     with tab_log:
         st.subheader("⚙️ 시스템 엔진 처리 기록")
@@ -483,9 +513,8 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             st.info("시스템 처리 기록이 없습니다.")
         else:
             df_log = pd.DataFrame(log_res.data)
-            # 글로벌 환경에 맞게 KST(한국시간)로 변환 표시
             df_log['created_at'] = pd.to_datetime(df_log['created_at']) + pd.Timedelta(hours=9)
             df_log['created_at'] = df_log['created_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
             df_log = df_log[['created_at', 'module', 'summary', 'details']]
             df_log.columns = ['시간', '모듈', '요약', '상세내역']
-            st.dataframe(df_log, width="stretch")
+            st.dataframe(df_log, use_container_width=True)
