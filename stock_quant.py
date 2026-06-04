@@ -23,7 +23,7 @@ def fetch_dynamic_company_bm(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        res.encoding = 'utf-8' # FnGuide 인코딩 명시
+        res.encoding = 'utf-8' 
         soup = BeautifulSoup(res.text, 'html.parser')
         bm_list = []
         for table in soup.find_all('table'):
@@ -41,7 +41,8 @@ def fetch_naver_fundamentals(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        res.encoding = 'euc-kr' # 💡 [버그픽스 1] 네이버 금융 전용 인코딩 고정
+        # 💡 [버그 픽스 완결판] 네이버 최신 서버 환경에 맞게 UTF-8로 인코딩 방식 전면 교체!
+        res.encoding = 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
         
         summary_div = soup.select_one('.summary_info')
@@ -60,7 +61,6 @@ def fetch_naver_fundamentals(raw_code):
         q_revenues = [parse_num(td.text) for td in rows[0].select('td')[5:10]]
         q_op_profits = [parse_num(td.text) for td in rows[1].select('td')[5:10]]
         
-        # 💡 [버그픽스 2] 값이 0인 미발표 미래 분기를 제거하는 로직 원복! (이게 빠져서 0억/ -100% 가 나왔습니다)
         valid_indices = [i for i, rev in enumerate(q_revenues) if rev != 0.0]
         if valid_indices:
             q_headers = [q_headers[i] for i in valid_indices]
@@ -214,7 +214,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
         portfolio_data = db_res.data
 
-        if col_sync1.button("🔄 전체 시세 갱신", use_container_width=True):
+        if col_sync1.button("🔄 전체 시세 갱신", width="stretch"):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 시세 트래킹 중...", expanded=True) as status:
                 for row in portfolio_data:
@@ -236,7 +236,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             insert_log(supabase, username, "수동 전역 동기화", f"{len(portfolio_data)}종목 시세 갱신", "사용자 명령으로 주가 및 변동률 업데이트 성공")
             st.rerun()
 
-        if col_sync2.button("📰 전체 뉴스 스캔", use_container_width=True):
+        if col_sync2.button("📰 전체 뉴스 스캔", width="stretch"):
             if not naver_id or not naver_secret: st.error("네이버 API 키가 없습니다."); st.stop()
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 네이버 AI 뉴스 스캔 중...", expanded=True) as status:
@@ -257,7 +257,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             insert_log(supabase, username, "수동 뉴스 스캔", f"{len(portfolio_data)}종목 모멘텀 평가", "사용자 명령으로 감성 점수 및 뉴스 리스트 업데이트 성공")
             st.rerun()
 
-        if col_sync3.button("📊 전체 실적 매핑", use_container_width=True):
+        if col_sync3.button("📊 전체 실적 매핑", width="stretch"):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
             with st.status("전체 종목 펀더멘탈 긁어오는 중...", expanded=True) as status:
                 for row in portfolio_data:
@@ -348,7 +348,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         
         selection_event = st.dataframe(
             df_disp, 
-            use_container_width=True, 
+            width="stretch", 
             on_select="rerun", 
             selection_mode="single-row"
         )
@@ -365,10 +365,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             
             st.markdown(f"### 🛠️ [{s_name}] 장부 관리 및 심층 리포트")
             
-            # 💡 [버그픽스 3] 개별 종목 수동 동기화 버튼 부활!
             col_indi1, col_indi2, col_indi3 = st.columns(3)
             with col_indi1:
-                if st.button(f"[{s_name}] 시세 단독 갱신", use_container_width=True):
+                if st.button(f"[{s_name}] 시세 단독 갱신", width="stretch"):
                     df_p = fdr.DataReader(s_ticker, start=(datetime.utcnow() + timedelta(hours=9) - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
                     if not df_p.empty:
                         s_cache['current_price'] = int(df_p['Close'].iloc[-1])
@@ -381,7 +380,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
                         st.rerun()
             with col_indi2:
-                if st.button(f"[{s_name}] 실적 단독 매핑", use_container_width=True):
+                if st.button(f"[{s_name}] 실적 단독 매핑", width="stretch"):
                     fund = fetch_naver_fundamentals(s_ticker)
                     bm_list = fetch_dynamic_company_bm(s_ticker)
                     core_prod = bm_list[0][1] if bm_list else "기반 사업"
@@ -404,7 +403,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
-                with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
+                with st.popover("✏️ 장부 평단/수량 수정", width="stretch"):
                     new_p = st.number_input("수정할 평단가", value=int(raw_row['buy_price']))
                     new_q = st.number_input("수정할 보유수량", value=int(raw_row['qty']))
                     if st.button("수정 장부 인가", key="btn_edit_confirm"):
@@ -413,7 +412,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.success("수정 완료!")
                         st.rerun()
             with col_btn2:
-                with st.popover("🛒 분할 추가매수", use_container_width=True):
+                with st.popover("🛒 분할 추가매수", width="stretch"):
                     add_p = st.number_input("추가 매수가격", value=int(selected_stock["현재가"]))
                     add_q = st.number_input("추가 매수수량", value=10)
                     if st.button("추가매수 체결", key="btn_buy_confirm"):
@@ -426,7 +425,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         st.success("추가 매수 장부 합성 성공!")
                         st.rerun()
             with col_btn3:
-                with st.popover("❌ 자산 매도(청산)", use_container_width=True):
+                with st.popover("❌ 자산 매도(청산)", width="stretch"):
                     st.write(f"현재 보유 수량: **{raw_row['qty']}주** (평단가: {raw_row['buy_price']:,}원)")
                     sell_p = st.number_input("매도 단가", value=int(selected_stock["현재가"]))
                     sell_q = st.number_input("매도 수량", min_value=1, max_value=raw_row['qty'], value=raw_row['qty'])
@@ -504,7 +503,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_hist['created_at'] = df_hist['created_at'].dt.strftime('%Y-%m-%d %H:%M')
             df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
             df_hist.columns = ['매도일시', '종목명', '진입가', '청산가', '수량', '실현손익', '수익률(%)']
-            st.dataframe(df_hist, use_container_width=True)
+            st.dataframe(df_hist, width="stretch")
 
     with tab_log:
         st.subheader("⚙️ 시스템 엔진 처리 기록")
@@ -517,4 +516,4 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_log['created_at'] = df_log['created_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
             df_log = df_log[['created_at', 'module', 'summary', 'details']]
             df_log.columns = ['시간', '모듈', '요약', '상세내역']
-            st.dataframe(df_log, use_container_width=True)
+            st.dataframe(df_log, width="stretch")
