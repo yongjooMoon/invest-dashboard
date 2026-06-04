@@ -10,15 +10,23 @@ from io import BytesIO
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-# (app.py에 위치하므로 풀 데이터 생략 가능하나 내부 연동을 위해 유지)
-seoul_gu_pool = {'11710': '송파구', '11530': '구로구'}  # 필요에 따라 구 확장 가능
-seoul_dong_pool = {'11710': ['잠실동', '가락동', '문정동', '방이동'], '11530': ['구로동', '신도림동']}
+seoul_gu_pool = {
+    '11110': '종로구', '11140': '중구', '11170': '용산구', '11200': '성동구', '11215': '광진구', 
+    '11230': '동대문구', '11260': '중랑구', '11290': '성북구', '11305': '강북구', '11320': '도봉구', 
+    '11350': '노원구', '11380': '은평구', '11410': '서대문구', '11440': '마포구', '11470': '양천구', 
+    '11500': '강서구', '11530': '구로구', '11545': '금천구', '11560': '영등포구', '11590': '동작구', 
+    '11620': '관악구', '11650': '서초구', '11680': '강남구', '11710': '송파구', '11740': '강동구'
+}
 
+seoul_dong_pool = {
+    '11710': ['잠실동', '신천동', '풍납동', '송파동', '석촌동', '삼전동', '가락동', '문정동', '장지동', '방이동', '오금동', '거여동', '마천동'],
+    '11530': ['신도림동', '구로동', '가리봉동', '고척동', '개봉동', '오류동', '궁동', '온수동', '천왕동', '항동']
+    # 전체를 넣으려면 위 딕셔너리를 이전 코드에서 그대로 복사해서 채우시면 됩니다.
+}
 
 def clean_apt_name(name):
     if not name: return ""
     return name.replace(" ", "").replace("(주상복합)", "").replace("(도시형생활주택)", "").replace("주상복합", "").replace("아파트", "")
-
 
 def extract_items(response_text):
     text = response_text.strip()
@@ -28,27 +36,20 @@ def extract_items(response_text):
             data = json.loads(text)
             body = data.get('response', {}).get('body', {})
             if not isinstance(body, dict): return []
-            if 'item' in body:
-                items_node = body['item']
+            if 'item' in body: items_node = body['item']
             else:
                 items_parent = body.get('items', {})
                 items_node = items_parent.get('item', []) if isinstance(items_parent, dict) else items_parent
-            if isinstance(items_node, dict):
-                return [items_node]
-            elif isinstance(items_node, list):
-                return items_node
-            else:
-                return []
-        except:
-            return []
+            if isinstance(items_node, dict): return [items_node]
+            elif isinstance(items_node, list): return items_node
+            else: return []
+        except: return []
     elif text.startswith('<'):
         try:
             root = ET.fromstring(text)
             return root.findall('.//item')
-        except:
-            return []
+        except: return []
     return []
-
 
 def get_field(item, *keys):
     if isinstance(item, dict):
@@ -61,27 +62,249 @@ def get_field(item, *keys):
             if val is not None: return val.strip()
         return ""
 
+def generate_excel_data(api_key, district_code, district_name, target_dong, start_date, end_date, apt_filters):
+    log_text = ""
+    yield "progress", "🔄 데이터 추출을 시작합니다..."
+    
+    api_key = urllib.parse.unquote(api_key.strip())
+    url_apt_list_sigungu = 'https://apis.data.go.kr/1613000/AptListService3/getSigunguAptList3'
+    url_apt_list_bjd = 'https://apis.data.go.kr/1613000/AptListService3/getLegaldongAptList3'
+    url_apt_info = 'https://apis.data.go.kr/1613000/AptBasisInfoServiceV4/getAphusBassInfoV4'
+
+    trade_api_urls = [
+        'https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade',
+        'https://apis.data.go.kr/1613000/RTMSDataSvcAptPreSaleRightTrade/getRTMSDataSvcAptPreSaleRightTrade'
+    ]
+
+    kapt_name_to_code = {}
+    apt_details_map = {}
+    deals_filtered_map = {}
+    unique_bjd_codes = set()
+    
+    count_trade_api = 0
+    count_kapt_api = 0
+
+    master_scan_months = []
+    current = datetime(start_date.year, start_date.month, 1)
+    end_month_calc = datetime(end_date.year, end_date.month, 1)
+    
+    while current <= end_month_calc:
+        master_scan_months.append(current.strftime("%Y%m"))
+        current += relativedelta(months=1)
+
+    dong_log = f"'{target_dong}' 전체" if target_dong != "전체" else "구 전체"
+    log_text += f"\n🔄 [1단계] {master_scan_months[0]} ~ {master_scan_months[-1]} 기간 {dong_log} 실거래가 추출 중...\n"
+    yield "log", log_text
+    
+    for deal_ymd in master_scan_months:
+        for url_endpoint in trade_api_urls:
+            trade_params = {'serviceKey': api_key, 'LAWD_CD': district_code, 'DEAL_YMD': deal_ymd, 'numOfRows': '10000'}
+            try:
+                res_trade = requests.get(url_endpoint, params=trade_params, timeout=10)
+                count_trade_api += 1
+                
+                if "LIMITED NUMBER OF SERVICE REQUESTS EXCEEDS ERROR" in res_trade.text:
+                    yield "error", "국토교통부 실거래가 API 일일 호출 한도를 초과했습니다."
+                    return
+                    
+                if res_trade.status_code == 200:
+                    items = extract_items(res_trade.text)
+                    for item in items:
+                        try:
+                            apt_nm = get_field(item, 'aptNm', '아파트명')
+                            exclu_ar_str = get_field(item, 'excluUseAr', '전용면적')
+                            dong = get_field(item, 'umdNm', '법정동')
+                            
+                            if not apt_nm or not exclu_ar_str: continue
+                            if target_dong != "전체" and target_dong not in dong: continue
+
+                            if apt_filters:
+                                clean_trade_apt = apt_nm.replace(" ", "")
+                                matched = any(f.replace(" ", "") in clean_trade_apt for f in apt_filters)
+                                if not matched: continue
+
+                            s_code = get_field(item, 'sggCd', 'sigunguCd')
+                            d_code = get_field(item, 'umdCd', 'eubmyundongCd')
+                            if len(s_code) == 5 and len(d_code) == 5: unique_bjd_codes.add(s_code + d_code)
+                            elif len(d_code) == 5: unique_bjd_codes.add(district_code + d_code)
+
+                            exclu_ar = float(exclu_ar_str)
+                            d_year = get_field(item, 'dealYear', '년')
+                            d_month = get_field(item, 'dealMonth', '월').zfill(2)
+                            d_day = get_field(item, 'dealDay', '일').zfill(2)
+
+                            region_key = f"{district_name} ({dong})"
+                            group_key = (region_key, apt_nm, exclu_ar)
+
+                            deal_date_full = f"{d_year}.{d_month}.{d_day}"
+                            amt_val = int(get_field(item, 'dealAmount', '거래금액').replace(',', '')) * 10
+
+                            if group_key not in deals_filtered_map: deals_filtered_map[group_key] = []
+                            deals_filtered_map[group_key].append({'deal_amount': amt_val, 'deal_date': deal_date_full})
+                        except Exception: continue
+            except Exception: continue
+
+    if not deals_filtered_map:
+        yield "error", "설정하신 조건(기간/동/필터)에 해당하는 실거래 내역이 없습니다."
+        return
+
+    log_text += f"\n🏢 [2단계] K-APT 인덱싱 스캔 시작...\n"
+    yield "log", log_text
+    
+    for bjd_code in unique_bjd_codes:
+        list_params_bjd = {'serviceKey': api_key, 'bjdCode': bjd_code, 'numOfRows': '9999', 'pageNo': '1'}
+        try:
+            res_list = requests.get(url_apt_list_bjd, params=list_params_bjd, timeout=5)
+            count_kapt_api += 1
+            for item in extract_items(res_list.text):
+                kcode = get_field(item, 'kaptCode')
+                if kcode: kapt_name_to_code[clean_apt_name(get_field(item, 'kaptName'))] = kcode
+        except: pass
+
+    list_params_sig = {'serviceKey': api_key, 'sigunguCode': district_code, 'numOfRows': '9999', 'pageNo': '1'}
+    try:
+        res_list = requests.get(url_apt_list_sigungu, params=list_params_sig, timeout=10)
+        count_kapt_api += 1
+        for item in extract_items(res_list.text):
+            kcode = get_field(item, 'kaptCode')
+            if kcode: kapt_name_to_code[clean_apt_name(get_field(item, 'kaptName'))] = kcode
+    except: pass
+
+    for apt_nm in set([key[1] for key in deals_filtered_map.keys()]):
+        trade_cleaned_key = clean_apt_name(apt_nm)
+        target_kcode = kapt_name_to_code.get(trade_cleaned_key)
+        
+        if not target_kcode:
+            for k_clean, k_code in kapt_name_to_code.items():
+                if trade_cleaned_key in k_clean or k_clean in trade_cleaned_key:
+                    target_kcode = k_code; break
+
+        if target_kcode:
+            try:
+                info_params = {'serviceKey': api_key, 'kaptCode': target_kcode}
+                res_info = requests.get(url_apt_info, params=info_params, timeout=5)
+                count_kapt_api += 1
+                
+                if res_info.status_code == 200:
+                    items = extract_items(res_info.text)
+                    if items:
+                        info_item = items[0]
+                        raw_h_cnt = get_field(info_item, 'kaptdaCnt')
+                        if not raw_h_cnt or raw_h_cnt in ['0', '0.0']:
+                            alt_cnt = get_field(info_item, 'hoCnt')
+                            if alt_cnt: raw_h_cnt = alt_cnt
+
+                        if raw_h_cnt and raw_h_cnt != "-":
+                            try: raw_h_cnt = str(int(float(raw_h_cnt)))
+                            except: raw_h_cnt = "-"
+                        else: raw_h_cnt = "-"
+                        
+                        use_dt = get_field(info_item, 'kaptUsedate')
+                        if use_dt and len(use_dt) >= 8: parsed_dt = f"{use_dt[:4]}.{use_dt[4:6]}.{use_dt[6:8]}"
+                        else: parsed_dt = "-"
+                            
+                        cls_type = get_field(info_item, 'codeAptNm')
+                        classification = "주상복합" if "주상복합" in cls_type else ""
+                        
+                        apt_details_map[trade_cleaned_key] = {'households': raw_h_cnt, 'move_in': parsed_dt, 'classification': classification}
+                        log_text += f"✅ K-APT 매칭 완료: {apt_nm} (입주:{parsed_dt} | 세대:{raw_h_cnt})\n"
+                        yield "log", log_text
+            except: pass
+        else:
+            log_text += f"❌ K-APT 매칭 실패: {apt_nm}\n"
+            yield "log", log_text
+
+        if trade_cleaned_key not in apt_details_map:
+            apt_details_map[trade_cleaned_key] = {'households': "-", 'move_in': "-", 'classification': ""}
+
+    log_text += f"\n📊 [3단계] 엑셀 파일 생성 중...\n"
+    yield "log", log_text
+    
+    sorted_keys = sorted(deals_filtered_map.keys(), key=lambda x: (x[0], x[1], x[2]))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "실거래 상세 분석"
+    
+    headers = ["구분", "단지명", "입주시기", "세대수", "공급면적(㎡)", "전용면적(㎡)", "공급(py)", "전용(py)", "전용률", "매매가", "공급평단가", "전용평단가", "계약일자"]
+    ws.append(headers)
+
+    current_row = 2
+    for key in sorted_keys:
+        region_text, apt_nm, exclu_ar = key
+        trade_cleaned_key = clean_apt_name(apt_nm)
+        info_p = apt_details_map.get(trade_cleaned_key, {})
+
+        deals = deals_filtered_map[key]
+        deals.sort(key=lambda x: x['deal_date'], reverse=True)
+
+        for deal in deals:
+            final_deal_amount = deal['deal_amount']
+            
+            supply_m2 = round(exclu_ar / 0.76, 2)
+            supply_py = round(supply_m2 * 0.3025, 2)
+            exclu_py = round(exclu_ar * 0.3025, 2)
+            ratio = (exclu_ar / supply_m2) if supply_m2 > 0 else 0
+            
+            supply_price = int(round(final_deal_amount / supply_py, 0)) if supply_py > 0 else 0
+            exclu_price = int(round(final_deal_amount / exclu_py, 0)) if exclu_py > 0 else 0
+
+            h_val = info_p.get('households', "-")
+            if h_val.isdigit(): h_val = int(h_val)
+
+            ws.append([region_text, apt_nm, info_p.get('move_in', "-"), h_val, supply_m2, exclu_ar, supply_py, exclu_py, ratio, final_deal_amount, supply_price, exclu_price, deal['deal_date']])
+            current_row += 1
+
+    output = BytesIO()
+    wb.save(output)
+    
+    log_text += f"\n🎉 엑셀 대시보드 생성이 완료되었습니다!\n🧾 API 사용량: 실거래가 {count_trade_api}회 / K-APT {count_kapt_api}회"
+    yield "log", log_text
+    
+    yield "success", {
+        "data": output.getvalue(),
+        "filename": f"[{district_name}_{target_dong}]_실거래_분석.xlsx"
+    }
 
 def run_real_estate_page(rtms_key):
     st.title("🏢 아파트 실거래가 정밀 분석 엔진")
     if not rtms_key:
         st.info("⚠️ 상단 '내 API 키 자산 설정' 메뉴에서 국토교통부 실거래가 키를 먼저 저장해 주세요.")
         return
-
-    gu_name = st.selectbox("자치구", ["송파구", "구로구"])
-    gu_code = '11710' if gu_name == "송파구" else '11530'
-    dong_name = st.selectbox("법정동", ["전체 (구 단위)"] + seoul_dong_pool.get(gu_code, []))
-
+        
+    gu_name = st.selectbox("자치구", list(seoul_gu_pool.values()), index=23)
+    gu_code = [k for k, v in seoul_gu_pool.items() if v == gu_name][0]
+    dong_name = st.selectbox("법정동", ["전체 (구 단위)"] + sorted(seoul_dong_pool.get(gu_code, [])))
+    
     col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("시작 월", datetime(2026, 1, 1))
-    with col2:
-        end_date = st.date_input("종료 월", datetime(2026, 5, 1))
-
+    with col1: start_date = st.date_input("시작 월", datetime(datetime.now().year, 1, 1))
+    with col2: end_date = st.date_input("종료 월", datetime(datetime.now().year, datetime.now().month, 1))
+    
     filter_text = st.text_input("필터 단어 (쉼표 구분)")
-
+    
     if st.button("✨ 부동산 데이터 대시보드 빌드", type="primary"):
-        # 기존에 구축했던 데이터 집계 및 openpyxl 기반 바이너리 압축 생성 로직 가동
-        # (생략된 세부 연산은 100% 동일하게 진행하여 아래 BytesIO 결과 반환)
-        st.success("데이터 추출 성공! 엑셀 파일 생성이 완료되었습니다.")
-        # st.download_button(...) 활용 출력
+        target_dong = "전체" if dong_name.startswith("전체") else dong_name
+        apt_filters = [t.strip() for t in filter_text.split(',')] if filter_text.strip() else []
+        
+        log_area = st.empty()
+        result_excel = None
+        
+        # 💡 [핵심 패치] 생략했던 엑셀 생성 반복문을 완벽히 복구했습니다!
+        for status, payload in generate_excel_data(rtms_key, gu_code, gu_name, target_dong, start_date, end_date, apt_filters):
+            if status == "progress":
+                with st.spinner(payload): pass
+            elif status == "log":
+                log_area.text_area("💻 실시간 데이터 분석 로그", payload, height=300)
+            elif status == "error":
+                st.error(f"🚫 오류 발생: {payload}")
+                st.stop()
+            elif status == "success":
+                result_excel = payload
+                
+        if result_excel:
+            st.success("데이터 추출 성공! 아래 버튼을 눌러 엑셀 파일을 다운로드하세요.")
+            st.download_button(
+                label="📥 엑셀 파일 다운로드",
+                data=result_excel["data"],
+                file_name=result_excel["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
