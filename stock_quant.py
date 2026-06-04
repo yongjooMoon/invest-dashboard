@@ -184,7 +184,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_disp, 
         use_container_width=True, 
         on_select="rerun", 
-        selection_mode="single_row"
+        selection_mode="single-row"
     )
     
     selected_indices = selection_event.get("selection", {}).get("rows", [])
