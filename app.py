@@ -6,7 +6,7 @@ import stock_quant
 
 # --- [1. Supabase 연동 설정] ---
 SUPABASE_URL = "https://unvcqrjzvtgtjovfyvow.supabase.co"
-SUPABASE_KEY = "sb_publishable_h6pGCCiC9n71So4ZesW4bQ_MNwKlI60"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVudmNxcmp6dnRndGpvdmZ5dm93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1NDM5MjEsImV4cCI6MjA5NjExOTkyMX0.XWhOYvFlO3z0lVU57tIjQDbGVUFyHTv3niLsV2ZUeJ4"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="토스 스타일 퀀트 대시보드", page_icon="✨", layout="wide")
