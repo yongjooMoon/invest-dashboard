@@ -21,13 +21,13 @@ if "api_keys" not in st.session_state:
 
 # --- [3. 로그인 전용 단일 UI (회원가입 삭제, 이메일 형식 해제)] ---
 if not st.session_state.logged_in:
-    st.title("✨ 토스 프랍 데스크")
+    st.title("✨ 투자 자산 대시보드")
     st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
     
     login_username = st.text_input("사용자 아이디 (Username)")
     login_pw = st.text_input("비밀번호 (Password)", type="password")
     
-    if st.button("보안 데이터베이스 로그인", type="primary"):
+    if st.button("로그인", type="primary"):
         if login_username.strip() == "" or login_pw.strip() == "":
             st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
         else:            
