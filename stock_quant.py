@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import re
 import html
-import json
 import FinanceDataReader as fdr
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -15,7 +14,6 @@ GLOBAL_MEGATRENDS = {
     "HBM": 3, "CXL": 3, "NPU": 3, "유리기판": 3, "MLCC": 3, "AI": 2, "로봇": 2
 }
 
-# --- 데이터 스크래핑 핵심 엔진 부활 ---
 def fetch_dynamic_company_bm(raw_code):
     url = f"https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?gicode=A{raw_code}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -107,6 +105,11 @@ def calculate_bm_score(fund_data, core_product, stock_name):
         
     return score, report
 
+def insert_log(supabase, username, module, summary, details):
+    supabase.table("user_logs").insert({
+        "username": username, "module": module, "summary": summary, "details": details
+    }).execute()
+
 # --- [메인 진입 페이지 함수] ---
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
     st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진")
@@ -116,208 +119,280 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df = fdr.StockListing('KRX')
         return {row['Name']: row['Code'] for _, row in df.iterrows()}
     krx_map = load_krx_mapping()
-    
-    # 1. 신규 자산 편입 시스템
-    with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1: s_name = st.selectbox("종목 선택", list(krx_map.keys()))
-        with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
-        with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
-        if st.button("장부 조율 및 매수 결제", type="primary"):
-            ticker = krx_map[s_name]
-            supabase.table("user_portfolio").upsert({
-                "username": username, "ticker": ticker, "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}
-            }).execute()
-            st.success(f"[{s_name}] 편입 완료!")
+
+    tab_port, tab_hist, tab_log = st.tabs(["💼 보유 자산", "📝 판매 내역", "⚙️ 엔진 기록"])
+
+    with tab_port:
+        # 1. 전역 동기화 버튼 (상단 배치)
+        st.write("⚡ **전체 자산 동기화 스위치**")
+        col_sync1, col_sync2, col_sync3 = st.columns(3)
+        
+        db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
+        portfolio_data = db_res.data
+
+        if col_sync1.button("🔄 전체 시세 갱신", use_container_width=True):
+            if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
+            with st.status("전체 종목 시세 트래킹 중...", expanded=True) as status:
+                for row in portfolio_data:
+                    st.write(f"[{row['name']}] 시세 수집 중...")
+                    df_p = fdr.DataReader(row['ticker'], start=(datetime.now() - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
+                    if not df_p.empty:
+                        cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
+                        cache['current_price'] = int(df_p['Close'].iloc[-1])
+                        cache['year_high'] = int(df_p['High'].max())
+                        prev_close = float(df_p['Close'].iloc[-2])
+                        cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
+                        
+                        total_multiplier = 1 + (cache.get('net_sentiment', 0) * 0.01) + (cache.get('bm_score', 0) * 0.02)
+                        cache['target_2026'] = int(cache['year_high'] * total_multiplier)
+                        if row['name'] in CORE_CONVICTION_ASSETS: cache['target_2026'] = CORE_CONVICTION_ASSETS[row['name']]
+                        
+                        supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
+                status.update(label="전체 시세 동기화 완료!", state="complete")
+            insert_log(supabase, username, "전역 동기화", f"{len(portfolio_data)}종목 시세 갱신", "주가 및 변동률 업데이트 성공")
             st.rerun()
 
-    # 2. DB 장부 데이터 불러오기 (캐시 데이터 기반 기동 -> 렉 원천 차단)
-    db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
-    portfolio_data = db_res.data
-    
-    if not portfolio_data:
-        st.info("현재 장부에 등록된 보유 주식이 없습니다.")
-        return
-        
-    total_invest = 0
-    total_value = 0
-    display_rows = []
-    
-    for row in portfolio_data:
-        ticker = row['ticker']
-        name = row['name']
-        b_price = row['buy_price']
-        s_qty = row['qty']
-        
-        # 캐시 데이터 추출 및 디폴트 빌드
-        cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
-        curr_price = cache.get('current_price', b_price)
-        day_pct = cache.get('pct_change', 0.0)
-        target_price = cache.get('target_2026', b_price)
-        
-        pnl_amt = (curr_price - b_price) * s_qty
-        pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
-        
-        total_invest += b_price * s_qty
-        total_value += curr_price * s_qty
-        
-        display_rows.append({
-            "종목명": name, "티커": ticker, "현재가": curr_price, "전일비(%)": day_pct,
-            "평단가": b_price, "수량": s_qty, "평가손익": pnl_amt, "수익률(%)": round(pnl_pct, 2),
-            "적정타깃가": target_price, "raw_data": row
-        })
-
-    # 전광판 출력
-    total_pnl = total_value - total_invest
-    total_pnl_pct = (total_pnl / total_invest) * 100 if total_invest > 0 else 0
-    c1, c2, c3 = st.columns(3)
-    c1.metric("투자 원금", f"{total_invest:,} 원")
-    c2.metric("평가 금액", f"{total_value:,} 원")
-    c3.metric("총 평가 손익", f"{total_pnl:,} 원", f"{total_pnl_pct:+.2f}%")
-    
-    # 💡 [핵심 패치] 드롭다운 삭제 및 로우(Row) 클릭 선택 제어부 가동
-    st.write("💡 아래의 표에서 **원하는 종목 줄(Row)을 클릭**하시면 수정/청산 및 심층 리포트가 열립니다.")
-    df_disp = pd.DataFrame(display_rows).drop(columns=["raw_data"])
-    
-    # 스트림릿 내장 로우 클릭 이벤트 캐치 프로토콜 (Streamlit 1.35.0+ 지원)
-    selection_event = st.dataframe(
-        df_disp, 
-        use_container_width=True, 
-        on_select="rerun", 
-        selection_mode="single-row"
-    )
-    
-    selected_indices = selection_event.get("selection", {}).get("rows", [])
-    
-    if selected_indices:
-        selected_idx = selected_indices[0]
-        selected_stock = display_rows[selected_idx]
-        s_name = selected_stock["종목명"]
-        s_ticker = selected_stock["티커"]
-        raw_row = selected_stock["raw_data"]
-        s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
-        
-        st.markdown(f"### 🛠️ [{s_name}] 장부 관리 및 실시간 동기화 데스크")
-        
-        # --- [A. 토스식 거래 트랜잭션 관리 단추 기동] ---
-        col_btn1, col_btn2, col_btn3 = st.columns(3)
-        with col_btn1:
-            with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
-                new_p = st.number_input("수정할 평단가", value=int(raw_row['buy_price']))
-                new_q = st.number_input("수정할 보유수량", value=int(raw_row['qty']))
-                if st.button("수정 장부 인가", key="btn_edit_confirm"):
-                    supabase.table("user_portfolio").update({"buy_price": new_p, "qty": new_q}).eq("id", raw_row['id']).execute()
-                    st.success("수정 완료!")
-                    st.rerun()
-        with col_btn2:
-            with st.popover("🛒 저점 분할 추가매수", use_container_width=True):
-                add_p = st.number_input("추가 매수가격", value=selected_stock["현재가"])
-                add_q = st.number_input("추가 매수수량", value=10)
-                if st.button("추가매수 체결", key="btn_buy_confirm"):
-                    current_total_cost = raw_row['buy_price'] * raw_row['qty']
-                    new_total_cost = current_total_cost + (add_p * add_q)
-                    new_qty = raw_row['qty'] + add_q
-                    new_avg_price = int(new_total_cost / new_qty)
-                    supabase.table("user_portfolio").update({"buy_price": new_avg_price, "qty": new_qty}).eq("id", raw_row['id']).execute()
-                    st.success("추가 매수 장부 합성 성공!")
-                    st.rerun()
-        with col_btn3:
-            with st.popover("❌ 자산 포지션 전체 청산(팔기)", use_container_width=True):
-                st.warning(f"정말로 [{s_name}] 자산을 전량 청산 처리하시겠습니까?")
-                if st.button("🚨 청산 최종 집행", key="btn_sell_confirm"):
-                    supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
-                    st.success("포지션 완전히 삭제됨.")
-                    st.rerun()
-
-        # --- [B. 동기화 스캔 스위치 단추 기동 (이전 Tkinter 기능 완벽 이식)] ---
-        st.write("⚡ **실시간 데이터 동기화 단추** (누를 때만 신선한 데이터를 가져와 DB에 저장합니다)")
-        s_col1, s_col2, s_col3 = st.columns(3)
-        
-        with s_col1:
-            if st.button("🔄 실시간 시세 갱신", use_container_width=True, key="sync_p"):
-                with st.spinner("시세 트래킹 중..."):
-                    df_p = fdr.DataReader(s_ticker, start=(datetime.now() - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
-                    if not df_p.empty:
-                        s_cache['current_price'] = int(df_p['Close'].iloc[-1])
-                        s_cache['year_high'] = int(df_p['High'].max())
-                        prev_close = float(df_p['Close'].iloc[-2])
-                        s_cache['pct_change'] = round(((s_cache['current_price'] - prev_close) / prev_close) * 100, 2)
-                        # 목표가 수식 재연산 적용
-                        total_multiplier = 1 + (s_cache.get('net_sentiment', 0) * 0.01) + (s_cache.get('bm_score', 0) * 0.02)
-                        s_cache['target_2026'] = int(s_cache['year_high'] * total_multiplier)
-                        if s_name in CORE_CONVICTION_ASSETS: s_cache['target_2026'] = CORE_CONVICTION_ASSETS[s_name]
-                        supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
-                        st.success("시세 동기화 완료!")
-                        st.rerun()
-                        
-        with s_col2:
-            if st.button("📰 실시간 뉴스 및 감성 스캔", use_container_width=True, key="sync_n"):
-                if not naver_id or not naver_secret: st.error("네이버 API 키가 없습니다."); st.stop()
-                with st.spinner("네이버 AI 뉴스 센티먼트 분석 중..."):
-                    score, net_sent, _, n_list = get_auto_momentum(s_name, naver_id, naver_secret)
-                    s_cache['score'] = score
-                    s_cache['net_sentiment'] = net_sent
-                    s_cache['news_list'] = n_list
-                    # 목표가 리밸런싱
-                    total_multiplier = 1 + (net_sent * 0.01) + (s_cache.get('bm_score', 0) * 0.02)
-                    s_cache['target_2026'] = int(s_cache.get('year_high', raw_row['buy_price']) * total_multiplier)
-                    if s_name in CORE_CONVICTION_ASSETS: s_cache['target_2026'] = CORE_CONVICTION_ASSETS[s_name]
-                    supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
-                    st.success("뉴스 스캔 가동 완료!")
-                    st.rerun()
+        if col_sync2.button("📰 전체 뉴스 스캔", use_container_width=True):
+            if not naver_id or not naver_secret: st.error("네이버 API 키가 없습니다."); st.stop()
+            if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
+            with st.status("전체 종목 네이버 AI 뉴스 스캔 중...", expanded=True) as status:
+                for row in portfolio_data:
+                    st.write(f"[{row['name']}] 감성 분석 중...")
+                    cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
+                    score, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
+                    cache['score'] = score
+                    cache['net_sentiment'] = net_sent
+                    cache['news_list'] = n_list
                     
-        with s_col3:
-            if st.button("📊 분기 실적 펀더멘탈 매핑", use_container_width=True, key="sync_b"):
-                with st.spinner("FnGuide 및 네이버 기업 구조 명세서 긁어오는 중..."):
-                    fund = fetch_naver_fundamentals(s_ticker)
-                    bm_list = fetch_dynamic_company_bm(s_ticker)
-                    core_prod = bm_list[0][1] if bm_list else "기반 사업"
-                    bm_score, bm_summary = calculate_bm_score(fund, core_prod, s_name)
-                    s_cache['bm_list'] = bm_list
-                    s_cache['bm_score'] = bm_score
-                    s_cache['bm_summary'] = bm_summary
-                    if fund:
-                        s_cache['q_headers'] = fund['q_headers']
-                        s_cache['q_revenues'] = fund['q_revenues']
-                        s_cache['q_op_profits'] = fund['q_op_profits']
-                        s_cache['summary'] = fund['summary']
-                    total_multiplier = 1 + (s_cache.get('net_sentiment', 0) * 0.01) + (bm_score * 0.02)
-                    s_cache['target_2026'] = int(s_cache.get('year_high', raw_row['buy_price']) * total_multiplier)
-                    if s_name in CORE_CONVICTION_ASSETS: s_cache['target_2026'] = CORE_CONVICTION_ASSETS[s_name]
-                    supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
-                    st.success("재무 명세 매핑 성공!")
-                    st.rerun()
+                    total_multiplier = 1 + (net_sent * 0.01) + (cache.get('bm_score', 0) * 0.02)
+                    cache['target_2026'] = int(cache.get('year_high', row['buy_price']) * total_multiplier)
+                    if row['name'] in CORE_CONVICTION_ASSETS: cache['target_2026'] = CORE_CONVICTION_ASSETS[row['name']]
+                    
+                    supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
+                status.update(label="전체 뉴스 스캔 완료!", state="complete")
+            insert_log(supabase, username, "뉴스 스캔", f"{len(portfolio_data)}종목 모멘텀 평가", "감성 점수 및 뉴스 리스트 업데이트 성공")
+            st.rerun()
 
-        # --- [C. 개별 심층 리포트 탭 렌더링 구동] ---
-        st.markdown(f"#### 🏢 [{s_name}] 프랍 데스크 심층 리포트")
-        t1, t2, t3 = st.tabs(["📉 가치평가 및 뉴스 연산식", "전방 사업 명세서", "📊 분기별 실적 트렌드 차트"])
+        if col_sync3.button("📊 전체 실적 매핑", use_container_width=True):
+            if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
+            with st.status("전체 종목 펀더멘탈 긁어오는 중...", expanded=True) as status:
+                for row in portfolio_data:
+                    st.write(f"[{row['name']}] 재무 명세 매핑 중...")
+                    cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
+                    fund = fetch_naver_fundamentals(row['ticker'])
+                    bm_list = fetch_dynamic_company_bm(row['ticker'])
+                    core_prod = bm_list[0][1] if bm_list else "기반 사업"
+                    bm_score, bm_summary = calculate_bm_score(fund, core_prod, row['name'])
+                    
+                    cache['bm_list'] = bm_list
+                    cache['bm_score'] = bm_score
+                    cache['bm_summary'] = bm_summary
+                    if fund:
+                        cache['q_headers'] = fund['q_headers']
+                        cache['q_revenues'] = fund['q_revenues']
+                        cache['q_op_profits'] = fund['q_op_profits']
+                        cache['summary'] = fund['summary']
+                        
+                    total_multiplier = 1 + (cache.get('net_sentiment', 0) * 0.01) + (bm_score * 0.02)
+                    cache['target_2026'] = int(cache.get('year_high', row['buy_price']) * total_multiplier)
+                    if row['name'] in CORE_CONVICTION_ASSETS: cache['target_2026'] = CORE_CONVICTION_ASSETS[row['name']]
+                    
+                    supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
+                status.update(label="전체 재무 명세 매핑 완료!", state="complete")
+            insert_log(supabase, username, "실적 매핑", f"{len(portfolio_data)}종목 펀더멘탈 분석", "분기 실적 및 BM 비중 업데이트 성공")
+            st.rerun()
+
+        st.divider()
+
+        # 2. 신규 자산 편입 시스템
+        with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1: s_name = st.selectbox("종목 선택", list(krx_map.keys()))
+            with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
+            with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
+            if st.button("장부 조율 및 매수 결제", type="primary"):
+                ticker = krx_map[s_name]
+                supabase.table("user_portfolio").upsert({
+                    "username": username, "ticker": ticker, "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}
+                }).execute()
+                insert_log(supabase, username, "신규 편입", f"[{s_name}] 매수", f"단가 {buy_p}원, 수량 {qty}주")
+                st.success(f"[{s_name}] 편입 완료!")
+                st.rerun()
+
+        if not portfolio_data:
+            st.info("현재 장부에 등록된 보유 주식이 없습니다.")
+            return
+
+        total_invest, total_value = 0, 0
+        display_rows = []
         
-        with t1:
-            st.markdown(f"**• 앵커 밸류에이션 (1년 최고가):** `{s_cache.get('year_high', raw_row['buy_price']):,}`원")
-            st.markdown(f"**• 뉴스 감성 모멘텀 가중:** `{s_cache.get('net_sentiment', 0):+}` 점")
-            st.markdown(f"**• 산업 사이클 점수 가중:** `{s_cache.get('bm_score', 0):+}` 점")
-            st.markdown(f"**🚀 최종 적정 타깃 목표가:** `{selected_stock['적정타깃가']}`원")
+        for row in portfolio_data:
+            ticker = row['ticker']
+            name = row['name']
+            b_price = row['buy_price']
+            s_qty = row['qty']
             
-            st.write("**📰 실시간 추적 뉴스 명세 링크**")
-            for idx, news in enumerate(s_cache.get('news_list', []), 1):
-                st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
-                
-        with t2:
-            st.write(f"**📢 기업 개요 및 코멘트:** {s_cache.get('summary', '재무 매핑을 먼저 실행해 주세요.')}")
-            st.write(f"**• 실적 사이클 평가 요약:** {s_cache.get('bm_summary', '-')}")
-            if s_cache.get('bm_list'):
-                st.table(pd.DataFrame(s_cache['bm_list'], columns=["사업부문", "주요품목", "구분", "비중(%)"]))
-                
-        with t3:
-            if s_cache.get('q_headers') and len(s_cache['q_headers']) >= 2:
-                fig, ax1 = plt.subplots(figsize=(10, 4.5))
-                ax1.set_facecolor('#FFFFFF')
-                ax1.bar(s_cache['q_headers'], s_cache['q_revenues'], color='#3182F6', alpha=0.8, width=0.3, label="매출액(억)")
-                ax1.set_ylabel('매출액', color='#8B95A1')
-                ax2 = ax1.twinx()
-                ax2.plot(s_cache['q_headers'], s_cache['q_op_profits'], color='#F04452', marker='o', linewidth=3, markersize=8, label="영업이익(억)")
-                ax2.set_ylabel('영업이익', color='#8B95A1')
-                ax2.axhline(0, color='#8B95A1', linewidth=1, linestyle='--')
-                st.pyplot(fig)
-            else:
-                st.info("실적 차트 시각화 데이터가 부족합니다. [분기 실적 펀더멘탈 매핑] 단추를 눌러주세요.")
+            cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
+            curr_price = cache.get('current_price', b_price)
+            day_pct = cache.get('pct_change', 0.0)
+            target_price = cache.get('target_2026', b_price)
+            
+            # 모멘텀 상태 강세/보합/약세 텍스트 생성 부활
+            net_sent = cache.get('net_sentiment', 0)
+            bm_scr = cache.get('bm_score', 0)
+            status_text = "강세🔥" if (net_sent + bm_scr) > 1 else ("약세❄️" if (net_sent + bm_scr) < -1 else "보합➖")
+            
+            pnl_amt = (curr_price - b_price) * s_qty
+            pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
+            
+            total_invest += b_price * s_qty
+            total_value += curr_price * s_qty
+            
+            display_rows.append({
+                "종목명": name, "티커": ticker, "현재가": curr_price, "전일비(%)": day_pct,
+                "평단가": b_price, "수량": s_qty, "평가손익": pnl_amt, "수익률(%)": round(pnl_pct, 2),
+                "적정타깃가": target_price, "모멘텀": status_text, "raw_data": row
+            })
+
+        total_pnl = total_value - total_invest
+        total_pnl_pct = (total_pnl / total_invest) * 100 if total_invest > 0 else 0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("투자 원금", f"{total_invest:,} 원")
+        c2.metric("평가 금액", f"{total_value:,} 원")
+        c3.metric("총 평가 손익", f"{total_pnl:,} 원", f"{total_pnl_pct:+.2f}%")
+        
+        st.write("💡 아래의 표에서 **원하는 종목 줄(Row)을 클릭**하시면 수정/청산 및 심층 리포트가 열립니다.")
+        df_disp = pd.DataFrame(display_rows).drop(columns=["raw_data", "티커"])
+        
+        selection_event = st.dataframe(
+            df_disp, 
+            use_container_width=True, 
+            on_select="rerun", 
+            selection_mode="single-row"
+        )
+        
+        selected_indices = selection_event.get("selection", {}).get("rows", [])
+        
+        if selected_indices:
+            selected_idx = selected_indices[0]
+            selected_stock = display_rows[selected_idx]
+            s_name = selected_stock["종목명"]
+            raw_row = selected_stock["raw_data"]
+            s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
+            
+            st.markdown(f"### 🛠️ [{s_name}] 장부 관리 및 심층 리포트")
+            
+            # --- [장부 수정 및 정밀 매도 로직] ---
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            with col_btn1:
+                with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
+                    new_p = st.number_input("수정할 평단가", value=int(raw_row['buy_price']))
+                    new_q = st.number_input("수정할 보유수량", value=int(raw_row['qty']))
+                    if st.button("수정 장부 인가", key="btn_edit_confirm"):
+                        supabase.table("user_portfolio").update({"buy_price": new_p, "qty": new_q}).eq("id", raw_row['id']).execute()
+                        insert_log(supabase, username, "장부 수정", f"[{s_name}] 수정", f"평단가 {new_p} / 수량 {new_q}")
+                        st.success("수정 완료!")
+                        st.rerun()
+            with col_btn2:
+                with st.popover("🛒 분할 추가매수", use_container_width=True):
+                    add_p = st.number_input("추가 매수가격", value=selected_stock["현재가"])
+                    add_q = st.number_input("추가 매수수량", value=10)
+                    if st.button("추가매수 체결", key="btn_buy_confirm"):
+                        current_total_cost = raw_row['buy_price'] * raw_row['qty']
+                        new_total_cost = current_total_cost + (add_p * add_q)
+                        new_qty = raw_row['qty'] + add_q
+                        new_avg_price = int(new_total_cost / new_qty)
+                        supabase.table("user_portfolio").update({"buy_price": new_avg_price, "qty": new_qty}).eq("id", raw_row['id']).execute()
+                        insert_log(supabase, username, "추가 매수", f"[{s_name}] {add_q}주 추매", f"단가 {add_p}원")
+                        st.success("추가 매수 장부 합성 성공!")
+                        st.rerun()
+            with col_btn3:
+                with st.popover("❌ 자산 매도(청산)", use_container_width=True):
+                    st.write(f"현재 보유 수량: **{raw_row['qty']}주** (평단가: {raw_row['buy_price']}원)")
+                    sell_p = st.number_input("매도 단가", value=selected_stock["현재가"])
+                    sell_q = st.number_input("매도 수량", min_value=1, max_value=raw_row['qty'], value=raw_row['qty'])
+                    if st.button("🚨 매도 집행", key="btn_sell_confirm"):
+                        profit_amt = (sell_p - raw_row['buy_price']) * sell_q
+                        profit_pct = round(((sell_p - raw_row['buy_price']) / raw_row['buy_price']) * 100, 2)
+                        
+                        # 히스토리에 기록 남기기
+                        supabase.table("user_history").insert({
+                            "username": username, "ticker": raw_row['ticker'], "name": s_name,
+                            "buy_price": raw_row['buy_price'], "sell_price": sell_p, "qty": sell_q,
+                            "profit_amt": profit_amt, "profit_pct": profit_pct
+                        }).execute()
+                        
+                        # 전부 매도하면 삭제, 아니면 수량 감소
+                        if sell_q == raw_row['qty']:
+                            supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
+                        else:
+                            supabase.table("user_portfolio").update({"qty": raw_row['qty'] - sell_q}).eq("id", raw_row['id']).execute()
+                            
+                        insert_log(supabase, username, "자산 매도", f"[{s_name}] {sell_q}주 매도", f"수익 {profit_amt}원 ({profit_pct}%)")
+                        st.success("성공적으로 청산 및 내역 기록되었습니다.")
+                        st.rerun()
+
+            st.divider()
+            
+            # --- [개별 심층 리포트 출력] ---
+            t1, t2, t3 = st.tabs(["📉 가치평가 및 뉴스", "📰 전방 사업 명세", "📊 실적 트렌드 차트"])
+            with t1:
+                st.markdown(f"**• 앵커 밸류에이션 (1년 최고가):** `{s_cache.get('year_high', raw_row['buy_price']):,}`원")
+                st.markdown(f"**• 뉴스 감성 모멘텀 가중:** `{s_cache.get('net_sentiment', 0):+}` 점")
+                st.markdown(f"**• 산업 사이클 점수 가중:** `{s_cache.get('bm_score', 0):+}` 점")
+                st.markdown(f"**🚀 최종 적정 타깃 목표가:** `{selected_stock['적정타깃가']:,}`원")
+                st.write("**실시간 추적 뉴스**")
+                for idx, news in enumerate(s_cache.get('news_list', []), 1):
+                    st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
+                    
+            with t2:
+                st.write(f"**📢 기업 개요:** {s_cache.get('summary', '실적 매핑을 먼저 실행해 주세요.')}")
+                st.write(f"**• 실적 사이클:** {s_cache.get('bm_summary', '-')}")
+                if s_cache.get('bm_list'):
+                    st.table(pd.DataFrame(s_cache['bm_list'], columns=["사업부문", "주요품목", "구분", "비중(%)"]))
+                    
+            with t3:
+                if s_cache.get('q_headers') and len(s_cache['q_headers']) >= 2:
+                    fig, ax1 = plt.subplots(figsize=(10, 4.5))
+                    ax1.set_facecolor('#FFFFFF')
+                    ax1.bar(s_cache['q_headers'], s_cache['q_revenues'], color='#3182F6', alpha=0.8, width=0.3, label="매출액(억)")
+                    ax1.set_ylabel('매출액', color='#8B95A1')
+                    ax2 = ax1.twinx()
+                    ax2.plot(s_cache['q_headers'], s_cache['q_op_profits'], color='#F04452', marker='o', linewidth=3, markersize=8, label="영업이익(억)")
+                    ax2.set_ylabel('영업이익', color='#8B95A1')
+                    ax2.axhline(0, color='#8B95A1', linewidth=1, linestyle='--')
+                    st.pyplot(fig)
+                else:
+                    st.info("실적 차트 데이터가 부족합니다.")
+
+    with tab_hist:
+        st.subheader("📝 자산 매도(청산) 히스토리")
+        hist_res = supabase.table("user_history").select("*").eq("username", username).order("created_at", desc=True).execute()
+        if not hist_res.data:
+            st.info("아직 자산 매도 내역이 없습니다.")
+        else:
+            total_realized = sum([r['profit_amt'] for r in hist_res.data])
+            win_count = sum([1 for r in hist_res.data if r['profit_amt'] > 0])
+            win_rate = (win_count / len(hist_res.data)) * 100
+            
+            h1, h2 = st.columns(2)
+            h1.metric("누적 실현 손익", f"{total_realized:,} 원")
+            h2.metric("매매 승률", f"{win_rate:.1f} %")
+            
+            df_hist = pd.DataFrame(hist_res.data)
+            df_hist['created_at'] = pd.to_datetime(df_hist['created_at']).dt.strftime('%Y-%m-%d %H:%M')
+            df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
+            df_hist.columns = ['매도일시', '종목명', '진입가', '청산가', '수량', '실현손익', '수익률(%)']
+            st.dataframe(df_hist, use_container_width=True)
+
+    with tab_log:
+        st.subheader("⚙️ 시스템 엔진 처리 기록")
+        log_res = supabase.table("user_logs").select("*").eq("username", username).order("created_at", desc=True).execute()
+        if not log_res.data:
+            st.info("시스템 처리 기록이 없습니다.")
+        else:
+            df_log = pd.DataFrame(log_res.data)
+            df_log['created_at'] = pd.to_datetime(df_log['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            df_log = df_log[['created_at', 'module', 'summary', 'details']]
+            df_log.columns = ['시간', '모듈', '요약', '상세내역']
+            st.dataframe(df_log, use_container_width=True)
