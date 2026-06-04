@@ -6,4 +6,4 @@ pandas
 numpy
 beautifulsoup4
 matplotlib
-FinanceDataReader
+finance-datareader
