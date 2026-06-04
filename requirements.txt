@@ -1,0 +1,9 @@
+streamlit
+supabase
+requests
+openpyxl
+pandas
+numpy
+beautifulsoup4
+matplotlib
+FinanceDataReader
