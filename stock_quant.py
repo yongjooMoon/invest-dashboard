@@ -10,9 +10,10 @@ import threading
 import time
 
 # --- 팩터 마스터 프리미엄 사전 설정 ---
-# 산업 사이클에 따른 PER(멀티플) 할증 부여 매트릭스
+# 산업 사이클에 따른 '멀티플 할증률(%)' 매트릭스 (기존 단순 점수 합산에서 비율 곱연산으로 진화)
 GLOBAL_MEGATRENDS = {
-    "HBM": 3.0, "CXL": 2.5, "NPU": 2.5, "유리기판": 2.0, "MLCC": 1.5, "AI": 1.5, "로봇": 1.5, "반도체": 2.0
+    "HBM": 0.40, "CXL": 0.30, "NPU": 0.30, "AI": 0.25, 
+    "MLCC": 0.25, "전력반도체": 0.20, "로봇": 0.20, "방산": 0.15
 }
 
 _active_threads = {}
@@ -48,7 +49,7 @@ def fetch_naver_fundamentals(raw_code):
             try: return float(txt.replace(',','').strip())
             except: return 0.0
 
-        val_data = {'per': 10.0, 'eps': 0.0, 'pbr': 1.0, 'bps': 0.0}
+        val_data = {'per': 10.0, 'eps': 0.0, 'pbr': 1.0, 'bps': 0.0, 'roe': 5.0}
         try:
             val_data['per'] = parse_num(soup.select_one('#_per').text) if soup.select_one('#_per') else 10.0
             val_data['eps'] = parse_num(soup.select_one('#_eps').text) if soup.select_one('#_eps') else 0.0
@@ -94,18 +95,17 @@ def get_auto_momentum(stock_name, client_id, client_secret):
             headline = html.unescape(re.compile('<.*?>').sub('', item['title'])).strip()
             news_list.append({"title": headline, "link": item.get('originallink', item['link'])})
             combined_text = headline.upper()
-            for pw in ['수주', '흑자', '돌파', 'AI', '최대', '공급', '계약', '성장']:
+            for pw in ['수주', '흑자', '돌파', 'AI', '최대', '공급', '계약', '성장', '수혜']:
                 if pw in combined_text: pos_count += 1
-            for nw in ['하락', '적자', '취소', '우려', '부진', '위기', '손실']:
+            for nw in ['하락', '적자', '취소', '우려', '부진', '위기', '손실', '철수']:
                 if nw in combined_text: neg_count += 1
                 
         net_sentiment = pos_count - neg_count
         return 0, net_sentiment, news_list[0]['title'][:25] + "...", news_list
     except: return 0, 0, "네트워크 오류", []
 
-def calculate_bm_score(fund_data, core_product, stock_name):
-    # 재무/실적 모멘텀이 PER에 미칠 영향(가중치) 계산
-    per_adjustment = 0.0
+def calculate_bm_score(fund_data):
+    growth_multiplier = 1.0
     report = ""
     if fund_data:
         q_revs = fund_data.get('q_revenues', [])
@@ -116,15 +116,16 @@ def calculate_bm_score(fund_data, core_product, stock_name):
             qoq = ((last_rev - prev_rev) / abs(prev_rev)) * 100 if prev_rev != 0 else 0
             margin = (last_op / last_rev) * 100 if last_rev != 0 else 0
             
-            if qoq >= 10: per_adjustment += 1.0
-            if margin >= 10: per_adjustment += 1.5  
-            if prev_op < 0 and last_op > 0: per_adjustment += 2.0; report += "🔥 [분기 흑자전환 턴어라운드] "
+            # 실적 턴어라운드 및 이익률 우수 시 EPS 추정치 할증 (+5% ~ +15%)
+            if qoq >= 10: growth_multiplier += 0.05
+            if margin >= 10: growth_multiplier += 0.05  
+            if prev_op < 0 and last_op > 0: growth_multiplier += 0.10; report += "🔥 [분기 흑자전환 모멘텀] "
             report += f"최근 매출 {int(last_rev):,}억 (QoQ {qoq:+.1f}%) / 영업이익 {int(last_op):,}억 (OPM {margin:.1f}%)"
             
-    return per_adjustment, report
+    return growth_multiplier, report
 
 def fetch_global_macro_factor():
-    macro_per_adjust = 0.0 # 환율이 PER에 미치는 기본 가감점
+    macro_multiplier = 1.0 # 1.0 = 중립, 환율에 따라 Target PER을 깎거나 높이는 비율 연산자
     current_usd = 1541.6  
     환율상태 = "정상"
     
@@ -135,72 +136,91 @@ def fetch_global_macro_factor():
             usd_ma20 = round(float(df_usd['Close'].rolling(20).mean().iloc[-1]), 1) if len(df_usd) >= 20 else current_usd
             
             if current_usd >= 1400:
-                macro_per_adjust -= 2.0 # 고환율 시 시장 멀티플 강제 축소
-                환율상태 = f"🚨 매크로 붕괴 구간 ({current_usd}원)"
+                macro_multiplier = 0.90 # 고환율 시 시장 멀티플 전체 10% 강제 축소
+                환율상태 = f"🚨 매크로 유동성 축소 ({current_usd}원)"
             elif current_usd > usd_ma20:
-                macro_per_adjust -= 0.5  
-                환율상태 = f"⚠️ 변동성 확대 ({current_usd}원)"
+                macro_multiplier = 0.95  
+                환율상태 = f"⚠️ 변동성 경계 ({current_usd}원)"
             else:
-                macro_per_adjust += 1.0  
+                macro_multiplier = 1.05  
                 환율상태 = f"🍏 매크로 훈풍 ({current_usd}원)"
     except:
         환율상태 = "⚠️ 센서 지연"
         
-    return macro_per_adjust, current_usd, 환율상태
+    return macro_multiplier, current_usd, 환율상태
 
-# 👍 [v7 완전 개편] Forward EPS × Dynamic Target PER 정통 밸류에이션 모델
-def calculate_intrinsic_target(row, cache, macro_per_adjust=0.0):
+# 👍 [v8 궁극의 완성본] Forward EPS × 동적 업종 Target PER (사이클 할증 융합 모델)
+def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     name = row['name']
     eps = cache.get('eps', 0.0)
     bps = cache.get('bps', 0.0)
     current_price = cache.get('current_price', row['buy_price'])
     
-    # 1. Base Multiple 세팅
-    base_per = 12.0 if any(k in name for k in ["전자", "하이닉스", "전선", "로보", "테스"]) else 10.0
+    # 1. 업종별 Base PER / PBR 세팅 (현재 시장 PER이 아닌 섹터 평균 펀더멘탈 기준)
+    base_per = 10.0
     base_pbr = 1.0
+    is_exporter = False
     
-    # 2. 메가트렌드(산업 사이클) PER 할증 연산
-    megatrend_per_add = 0.0
+    if any(k in name for k in ["전자", "하이닉스", "전선", "로보", "테스", "광전자"]):
+        base_per = 14.0 # 반도체/IT 장비 섹터 기본 멀티플
+        base_pbr = 1.5
+        is_exporter = True
+    elif "삼화콘덴서" in name or "전기" in name or "MLCC" in name:
+        base_per = 15.0 # 전장용 부품/IT 하드웨어 프리미엄
+        base_pbr = 1.8
+        is_exporter = True
+    elif any(k in name for k in ["증권", "생명", "금융", "은행", "지주"]):
+        base_per = 6.0  # 금융/지주사 디스카운트 반영
+        base_pbr = 0.5
+    elif "벤처" in name or "창투" in name:
+        base_per = 8.0
+        base_pbr = 1.0
+
+    # 2. 미래 사이클(Megatrend) 성장성 프리미엄 산출 (곱연산)
+    megatrend_premium = 1.0
     summary_text = cache.get('summary', '') + cache.get('bm_summary', '')
-    for trend, score in GLOBAL_MEGATRENDS.items():
+    applied_trends = []
+    
+    for trend, ratio in GLOBAL_MEGATRENDS.items():
         if trend in name or trend in summary_text:
-            megatrend_per_add += score
-            break # 중복 할증 방지
+            megatrend_premium += ratio # 예: HBM(0.4) + AI(0.25) = 1.65 (65% 멀티플 할증)
+            applied_trends.append(trend)
+            break # 과도한 중복 할증 방지를 위해 주력 키워드 1개만 반영
             
-    # 3. 실적 턴어라운드 및 모멘텀 PER 조정
-    bm_per_adjust = cache.get('bm_score', 0.0)
-    sentiment_per_adjust = cache.get('net_sentiment', 0) * 0.3 # 긍정 기사당 0.3배 프리미엄 부여
+    # 3. 단기 뉴스 센티멘탈 보정 (최대 ±10% 로 강한 제한)
+    net_sent = cache.get('net_sentiment', 0)
+    sentiment_premium = 1.0 + max(-0.10, min(net_sent * 0.02, 0.10))
     
-    # 4. 섹터별 매크로(환율) 차별화 타겟팅
-    is_exporter = any(keyword in name for keyword in ["전자", "하이닉스", "전선", "로보", "테스", "광전자", "삼화"])
-    final_macro_adjust = macro_per_adjust if not is_exporter else (abs(macro_per_adjust) * 0.5) # 수출주는 고환율 디스카운트 상쇄
+    # 4. 섹터별 매크로(환율) 차별화 타겟팅 (수출주는 고환율 디스카운트 상쇄)
+    final_macro_multiplier = macro_multiplier if not is_exporter else 1.05
     
-    # 🎯 최종 동적 배수(Dynamic Multiple) 산출
-    target_per = base_per + megatrend_per_add + bm_per_adjust + sentiment_per_adjust + final_macro_adjust
-    target_pbr = base_pbr + (megatrend_per_add * 0.1) + (bm_per_adjust * 0.1) + (sentiment_per_adjust * 0.05)
+    # 🎯 최종 동적 배수(Dynamic Target PER) = 기본 PER × 성장프리미엄 × 센티멘탈 × 매크로
+    target_per = base_per * megatrend_premium * sentiment_premium * final_macro_multiplier
+    target_pbr = base_pbr * megatrend_premium * sentiment_premium * final_macro_multiplier
     
-    # 비이성적 과열 및 공포 방지를 위한 락(Lock)
-    target_per = max(6.0, min(target_per, 25.0))
-    target_pbr = max(0.4, min(target_pbr, 3.0))
+    # 5. 2026년 추정 Forward 실적 계산
+    bm_growth_factor = cache.get('bm_growth_factor', 1.10) # 기본 10% 턴어라운드율
     
     final_target = current_price
     used_multiple = target_per
     
-    # 5. Forward 실적 기반 적정가 연산
     if eps > 0:
-        # 흑자 기업: 2026 Forward EPS 추정 (보수적 연 10% 성장 가정 = 2년 약 21% 할증)
-        forward_eps = eps * 1.21
+        # TTM EPS에 연평균 15% 성장 (2년 복리) + BM 실적 가중치를 곱해 2026년 EPS 추정
+        forward_eps = eps * ((1.15 * bm_growth_factor) ** 2)
         final_target = forward_eps * target_per
     elif bps > 0:
-        # 적자 기업 (예: 다운사이클 반도체): Forward BPS 기반 PBR 밸류에이션 스위칭
-        forward_bps = bps * 1.05
+        # 반도체 적자 사이클 등 EPS 붕괴 시, BPS 자본 밸류에이션(Forward PBR)으로 자동 안전 스위칭
+        forward_bps = bps * ((1.05 * bm_growth_factor) ** 2)
         final_target = forward_bps * target_pbr
         used_multiple = target_pbr
+    else:
+        # 재무 지표 아예 없는 경우 최후의 방어선 (과거 고가 대비 회복률)
+        final_target = cache.get('year_high', current_price) * 0.8 
 
-    # 극단적인 왜곡 방지 (현 주가 대비 -30% ~ +250% 밴드 내 수렴)
-    final_target = max(current_price * 0.70, min(final_target, current_price * 3.50))
+    # 극단적 상하방 캡(Cap) 적용 방어막
+    final_target = max(current_price * 0.50, min(final_target, current_price * 4.00))
     
-    return int(final_target), round(used_multiple, 2)
+    return int(final_target), round(used_multiple, 2), applied_trends
 
 def insert_log(supabase, username, module, summary, details):
     try:
@@ -218,7 +238,7 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
             if last_sync_minute != current_min_stamp:
                 last_sync_minute = current_min_stamp
                 try:
-                    macro_per_adjust, _, _ = fetch_global_macro_factor()
+                    macro_mult, _, _ = fetch_global_macro_factor()
                     db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
                     portfolio_data = db_res.data
                     if portfolio_data:
@@ -230,6 +250,7 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                 cache['current_price'] = int(df_p['Close'].iloc[-1])
                                 prev_close = float(df_p['Close'].iloc[-2])
                                 cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
+                                cache['year_high'] = int(df_p['High'].max())
                             
                             _, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
                             cache['net_sentiment'] = net_sent
@@ -247,15 +268,15 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                 cache['summary'] = fund.get('summary', '')
                                 
                                 bm_list = fetch_dynamic_company_bm(row['ticker'])
-                                core_prod = bm_list[0][1] if bm_list else "기반 사업"
-                                bm_score, bm_summary = calculate_bm_score(fund, core_prod, row['name'])
+                                growth_factor, bm_summary = calculate_bm_score(fund)
                                 cache['bm_list'] = bm_list
-                                cache['bm_score'] = bm_score
+                                cache['bm_growth_factor'] = growth_factor
                                 cache['bm_summary'] = bm_summary
                             
-                            target_price, target_multiple = calculate_intrinsic_target(row, cache, macro_per_adjust)
+                            target_price, target_multiple, applied_trends = calculate_intrinsic_target(row, cache, macro_mult)
                             cache['target_2026'] = target_price
                             cache['target_multiple'] = target_multiple
+                            cache['applied_trends'] = applied_trends
                             
                             supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
                 except Exception as e: pass
@@ -263,7 +284,7 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
 
 
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진 (Premium v7)")
+    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진 (Premium v8)")
     
     if username not in _active_threads:
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
@@ -276,20 +297,20 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         krx_map = {row['Name']: row['Code'] for _, row in df_k.iterrows()}
     except: pass
 
-    macro_per_adjust, current_usd, 환율상태 = fetch_global_macro_factor()
+    macro_mult, current_usd, 환율상태 = fetch_global_macro_factor()
     
     with st.container(border=True):
-        st.markdown("##### 🌐 GLOBAL MACRO FLOW (매크로 멀티플 레이더)")
+        st.markdown("##### 🌐 GLOBAL MACRO FLOW (매크로 유동성 레이더)")
         m_col1, m_col2 = st.columns(2)
         with m_col1:
             st.metric("원/달러 환율 국면", 환율상태, delta="외국인 패시브 수급 불안" if current_usd >= 1400 else "수급 안정 구역", delta_color="inverse")
         with m_col2:
-            st.metric("시장 기본 PER 조정폭", f"{macro_per_adjust:+.1f}x", delta="섹터별 멀티플 자동 차등 적용 중")
+            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="수출/내수 차등 할인 및 프리미엄 적용 중")
 
     tab_port, tab_hist, tab_log = st.tabs(["💼 포트폴리오 자산", "📝 가치 실현 내역", "⚙️ 시스템 가동 로그"])
 
     with tab_port:
-        st.write("⚡ **Forward EPS 밸류에이션 제어판**")
+        st.write("⚡ **Forward EPS 리레이팅(Re-rating) 제어판**")
         col_sync1, col_sync2, col_sync3 = st.columns(3)
         
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
@@ -297,12 +318,13 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         if col_sync1.button("🔄 가치 밸류에이션 전면 재연산", width="stretch"):
             if not portfolio_data: st.stop()
-            with st.status("Forward EPS × Dynamic PER 정통 밸류에이션 구동 중...", expanded=True) as status:
+            with st.status("Forward EPS × Dynamic Target PER 정통 밸류에이션 구동 중...", expanded=True) as status:
                 for row in portfolio_data:
                     df_p = fdr.DataReader(row['ticker'], start=(datetime.utcnow() - timedelta(days=7)).strftime('%Y-%m-%d'))
                     if not df_p.empty:
                         cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                         cache['current_price'] = int(df_p['Close'].iloc[-1])
+                        cache['year_high'] = int(df_p['High'].max())
                         prev_close = float(df_p['Close'].iloc[-2])
                         cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
                         
@@ -313,22 +335,23 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                             cache['bps'] = fund.get('bps', 0)
                             cache['pbr'] = fund.get('pbr', 1)
                             
-                        target_price, target_multiple = calculate_intrinsic_target(row, cache, macro_per_adjust)
+                        target_price, target_multiple, applied_trends = calculate_intrinsic_target(row, cache, macro_mult)
                         cache['target_2026'] = target_price
                         cache['target_multiple'] = target_multiple
+                        cache['applied_trends'] = applied_trends
                         supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
                 status.update(label="미래 실적 추정 및 동적 멀티플 맵핑 완료!", state="complete")
             st.rerun()
 
-        if col_sync2.button("📰 멀티플 뉴스 조정", width="stretch"):
+        if col_sync2.button("📰 센티멘탈 보정", width="stretch"):
             if not portfolio_data: st.stop()
-            with st.status("뉴스 센티멘탈을 PER에 반영 중..."):
+            with st.status("뉴스 센티멘탈을 PER 할증률에 한정 적용 중..."):
                 for row in portfolio_data:
                     cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                     _, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
                     cache['net_sentiment'] = net_sent
                     cache['news_list'] = n_list
-                    target_price, target_multiple = calculate_intrinsic_target(row, cache, macro_per_adjust)
+                    target_price, target_multiple, _ = calculate_intrinsic_target(row, cache, macro_mult)
                     cache['target_2026'] = target_price
                     cache['target_multiple'] = target_multiple
                     supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
@@ -336,13 +359,11 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         if col_sync3.button("📊 실적 턴어라운드 탐지", width="stretch"):
             if not portfolio_data: st.stop()
-            with st.status("BM 팩터 및 재무 모멘텀 스코어링..."):
+            with st.status("Forward EPS 성장을 위한 BM 팩터 스코어링..."):
                 for row in portfolio_data:
                     cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                     fund = fetch_naver_fundamentals(row['ticker'])
                     bm_list = fetch_dynamic_company_bm(row['ticker'])
-                    core_prod = bm_list[0][1] if bm_list else "기반 사업"
-                    bm_score, bm_summary = calculate_bm_score(fund, core_prod, row['name'])
                     
                     if fund:
                         cache['eps'] = fund.get('eps', 0)
@@ -354,10 +375,12 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         cache['q_op_profits'] = fund.get('q_op_profits', [])
                         cache['summary'] = fund.get('summary', '')
                         
+                    growth_factor, bm_summary = calculate_bm_score(fund)
                     cache['bm_list'] = bm_list
-                    cache['bm_score'] = bm_score
+                    cache['bm_growth_factor'] = growth_factor
                     cache['bm_summary'] = bm_summary
-                    target_price, target_multiple = calculate_intrinsic_target(row, cache, macro_per_adjust)
+                    
+                    target_price, target_multiple, _ = calculate_intrinsic_target(row, cache, macro_mult)
                     cache['target_2026'] = target_price
                     cache['target_multiple'] = target_multiple
                     supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
@@ -384,24 +407,27 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             target_price = cache.get('target_2026', b_price)
             target_multiple = cache.get('target_multiple', 10.0)
             eps = cache.get('eps', 0.0)
+            applied_trends = cache.get('applied_trends', [])
             
             pnl_amt = (curr_price - b_price) * s_qty
             pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
             
-            # 동적 멀티플 대비 현재가 수준 판단
+            # 동적 Target 가격 대비 현재가 수렴률 평가
             val_ratio = curr_price / target_price if target_price > 0 else 1.0
             status_emoji = ""
             if val_ratio < 0.5: status_emoji = "🛒 멀티플 극저평가 (강력매수)"
-            elif val_ratio < 0.75: status_emoji = "🔵 안전마진 확보 구간"
-            elif val_ratio < 0.95: status_emoji = "🟢 2026 적정가치 수렴 중"
-            else: status_emoji = "🎯 목표 멀티플 도달 (비중축소)"
+            elif val_ratio < 0.75: status_emoji = "🔵 리레이팅 진입 전 안전마진 확보"
+            elif val_ratio < 0.95: status_emoji = "🟢 2026 Forward 가치 수렴 중"
+            else: status_emoji = "🎯 사이클 고점 타깃 도달 (비중축소 고려)"
             
             total_invest += b_price * s_qty
             total_value += curr_price * s_qty
             
+            trend_display = f"[{applied_trends[0]}] " if applied_trends else ""
+            
             display_rows.append({
                 "밸류에이션 상태": status_emoji, 
-                "기업명": name, 
+                "기업명": trend_display + name, 
                 "현재가": curr_price, 
                 "전일비": day_pct,
                 "평단가": b_price, 
@@ -424,14 +450,14 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_base = pd.DataFrame(display_rows)
         df_disp = pd.DataFrame()
         df_disp["상태"] = df_base["밸류에이션 상태"]
-        df_disp["기업명"] = df_base["기업명"]
+        df_disp["기업명 (프리미엄 섹터)"] = df_base["기업명"]
         df_disp["현재가"] = df_base["현재가"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["전일비(%)"] = df_base["전일비"].apply(lambda x: f"{x:+.2f}%")
         df_disp["평단가"] = df_base["평단가"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["수익률(%)"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
         df_disp["평가손익"] = df_base["평가손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
-        df_disp["2026 적정가(FWD)"] = df_base["2026 Target"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp["동적 배수"] = df_base.apply(lambda r: f"🎯 {r['적용배수']}x ({r['기반지표']})", axis=1)
+        df_disp["2026 목표가(FWD)"] = df_base["2026 Target"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["2026 동적 배수"] = df_base.apply(lambda r: f"🎯 {r['적용배수']}x ({r['기반지표']})", axis=1)
 
         def style_mts_color(row):
             styles = [''] * len(row)
@@ -460,12 +486,12 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         if selected_indices:
             selected_idx = selected_indices[0]
             selected_stock = display_rows[selected_idx]
-            s_name = selected_stock["기업명"]
+            s_name = selected_stock["기업명"].split("] ")[-1] if "] " in selected_stock["기업명"] else selected_stock["기업명"]
             raw_row = selected_stock["raw_data"]
             s_ticker = raw_row['ticker']
             s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
             
-            st.markdown(f"### 🛠️ [{s_name}] Forward 정밀 밸류에이션 분석")
+            st.markdown(f"### 🛠️ [{s_name}] Forward 정밀 밸류에이션 리포트")
             
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
@@ -508,29 +534,31 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
             st.divider()
             
-            t1, t2, t3 = st.tabs(["📉 동적 멀티플 가치분석", "📰 전방 사업 명세", "📊 실적 트렌드 (착시 방지)"])
+            t1, t2, t3 = st.tabs(["📉 Re-rating 멀티플 프라이싱", "📰 전방 사업 명세", "📊 실적 턴어라운드 감지"])
             with t1:
                 eps_val = s_cache.get('eps', 0.0)
                 bps_val = s_cache.get('bps', 0.0)
                 t_mult = s_cache.get('target_multiple', 10.0)
-                fwd_eps = eps_val * 1.21 if eps_val > 0 else 0
+                bm_growth = s_cache.get('bm_growth_factor', 1.0)
+                fwd_eps = eps_val * ((1.15 * bm_growth)**2) if eps_val > 0 else 0
                 
                 st.markdown(f"**• 종합 투자 의견:** {selected_stock['밸류에이션 상태']}")
                 st.markdown(f"**• TTM 기초 지표:** EPS `{eps_val:,.0f}원` | BPS `{bps_val:,.0f}원`")
                 if eps_val > 0:
-                    st.markdown(f"**• 2026 Forward 실적 추정 (연 10% 가정):** `EPS {fwd_eps:,.0f}원`")
-                    st.markdown(f"**• 산출된 동적 멀티플 (Target PER):** `🎯 {t_mult}배` (메가트렌드 및 매크로가 반영된 프리미엄)")
+                    st.markdown(f"**• 2026 Forward 실적 추정 (연 15% 성장+모멘텀 가중):** `EPS {fwd_eps:,.0f}원`")
+                    st.markdown(f"**• 산출된 사이클 동적 멀티플 (Target PER):** `🎯 {t_mult}배` (메가트렌드 및 매크로 프리미엄)")
                 else:
-                    st.markdown(f"**• 적자 턴어라운드 동적 멀티플 (Target PBR):** `🎯 {t_mult}배` (BPS 자본 밸류에이션 전환됨)")
+                    st.markdown(f"**• 적자 턴어라운드 동적 멀티플 (Target PBR):** `🎯 {t_mult}배` (BPS 자본 밸류에이션 스위칭 됨)")
                 
-                st.markdown(f"**🚀 2026년 최종 적정 내재가치:** `₩ {int(s_cache.get('target_2026', raw_row['buy_price'])):,}`원")
-                st.write("**최신 뉴스 센티멘탈 체크**")
+                st.markdown(f"**🚀 2026년 최종 적정 내재가치(Target):** `₩ {int(s_cache.get('target_2026', raw_row['buy_price'])):,}`원")
+                
+                st.write("**최신 뉴스 센티멘탈 체크 (단기 멀티플 조정용)**")
                 for idx, news in enumerate(s_cache.get('news_list', []), 1):
                     st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
                     
             with t2:
                 st.write(f"**📢 기업 개요 및 펀더멘탈 요약:** {s_cache.get('summary', '실적 매핑을 실행해 주세요.')}")
-                st.write(f"**• 실적 사이클 총평:** {s_cache.get('bm_summary', '-')}")
+                st.write(f"**• 실적 턴어라운드율 모멘텀 총평:** {s_cache.get('bm_summary', '-')}")
                 if s_cache.get('bm_list'):
                     st.table(pd.DataFrame(s_cache['bm_list'], columns=["사업부문", "주요품목", "구분", "비중(%)"]))
                     
@@ -544,10 +572,10 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     
                     c_col1, c_col2 = st.columns(2)
                     with c_col1:
-                        st.markdown("**Quarterly Revenue (분기 매출액 추이)**")
+                        st.markdown("**Quarterly Revenue (분기 매출액)**")
                         st.bar_chart(chart_df["매출액(억원)"], color="#3182F6")
                     with c_col2:
-                        st.markdown("**Quarterly Operating Profit (분기 영업이익 추이)**")
+                        st.markdown("**Quarterly Operating Profit (분기 영업이익)**")
                         st.line_chart(chart_df["영업이익(억원)"], color="#F04452")
 
     with tab_hist:
