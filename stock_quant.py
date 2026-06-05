@@ -194,10 +194,22 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         
     st.sidebar.info("🤖 **오토 스캔 봇 가동 중**\n\n(KST 08:00 ~ 18:00, 10분 주기)")
 
-    @st.cache_data
+    # 💡 [핵심 패치] KRX 메인 서버 차단 시 우회 서버로 자동 전환하는 이중 방어 로직 추가
+    @st.cache_data(ttl=86400)  # 하루 동안 매핑 데이터 캐싱하여 차단 확률 최소화
     def load_krx_mapping():
-        df = fdr.StockListing('KRX')
-        return {row['Name']: row['Code'] for _, row in df.iterrows()}
+        try:
+            df = fdr.StockListing('KRX')
+            return {row['Name']: row['Code'] for _, row in df.iterrows()}
+        except Exception:
+            try:
+                # 메인 서버 막히면 네이버/우회 서버(KRX-DESC)로 재시도
+                df = fdr.StockListing('KRX-DESC')
+                return {row['Name']: row['Symbol'] for _, row in df.iterrows()}
+            except Exception:
+                # 둘 다 막혀도 앱이 죽지 않도록 방어
+                st.error("현재 한국거래소(KRX) 서버가 혼잡하여 종목 리스트를 불러올 수 없습니다.")
+                return {"삼성전자": "005930", "SK하이닉스": "000660"} 
+                
     krx_map = load_krx_mapping()
 
     tab_port, tab_hist, tab_log = st.tabs(["💼 보유 자산", "📝 판매 내역", "⚙️ 엔진 기록"])
@@ -285,7 +297,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
             col1, col2, col3 = st.columns(3)
-            with col1: s_name = st.selectbox("종목 선택", list(krx_map.keys()))
+            with col1: s_name = st.selectbox("종목 선택 (한/영 키를 눌러주세요)", list(krx_map.keys()))
             with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
             with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
             if st.button("장부 조율 및 매수 결제", type="primary"):
