@@ -297,7 +297,7 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
 
 
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진
+    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진")
     
     if username not in _active_threads:
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
