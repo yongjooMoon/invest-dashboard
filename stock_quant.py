@@ -149,62 +149,89 @@ def fetch_global_macro_factor():
         
     return macro_multiplier, current_usd, 환율상태
 
-# 👍 [v8 궁극의 완성본] Forward EPS × 동적 업종 Target PER (사이클 할증 융합 모델)
-# 👍 [v9 엔진 심장 교체] TTM 늪 탈출 ➔ Normalized Forward EPS 기반 정통 타깃팅
+# 👍 [핵심 패치 1] 테마 가산점(+) 폐기 ➔ 산업별 '배수(Multiplier)' 및 '엄격한 상한선(Cap)' 적용
+GLOBAL_MEGATREND_MULTIPLIERS = {
+    "HBM": 1.30, "AI": 1.20, "전력반도체": 1.20, "로봇": 1.15, "MLCC": 1.15, "방산": 1.15
+}
+
+# 👍 [핵심 패치 2] 진성 Forward 밸류에이션 모델 (EPS 역산 및 업종 PER 캡 장착)
 def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     name = row['name']
     raw_eps = cache.get('eps', 0.0)
     bps = cache.get('bps', 0.0)
     current_price = cache.get('current_price', row['buy_price'])
-    anchor_price = max(current_price, cache.get('year_high', current_price))
     
-    # 1. 업종별 Base PER 세팅
-    base_per = 10.0
-    is_exporter = False
+    # ---------------------------------------------------------
+    # STEP 1: 한국 증시 현실을 반영한 업종별 Base PER 및 엄격한 Max Cap 설정
+    # ---------------------------------------------------------
+    base_per = 9.0  # 국장 평균
+    max_per_cap = 13.0
     
-    if any(k in name for k in ["전자", "하이닉스", "전선", "로보", "테스", "광전자"]):
-        base_per = 14.0
-        is_exporter = True
+    if any(k in name for k in ["전자", "하이닉스", "테스"]):
+        base_per = 11.0
+        max_per_cap = 15.0 # 메모리/세트는 사이클 고점에서 절대 15배를 넘기 힘듦
     elif "삼화콘덴서" in name or "전기" in name or "MLCC" in name:
+        base_per = 12.0
+        max_per_cap = 16.0 # IT 부품주 프리미엄 상한
+    elif any(k in name for k in ["증권", "생명", "금융", "지주"]):
+        base_per = 5.0
+        max_per_cap = 7.0  # 금융주 PBR/배당 중심 (저PER 고정)
+    elif any(k in name for k in ["로보", "벤처"]):
         base_per = 15.0
-        is_exporter = True
-    elif any(k in name for k in ["증권", "생명", "금융", "은행", "지주"]):
-        base_per = 6.0
+        max_per_cap = 25.0 # 순수 성장주 예외 캡
 
-    # 2. 미래 사이클(Megatrend) 및 센티멘탈 동적 멀티플 연산 (v8과 동일)
-    megatrend_premium = 1.0
+    # ---------------------------------------------------------
+    # STEP 2: 테마 프리미엄 곱연산 (가장 강한 모멘텀 1개만 제한적 반영)
+    # ---------------------------------------------------------
+    theme_premium = 1.0
     summary_text = cache.get('summary', '') + cache.get('bm_summary', '')
     applied_trends = []
     
-    for trend, ratio in GLOBAL_MEGATRENDS.items():
+    for trend, multiplier in GLOBAL_MEGATREND_MULTIPLIERS.items():
         if trend in name or trend in summary_text:
-            megatrend_premium += ratio
-            applied_trends.append(trend)
-            break 
+            # 여러 개 걸려도 가장 강력한 테마 프리미엄 하나만 반영하여 뻥튀기 방지
+            if multiplier > theme_premium: 
+                theme_premium = multiplier
+                applied_trends = [trend]
             
+    # 센티멘탈(뉴스) 및 매크로(환율)는 PER을 최대 ±10% 내외로만 흔들게 통제
     net_sent = cache.get('net_sentiment', 0)
-    sentiment_premium = 1.0 + max(-0.10, min(net_sent * 0.02, 0.10))
-    final_macro_multiplier = macro_multiplier if not is_exporter else 1.05
+    sentiment_adj = 1.0 + max(-0.05, min(net_sent * 0.01, 0.05))
+    macro_adj = max(0.9, min(macro_multiplier, 1.1))
+
+    # 🎯 2026 동적 타깃 PER 산출 (Base × 프리미엄비율 × 매크로) -> 이후 MAX CAP으로 차단
+    calculated_per = base_per * theme_premium * sentiment_adj * macro_adj
+    target_per = min(calculated_per, max_per_cap) # 🚨 핵심: 절대 상한선 돌파 불가
+
+    # ---------------------------------------------------------
+    # STEP 3: 2026년 Forward EPS 논리적 추정 (BPS × Normalized ROE 방식)
+    # ---------------------------------------------------------
+    # 현재 EPS가 적자이거나 비정상적으로 낮을 경우 단순 복리 계산은 엉터리 값이 나옴.
+    # 해결책: 기업의 자본(BPS)에 '정상화된 ROE(자기자본이익률)'를 곱해 진성 이익 체력을 역산함.
     
-    target_per = base_per * megatrend_premium * sentiment_premium * final_macro_multiplier
-    target_per = max(6.0, min(target_per, 30.0))
+    forward_eps = 0.0
     
-    # 🚨 [핵심 패치] Normalized EPS (정상화 이익 체력) 도출 로직
-    # 현재 네이버에서 긁어온 raw_eps가 사이클 바닥에 있어 너무 낮을 경우, 
-    # 고점 가격(anchor_price)과 기본 PER을 역산하여 시장이 인정하는 '정상 이익 체력'을 추산합니다.
-    implied_normal_eps = anchor_price / base_per
-    
-    # 실제 EPS와 역산된 정상 EPS 중 더 큰 값을 펀더멘탈의 기준으로 삼아 TTM의 함정을 탈출합니다.
-    normalized_eps = max(raw_eps, implied_normal_eps)
-    
-    # 3. 2026년 Forward EPS 추정 (업황 턴어라운드 프리미엄 25% 가산)
-    forward_eps = normalized_eps * 1.25
-    
-    # 4. 최종 내재가치 = 2026 Forward EPS × 2026 동적 타깃 PER
+    if bps > 0:
+        # 내재 ROE 추정 (최소 6% ~ 최대 18%의 현실적 제조업 ROE 밴드)
+        implied_roe = raw_eps / bps if bps > 0 and raw_eps > 0 else 0.08
+        normalized_roe = max(0.06, min(implied_roe, 0.18))
+        
+        # 2026년 Forward EPS = 2년 뒤 예상 BPS(자본 축적분 10% 가정) × 정상화된 ROE
+        forward_eps = (bps * 1.10) * normalized_roe
+        
+        # 만약 네이버에서 긁어온 현재 EPS가 이미 정상 궤도(높은 상태)라면, 둘 중 큰 값을 26년 추정치로 방어적 사용
+        forward_eps = max(forward_eps, raw_eps * 1.05) 
+    else:
+        # BPS 데이터마저 없다면 최후의 수단으로 과거 고점 기반 백테스팅 산식 적용
+        forward_eps = cache.get('year_high', current_price) / target_per
+
+    # ---------------------------------------------------------
+    # STEP 4: 최종 목표가(Base Case Target Price) 산출
+    # ---------------------------------------------------------
     final_target = forward_eps * target_per
 
-    # 극한의 왜곡 방지를 위한 안전 밴드 (현재가 대비 최대 4배수 락업)
-    final_target = max(current_price * 0.85, min(final_target, current_price * 4.00))
+    # 극단적 상하방 캡 (시장이 미쳐도 현재가의 3배 이상은 목표가로 잡지 않음)
+    final_target = max(current_price * 0.70, min(final_target, current_price * 3.00))
     
     return int(final_target), round(target_per, 2), applied_trends
 
