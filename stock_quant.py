@@ -23,8 +23,8 @@ def fetch_dynamic_company_bm(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        html_text = res.content.decode('utf-8', 'ignore')
-        soup = BeautifulSoup(html_text, 'html.parser')
+        # 💡 [인코딩 버그 완벽 해결] text 대신 content(원본 바이트)를 넘겨서 BS4가 알아서 인코딩을 추적하게 맡깁니다!
+        soup = BeautifulSoup(res.content, 'html.parser')
         bm_list = []
         for table in soup.find_all('table'):
             if "매출비중" in table.text or "제품/서비스명" in table.text:
@@ -41,9 +41,8 @@ def fetch_naver_fundamentals(raw_code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        # 💡 [버그 픽스] 네이버 금융 전용 EUC-KR 바이트 강제 디코딩 (글자 깨짐 원천 차단)
-        html_text = res.content.decode('euc-kr', 'ignore')
-        soup = BeautifulSoup(html_text, 'html.parser')
+        # 💡 [인코딩 버그 완벽 해결] EUC-KR이나 UTF-8을 강제하지 않고 content 그대로 넘김!
+        soup = BeautifulSoup(res.content, 'html.parser')
         
         summary_div = soup.select_one('.summary_info')
         company_summary = summary_div.text.replace('\n', ' ').strip() if summary_div else ""
@@ -341,7 +340,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             total_invest += b_price * s_qty
             total_value += curr_price * s_qty
             
-            # 💡 [핵심 패치] 금액 포맷(₩ 기호 + 콤마 마스킹) 및 수량/비율 기호 추가
             display_rows.append({
                 "상태": status_emoji, 
                 "종목명": name, 
@@ -523,7 +521,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
             df_hist.columns = ['매도일시', '종목명', '진입가', '청산가', '수량', '실현손익', '수익률(%)']
             
-            # 💡 [핵심 패치] 히스토리 그리드 콤마 및 마스킹 적용
             df_hist['진입가'] = df_hist['진입가'].apply(lambda x: f"₩ {int(x):,}")
             df_hist['청산가'] = df_hist['청산가'].apply(lambda x: f"₩ {int(x):,}")
             df_hist['수량'] = df_hist['수량'].apply(lambda x: f"{int(x):,} 주")
