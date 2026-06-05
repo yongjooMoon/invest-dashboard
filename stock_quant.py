@@ -150,77 +150,63 @@ def fetch_global_macro_factor():
     return macro_multiplier, current_usd, 환율상태
 
 # 👍 [v8 궁극의 완성본] Forward EPS × 동적 업종 Target PER (사이클 할증 융합 모델)
+# 👍 [v9 엔진 심장 교체] TTM 늪 탈출 ➔ Normalized Forward EPS 기반 정통 타깃팅
 def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     name = row['name']
-    eps = cache.get('eps', 0.0)
+    raw_eps = cache.get('eps', 0.0)
     bps = cache.get('bps', 0.0)
     current_price = cache.get('current_price', row['buy_price'])
+    anchor_price = max(current_price, cache.get('year_high', current_price))
     
-    # 1. 업종별 Base PER / PBR 세팅 (현재 시장 PER이 아닌 섹터 평균 펀더멘탈 기준)
+    # 1. 업종별 Base PER 세팅
     base_per = 10.0
-    base_pbr = 1.0
     is_exporter = False
     
     if any(k in name for k in ["전자", "하이닉스", "전선", "로보", "테스", "광전자"]):
-        base_per = 14.0 # 반도체/IT 장비 섹터 기본 멀티플
-        base_pbr = 1.5
+        base_per = 14.0
         is_exporter = True
     elif "삼화콘덴서" in name or "전기" in name or "MLCC" in name:
-        base_per = 15.0 # 전장용 부품/IT 하드웨어 프리미엄
-        base_pbr = 1.8
+        base_per = 15.0
         is_exporter = True
     elif any(k in name for k in ["증권", "생명", "금융", "은행", "지주"]):
-        base_per = 6.0  # 금융/지주사 디스카운트 반영
-        base_pbr = 0.5
-    elif "벤처" in name or "창투" in name:
-        base_per = 8.0
-        base_pbr = 1.0
+        base_per = 6.0
 
-    # 2. 미래 사이클(Megatrend) 성장성 프리미엄 산출 (곱연산)
+    # 2. 미래 사이클(Megatrend) 및 센티멘탈 동적 멀티플 연산 (v8과 동일)
     megatrend_premium = 1.0
     summary_text = cache.get('summary', '') + cache.get('bm_summary', '')
     applied_trends = []
     
     for trend, ratio in GLOBAL_MEGATRENDS.items():
         if trend in name or trend in summary_text:
-            megatrend_premium += ratio # 예: HBM(0.4) + AI(0.25) = 1.65 (65% 멀티플 할증)
+            megatrend_premium += ratio
             applied_trends.append(trend)
-            break # 과도한 중복 할증 방지를 위해 주력 키워드 1개만 반영
+            break 
             
-    # 3. 단기 뉴스 센티멘탈 보정 (최대 ±10% 로 강한 제한)
     net_sent = cache.get('net_sentiment', 0)
     sentiment_premium = 1.0 + max(-0.10, min(net_sent * 0.02, 0.10))
-    
-    # 4. 섹터별 매크로(환율) 차별화 타겟팅 (수출주는 고환율 디스카운트 상쇄)
     final_macro_multiplier = macro_multiplier if not is_exporter else 1.05
     
-    # 🎯 최종 동적 배수(Dynamic Target PER) = 기본 PER × 성장프리미엄 × 센티멘탈 × 매크로
     target_per = base_per * megatrend_premium * sentiment_premium * final_macro_multiplier
-    target_pbr = base_pbr * megatrend_premium * sentiment_premium * final_macro_multiplier
+    target_per = max(6.0, min(target_per, 30.0))
     
-    # 5. 2026년 추정 Forward 실적 계산
-    bm_growth_factor = cache.get('bm_growth_factor', 1.10) # 기본 10% 턴어라운드율
+    # 🚨 [핵심 패치] Normalized EPS (정상화 이익 체력) 도출 로직
+    # 현재 네이버에서 긁어온 raw_eps가 사이클 바닥에 있어 너무 낮을 경우, 
+    # 고점 가격(anchor_price)과 기본 PER을 역산하여 시장이 인정하는 '정상 이익 체력'을 추산합니다.
+    implied_normal_eps = anchor_price / base_per
     
-    final_target = current_price
-    used_multiple = target_per
+    # 실제 EPS와 역산된 정상 EPS 중 더 큰 값을 펀더멘탈의 기준으로 삼아 TTM의 함정을 탈출합니다.
+    normalized_eps = max(raw_eps, implied_normal_eps)
     
-    if eps > 0:
-        # TTM EPS에 연평균 15% 성장 (2년 복리) + BM 실적 가중치를 곱해 2026년 EPS 추정
-        forward_eps = eps * ((1.15 * bm_growth_factor) ** 2)
-        final_target = forward_eps * target_per
-    elif bps > 0:
-        # 반도체 적자 사이클 등 EPS 붕괴 시, BPS 자본 밸류에이션(Forward PBR)으로 자동 안전 스위칭
-        forward_bps = bps * ((1.05 * bm_growth_factor) ** 2)
-        final_target = forward_bps * target_pbr
-        used_multiple = target_pbr
-    else:
-        # 재무 지표 아예 없는 경우 최후의 방어선 (과거 고가 대비 회복률)
-        final_target = cache.get('year_high', current_price) * 0.8 
+    # 3. 2026년 Forward EPS 추정 (업황 턴어라운드 프리미엄 25% 가산)
+    forward_eps = normalized_eps * 1.25
+    
+    # 4. 최종 내재가치 = 2026 Forward EPS × 2026 동적 타깃 PER
+    final_target = forward_eps * target_per
 
-    # 극단적 상하방 캡(Cap) 적용 방어막
-    final_target = max(current_price * 0.50, min(final_target, current_price * 4.00))
+    # 극한의 왜곡 방지를 위한 안전 밴드 (현재가 대비 최대 4배수 락업)
+    final_target = max(current_price * 0.85, min(final_target, current_price * 4.00))
     
-    return int(final_target), round(used_multiple, 2), applied_trends
+    return int(final_target), round(target_per, 2), applied_trends
 
 def insert_log(supabase, username, module, summary, details):
     try:
