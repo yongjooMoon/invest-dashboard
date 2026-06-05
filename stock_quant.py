@@ -10,7 +10,6 @@ import threading
 import time
 
 # --- 팩터 마스터 프리미엄 사전 설정 ---
-CORE_CONVICTION_ASSETS = {"삼화콘덴서": 200000, "광전자": 20000}
 GLOBAL_MEGATRENDS = {
     "HBM": 3, "CXL": 3, "NPU": 3, "유리기판": 3, "MLCC": 3, "AI": 2, "로봇": 2
 }
@@ -112,14 +111,10 @@ def calculate_bm_score(fund_data, core_product, stock_name):
             if prev_op < 0 and last_op > 0: score += 3; report += "🔥 [분기 흑자전환 포착] "
             report += f"최근 매출 {int(last_rev):,}억 (QoQ {qoq:+.1f}%) / 영업이익 {int(last_op):,}억 (OPM {margin:.1f}%)"
             
-    if stock_name in CORE_CONVICTION_ASSETS:
-        return 5, f"💎 [VIP 코어 승부주] 목표가 {CORE_CONVICTION_ASSETS[stock_name]:,}원 고정\n" + report
-        
     return score, report
 
 def fetch_global_macro_factor(client_id, client_secret):
     macro_multiplier = 1.0
-    macro_report = ""
     current_usd = 1541.6  
     환율상태 = "정상"
     IPO상태 = "건전"
@@ -158,18 +153,12 @@ def fetch_global_macro_factor(client_id, client_secret):
             
     return round(macro_multiplier, 2), current_usd, 환율상태, IPO상태
 
-# 👍 [산식 전면 리빌딩] 진성 2026년 상방 업사이드 도달치 모델 (하강 중력 차단 벨트 장착)
+# 👍 [패치 완료] 삼화/광전자 강제 고정 코드 파괴 ➔ 전 종목 수리적 내재가치 모델 연동
 def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
-    name = row['name']
-    if name in CORE_CONVICTION_ASSETS:
-        return CORE_CONVICTION_ASSETS[name]
-        
-    # 💡 핵심 가이드 수정: 평단가와 역사적 고점 중 무조건 '가장 비싼 가격'을 가치 평가의 베이스라인으로 고정
     base_price = max(row['buy_price'], cache.get('year_high', row['buy_price']))
     net_sent = cache.get('net_sentiment', 0)
     bm_score = cache.get('bm_score', 0)
     
-    # 가치투자 자산가의 목표치에 맞게 펀더멘탈 기본 멀티플을 1.25배(기본 +25% 상방)로 전면 상향 조정
     fundamental_factor = 1.25
     if cache.get('q_op_profits') and len(cache['q_op_profits']) >= 2:
         last_op = cache['q_op_profits'][-1]
@@ -179,12 +168,9 @@ def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
             
     sentiment_factor = (net_sent * 0.01)
     cycle_factor = (bm_score * 0.02)
-    
-    # 단기 매크로 공포 계수의 왜곡 강도를 20% 수준으로 버퍼링 처리하여 목표가 폭락을 방지
     macro_buffer = 1.0 + (macro_multiplier - 1.0) * 0.2
     
     total_multiplier = (fundamental_factor + sentiment_factor + cycle_factor) * macro_buffer
-    # 2026년 최종 대피 타깃가는 무조건 내 평단가보다 최소 15%~60% 위에 존재하도록 제어 벨트 장착
     total_multiplier = max(1.15, min(total_multiplier, 1.60)) 
     
     return int(base_price * total_multiplier)
@@ -251,7 +237,7 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
 
 
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진 (Premium v4)")
+    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진 (Premium v5)")
     
     if username not in _active_threads:
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
@@ -264,7 +250,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         krx_map = {row['Name']: row['Code'] for _, row in df_k.iterrows()}
     except: pass
 
-    # 실시간 매크로 지표 파싱
     macro_mult, current_usd, 환율상태, IPO상태 = fetch_global_macro_factor(naver_id, naver_secret)
     
     with st.container(border=True):
@@ -362,14 +347,13 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             
             stop_line = int(b_price * 0.85) 
             status_emoji = ""
-            if name in CORE_CONVICTION_ASSETS:
-                status_emoji = "💎 VIP 코어 확신주"
+            
+            # 👍 [필터 교정] 삼화/광전자도 일반 종목과 동일하게 인프라 상태 및 매수추매 시그널 자동 파싱
+            if bm_scr >= 2 and pnl_pct < -10: status_emoji = "🛒 매크로 과매도 분할추매"
+            elif curr_price < stop_line: status_emoji = "⚠️ 가치 재평가 필요"
             else:
-                if bm_scr >= 2 and pnl_pct < -10: status_emoji = "🛒 매크로 과매도 분할추매"
-                elif curr_price < stop_line: status_emoji = "⚠️ 가치 재평가 필요"
-                else:
-                    if target_price > 0 and curr_price >= target_price * 0.95: status_emoji = "🎯 분할 가치실현 구간"
-                    else: status_emoji = "🟢 본질가치 작동중" if pnl_pct >= 0 else "🔵 내재가치 축적구간"
+                if target_price > 0 and curr_price >= target_price * 0.95: status_emoji = "🎯 분할 가치실현 구간"
+                else: status_emoji = "🟢 본질가치 작동중" if pnl_pct >= 0 else "🔵 내재가치 축적구간"
             
             total_invest += b_price * s_qty
             total_value += curr_price * s_qty
@@ -406,13 +390,11 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_disp["수익률(%)"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
         df_disp["2026 적정가치"] = df_base["2026 적정가치"].apply(lambda x: f"₩ {int(x):,}")
 
-        # 👍 [MTS 피드백 수렴 완료] 셀 전체 하이라이트 음영 배경색 이식 로직
         def style_mts_color(row):
             styles = [''] * len(row)
             pnl = df_base.loc[row.name, '수익률']
             day = df_base.loc[row.name, '전일비']
             
-            # 국장 MTS 전형적인 하이라이트 패치: 수익=적색 음영배경, 손실=청색 음영배경
             pnl_style = 'background-color: rgba(240, 68, 82, 0.12); color: #F04452; font-weight: bold;' if pnl > 0 else ('background-color: rgba(49, 130, 246, 0.12); color: #3182F6; font-weight: bold;' if pnl < 0 else 'color: #4E5968;')
             styles[df_disp.columns.get_loc('수익률(%)')] = pnl_style
             styles[df_disp.columns.get_loc('누적 가치평가액')] = pnl_style
@@ -451,7 +433,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         s_cache['year_high'] = int(df_p['High'].max())
                         prev_close = float(df_p['Close'].iloc[-2])
                         s_cache['pct_change'] = round(((s_cache['current_price'] - prev_close) / prev_close) * 100, 2)
-                        
                         s_cache['target_2026'] = calculate_intrinsic_target(raw_row, s_cache, macro_multiplier=macro_mult)
                         supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
                         st.rerun()
@@ -501,6 +482,18 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     sell_p = st.number_input("자산 회수단가", value=int(s_cache.get('current_price', raw_row['buy_price'])))
                     sell_q = st.number_input("회수 수량", min_value=1, max_value=raw_row['qty'], value=raw_row['qty'])
                     if st.button("🚨 청산(매도) 집행", key="btn_sell_confirm"):
+                        # 👍 [패치 완료] 누락되었던 가치실현 청산 히스토리 수치 역산 및 DB 백업 로직 전면 복구
+                        profit_amt = (sell_p - raw_row['buy_price']) * sell_q
+                        profit_pct = round(((sell_p - raw_row['buy_price']) / raw_row['buy_price']) * 100, 2)
+                        try:
+                            supabase.table("user_history").insert({
+                                "username": username, "ticker": raw_row['ticker'], "name": s_name,
+                                "buy_price": raw_row['buy_price'], "sell_price": sell_p, "qty": sell_q,
+                                "profit_amt": profit_amt, "profit_pct": profit_pct
+                            }).execute()
+                        except Exception as e:
+                            print(f"히스토리 기록 실패: {e}")
+
                         if sell_q == raw_row['qty']:
                             supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
                         else:
@@ -516,7 +509,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 st.markdown(f"**• 나의 평단가 마디:** `₩ {int(raw_row['buy_price']):,}`원")
                 st.markdown(f"**• 미디어 소음 필터 가중치:** `{s_cache.get('net_sentiment', 0):+}` 점")
                 st.markdown(f"**• 산업 사이클 및 마진 점수:** `{s_cache.get('bm_score', 0):+}` 점")
-                st.markdown(f"**🌐 현재 적용 매크로 보정 계수:** `{macro_mult:.2f}x` (환율 및 IPO 디스카운트 융합치)")
+                st.markdown(f"**🌐 현재 적용 매크로 보정 계수:** `{macro_mult:.2f}x`")
                 st.markdown(f"**🚀 2026년 기준 최종 내재 적정가치(목표치):** `₩ {int(s_cache.get('target_2026', raw_row['buy_price'])):,}`원")
                 st.write("**실시간 추적 뉴스 리스트**")
                 for idx, news in enumerate(s_cache.get('news_list', []), 1):
@@ -547,6 +540,43 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     st.info("펀더멘탈 명세표를 먼저 매핑해 주세요.")
 
     with tab_hist:
-        st.subheader("📝 자산 회수 히스토리")
+        # 👍 [MTS 피드백 수렴 완료] 청산 히스토리 및 매매 승률 연산 렌더링 화면 완벽 복구
+        st.subheader("📝 자산 회수(가치투자 청산) 히스토리")
+        hist_res = supabase.table("user_history").select("*").eq("username", username).order("created_at", desc=True).execute()
+        if not hist_res.data:
+            st.info("아직 자산 회수(매도) 내역이 없습니다. 가치 실현이 완료되면 승률 기록이 이곳에 실시간 빌드됩니다.")
+        else:
+            total_realized = sum([r['profit_amt'] for r in hist_res.data])
+            win_count = sum([1 for r in hist_res.data if r['profit_amt'] > 0])
+            win_rate = (win_count / len(hist_res.data)) * 100 if len(hist_res.data) > 0 else 0
+            
+            h1, h2 = st.columns(2)
+            h1.metric("누적 가치 실현액", f"{total_realized:,} 원")
+            h2.metric("가치투자 성공 승률", f"{win_rate:.1f} %")
+            
+            df_hist = pd.DataFrame(hist_res.data)
+            df_hist['created_at'] = pd.to_datetime(df_hist['created_at']) + pd.Timedelta(hours=9)
+            df_hist['created_at'] = df_hist['created_at'].dt.strftime('%Y-%m-%d %H:%M')
+            df_hist = df_hist[['created_at', 'name', 'buy_price', 'sell_price', 'qty', 'profit_amt', 'profit_pct']]
+            df_hist.columns = ['회수일시', '기업명', '진입단가', '회수단가', '보유지분', '실현이익', '최종수익률']
+            
+            df_hist['진입단가'] = df_hist['진입단가'].apply(lambda x: f"₩ {int(x):,}")
+            df_hist['회수단가'] = df_hist['회수단가'].apply(lambda x: f"₩ {int(x):,}")
+            df_hist['보유지분'] = df_hist['보유지분'].apply(lambda x: f"{int(x):,} 주")
+            df_hist['실현이익'] = df_hist['실현이익'].apply(lambda x: f"₩ {int(x):,}")
+            df_hist['최종수익률'] = df_hist['최종수익률'].apply(lambda x: f"{x:+.2f} %")
+            
+            st.dataframe(df_hist, width="stretch")
+
     with tab_log:
         st.subheader("⚙️ 퀀트 시스템 가동 로그")
+        log_res = supabase.table("user_logs").select("*").eq("username", username).order("created_at", desc=True).execute()
+        if not log_res.data:
+            st.info("시스템 처리 기록이 깨끗합니다.")
+        else:
+            df_log = pd.DataFrame(log_res.data)
+            df_log['created_at'] = pd.to_datetime(df_log['created_at']) + pd.Timedelta(hours=9)
+            df_log['created_at'] = df_log['created_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            df_log = df_log[['created_at', 'module', 'summary', 'details']]
+            df_log.columns = ['시간', '보안모듈', '요약', '상세 가동 내역']
+            st.dataframe(df_log, width="stretch")
