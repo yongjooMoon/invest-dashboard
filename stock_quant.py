@@ -96,7 +96,6 @@ def get_auto_momentum(stock_name, client_id, client_secret):
         return score, net_sentiment, news_list[0]['title'][:25] + "...", news_list
     except: return 3, 0, "네트워크 오류", []
 
-# 👍 [개선안 1] 상투 잡기 방지 및 구조적 가치평가(Valuation) 모델 도입
 def calculate_bm_score(fund_data, core_product, stock_name):
     score = 0
     report = ""
@@ -109,9 +108,8 @@ def calculate_bm_score(fund_data, core_product, stock_name):
             qoq = ((last_rev - prev_rev) / abs(prev_rev)) * 100 if prev_rev != 0 else 0
             margin = (last_op / last_rev) * 100 if last_rev != 0 else 0
             
-            # 펀더멘탈 가중치 스코어링 수리적 고도화
             if qoq >= 10: score += 2
-            if margin >= 10: score += 2  # 마진율 10% 이상 우량 기업 가산점
+            if margin >= 10: score += 2  
             if prev_op < 0 and last_op > 0: score += 3; report += "🔥 [분기 흑자전환 포착] "
             report += f"최근 매출 {int(last_rev):,}억 (QoQ {qoq:+.1f}%) / 영업이익 {int(last_op):,}억 (OPM {margin:.1f}%)"
             
@@ -120,35 +118,75 @@ def calculate_bm_score(fund_data, core_product, stock_name):
         
     return score, report
 
-# 👍 [개선안 1 연장] 최고가 추격 매수 방지 및 '안전마진 가치평가' 산식 함수
-def calculate_intrinsic_target(row, cache):
+# 👍 [신규 핵심] 글로벌 매크로 멀티플 레이더 (환율 실시간 MA 분석 + 대형 IPO 유동성 검증)
+def fetch_global_macro_factor(client_id, client_secret):
+    macro_multiplier = 1.0
+    macro_report = ""
+    
+    # 1. 원/달러 환율 실시간 추적 및 20일 이평선 격차 분석
+    try:
+        df_usd = fdr.DataReader('USD/KRW', start=(datetime.utcnow() - timedelta(days=45)).strftime('%Y-%m-%d'))
+        if not df_usd.empty:
+            current_usd = float(df_usd['Close'].iloc[-1])
+            usd_ma20 = float(df_usd['Close'].rolling(20).mean().iloc[-1]) if len(df_usd) >= 20 else current_usd
+            
+            if current_usd >= 1500:
+                macro_multiplier -= 0.08  # 고환율 임계점 돌파 시 자본 방어용 고강도 디스카운트
+                macro_report += f"🚨 [고환율 임계점 돌파: {current_usd:.1f}원] 외국인 기계적 환차손 매도 공세 구역 (-8%). "
+            elif current_usd > usd_ma20:
+                macro_multiplier -= 0.03  
+                macro_report += f"⚠️ [환율 단기 우상향: {current_usd:.1f}원] 시장 변동성 축적 및 대형주 수급 경계 (-3%). "
+            else:
+                macro_multiplier += 0.02  
+                macro_report += f"🍏 [환율 하방 안정세: {current_usd:.1f}원] 외국인 자본 유입에 우호적 환경 (+2%). "
+    except:
+        macro_report += "⚠️ [환율 센서 통신 지연] "
+
+    # 2. 대형 IPO 유동성 블랙홀 현상 진단
+    if client_id and client_secret:
+        exact_query = '"대형 IPO" "우려" "유동성"'
+        url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(exact_query)}&display=5&sort=date"
+        headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+        try:
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                items = res.json().get('items', [])
+                if len(items) >= 2:
+                    macro_multiplier -= 0.05  # 자금 흡수 리스크 반영
+                    macro_report += f"💥 [대형 IPO 유동성 흡수 감지] 예탁금 고갈 및 기존 주식 매도 리스크 유발 (-5%). "
+                else:
+                    macro_report += "✨ [시장 유동성 건전] 대형 상장 계획에 따른 자금 교란 징후 없음. "
+        except:
+            macro_report += "⚠️ [IPO 리스크 센서 통신 지연] "
+            
+    return round(macro_multiplier, 2), macro_report
+
+# 👍 [수정] 매크로 팩터가 수리적으로 결합된 내재가치 평가 함수
+def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     name = row['name']
     if name in CORE_CONVICTION_ASSETS:
         return CORE_CONVICTION_ASSETS[name]
         
-    # 기본 베이스라인을 최고가가 아닌 '현재가(또는 매입가)'로 설정하여 상투 잡기 방지
     base_price = cache.get('current_price', row['buy_price'])
     net_sent = cache.get('net_sentiment', 0)
     bm_score = cache.get('bm_score', 0)
     
-    # 실적 데이터를 기반으로 구조적 프리미엄 계산 (영업이익 트렌드 반영)
+    # 1. 기업 실적 기반 팩터
     fundamental_factor = 1.0
     if cache.get('q_op_profits') and len(cache['q_op_profits']) >= 2:
         last_op = cache['q_op_profits'][-1]
         prev_op = cache['q_op_profits'][-2]
-        # 영업이익이 성장 추세일 때만 프리미엄 부여 (최대 20%)
         if last_op > prev_op and prev_op > 0:
             fundamental_factor += min(0.20, (last_op - prev_op) / prev_op * 0.1)
         elif last_op < prev_op:
-            fundamental_factor -= min(0.15, abs(last_op - prev_op) / prev_op * 0.1) # 역성장 시 타깃가 디스카운트
+            fundamental_factor -= min(0.15, abs(last_op - prev_op) / prev_op * 0.1)
             
-    # 소음(뉴스) 가중치는 극소화(0.5%)하고, 사업 점수 가중치는 1.5% 반영
     sentiment_factor = (net_sent * 0.005)
     cycle_factor = (bm_score * 0.015)
     
-    total_multiplier = fundamental_factor + sentiment_factor + cycle_factor
-    # 비이성적 과열 방지를 위한 멀티플 상하단 캡(Cap) 가동
-    total_multiplier = max(0.85, min(total_multiplier, 1.40))
+    # 2. 거시경제 유동성 중력(환율+IPO) 계수 최종 융합
+    total_multiplier = (fundamental_factor + sentiment_factor + cycle_factor) * macro_multiplier
+    total_multiplier = max(0.75, min(total_multiplier, 1.35))
     
     return int(base_price * total_multiplier)
 
@@ -160,12 +198,11 @@ def insert_log(supabase, username, module, summary, details):
     except Exception as e:
         print(f"로그 기록 실패: {e}")
 
-# 👍 [개선안 2] IP 차단(Ban) 원천 봉쇄 스케줄러: 무거운 재무/BM 크롤링은 주기적 스캔에서 전면 배제
+# 👍 [수정] 백그라운드 오토 스케줄러 내 매크로 변수 실시간 갱신 및 DB 주입
 def auto_sync_job(supabase, username, naver_id, naver_secret):
     last_sync_minute = None
     while True:
         now_kst = datetime.utcnow() + timedelta(hours=9)
-        # 장중(08:00 ~ 18:00) 10분 마다 가동
         if 8 <= now_kst.hour <= 18 and now_kst.minute % 10 == 0:
             if now_kst.hour == 18 and now_kst.minute > 0:
                 time.sleep(30)
@@ -175,13 +212,15 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
             if last_sync_minute != current_min_stamp:
                 last_sync_minute = current_min_stamp
                 try:
+                    # 매 종목 연산 전에 매크로 멀티플 선제 동기화
+                    m_mult, m_rep = fetch_global_macro_factor(naver_id, naver_secret)
+                    
                     db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
                     portfolio_data = db_res.data
                     if portfolio_data:
                         for row in portfolio_data:
                             cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                             
-                            # 1. 시세는 10분 주기로 가볍게 트래킹 (IP 부담 최소화)
                             df_p = fdr.DataReader(row['ticker'], start=(now_kst - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
                             if not df_p.empty:
                                 cache['current_price'] = int(df_p['Close'].iloc[-1])
@@ -189,20 +228,16 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                 prev_close = float(df_p['Close'].iloc[-2])
                                 cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
                             
-                            # 2. 뉴스는 네이버 공식 API이므로 차단 우려 없음
                             score, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
                             cache['score'] = score
                             cache['net_sentiment'] = net_sent
                             cache['news_list'] = n_list
                             
-                            # 🚨 [핵심 패치] 웹 크롤링이 필요한 실적 및 BM 데이터는 캐시에 없을 때만 '최초 1회' 자동 수집
-                            # 10분마다 웹을 긁지 않으므로 네이버/FnGuide IP 차단 리스크가 0%로 수렴합니다.
                             if 'q_revenues' not in cache or 'bm_list' not in cache:
                                 fund = fetch_naver_fundamentals(row['ticker'])
                                 bm_list = fetch_dynamic_company_bm(row['ticker'])
                                 core_prod = bm_list[0][1] if bm_list else "기반 사업"
                                 bm_score, bm_summary = calculate_bm_score(fund, core_prod, row['name'])
-                                
                                 cache['bm_list'] = bm_list
                                 cache['bm_score'] = bm_score
                                 cache['bm_summary'] = bm_summary
@@ -212,12 +247,14 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                     cache['q_op_profits'] = fund['q_op_profits']
                                     cache['summary'] = fund['summary']
                             
-                            # 고도화된 내재가치 기반 타깃가 계산 적용
-                            cache['target_2026'] = calculate_intrinsic_target(row, cache)
+                            # 매크로 스냅샷 저장 및 가치평가 반영
+                            cache['macro_multiplier_snapshot'] = m_mult
+                            cache['macro_report_snapshot'] = m_rep
+                            cache['target_2026'] = calculate_intrinsic_target(row, cache, m_mult)
                             
                             supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
                             
-                        insert_log(supabase, username, "🤖 오토 스케줄러", f"{len(portfolio_data)}종목 스마트 스캔", f"한국시간 {now_kst.strftime('%H:%M')} 시세/뉴스 동기화 및 밸류에이션 리캡 완료")
+                        insert_log(supabase, username, "🤖 오토 스케줄러", "매크로+시세 전역 동기화", f"멀티플 연산 완료: {m_mult}")
                 except Exception as e:
                     pass
         time.sleep(30)
@@ -225,14 +262,14 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
 
 # --- [메인 진입 페이지 함수] ---
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진 (Premium v2)")
+    st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진 (Premium v3)")
     
     if username not in _active_threads:
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
         t.start()
         _active_threads[username] = t
         
-    st.sidebar.info("🤖 **안전 가치형 오토봇 가동 중**\n\n(시세/뉴스 10분 주기, 실적 매핑 차단 방지 가동)")
+    st.sidebar.info("🤖 **매크로 감형 오토봇 가동 중**\n\n(환율/IPO 리스크 실시간 감지 필터 탑재)")
 
     @st.cache_data(ttl=86400)  
     def load_krx_mapping():
@@ -249,10 +286,21 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 
     krx_map = load_krx_mapping()
 
+    # 👍 [색상 버그 완벽 패치] UI 로드 시점에 실시간 매크로 지표를 즉시 계산하여 상단 레이아웃 분기 처리
+    macro_mult, macro_rep = fetch_global_macro_factor(naver_id, naver_secret)
+
     tab_port, tab_hist, tab_log = st.tabs(["💼 보유 우량 자산", "📝 가치 실현 내역", "⚙️ 가치투자 엔진 기록"])
 
     with tab_port:
-        st.write("⚡ **수동 제어판** (실적 데이터 전역 갱신 및 기업 분석 강제 집행 시 사용)")
+        # 💡 [핵심 패치 완료] 매크로 가중치 강도에 따라 경고창 색상이 기계적으로 전면 전환됩니다.
+        if macro_mult <= 0.90:
+            st.error(f"⚠️ **글로벌 거시경제 위험 경보 경계령 가동 (시장 멀티플 디스카운트 강행)** \n`현 판세`: {macro_rep}")
+        elif macro_mult < 1.00:
+            st.warning(f"🔍 **글로벌 거시경제 변동성 우려 추적 중 (보수적 분할 매수 권장)** \n`현 판세`: {macro_rep}")
+        else:
+            st.success(f"🍏 **글로벌 거시경제 유동성 청신호 (공격적 가치투자 친화 구역)** \n`현 판세`: {macro_rep}")
+
+        st.write("⚡ **수동 제어판** (매크로 충격을 즉시 자산 가치에 반영시키려면 버튼을 누르십시오)")
         col_sync1, col_sync2, col_sync3 = st.columns(3)
         
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
@@ -260,9 +308,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         if col_sync1.button("🔄 전체 시세 갱신", width="stretch"):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
-            with st.status("전체 우량주 시세 가볍게 트래킹 중...", expanded=True) as status:
+            with st.status("전체 우량주 시세 및 매크로 멀티플 리캡 중...", expanded=True) as status:
                 for row in portfolio_data:
-                    st.write(f"[{row['name']}] 현재가 갱신 중...")
+                    st.write(f"[{row['name']}] 내재가치 가중 연산...")
                     df_p = fdr.DataReader(row['ticker'], start=(datetime.utcnow() + timedelta(hours=9) - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
                     if not df_p.empty:
                         cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
@@ -271,35 +319,38 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         prev_close = float(df_p['Close'].iloc[-2])
                         cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
                         
-                        cache['target_2026'] = calculate_intrinsic_target(row, cache)
+                        cache['macro_multiplier_snapshot'] = macro_mult
+                        cache['macro_report_snapshot'] = macro_rep
+                        cache['target_2026'] = calculate_intrinsic_target(row, cache, macro_multiplier=macro_mult)
                         supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
-                status.update(label="전체 시세 갱신 성공!", state="complete")
-            insert_log(supabase, username, "수동 시세 갱신", f"{len(portfolio_data)}종목 업데이트", "현재 주가 데이터 동기화 완료")
+                status.update(label="전체 시세 및 매크로 팩터 융합 완료!", state="complete")
+            insert_log(supabase, username, "수동 시세 갱신", f"{len(portfolio_data)}종목 매크로 반영", f"환율 {macro_mult} 계수 정상 주입 완료")
             st.rerun()
 
         if col_sync2.button("📰 전체 뉴스 스캔", width="stretch"):
             if not naver_id or not naver_secret: st.error("네이버 API 키가 없습니다."); st.stop()
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
-            with st.status("전체 종목 뉴스 감성 지수 분석 중...", expanded=True) as status:
+            with st.status("전체 종목 미디어 소음 분석 및 리밸런싱...", expanded=True) as status:
                 for row in portfolio_data:
-                    st.write(f"[{row['name']}] 미디어 소음 필터링 중...")
+                    st.write(f"[{row['name']}] 소음 가중치 계산...")
                     cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                     score, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
                     cache['score'] = score
                     cache['net_sentiment'] = net_sent
                     cache['news_list'] = n_list
                     
-                    cache['target_2026'] = calculate_intrinsic_target(row, cache)
+                    cache['macro_multiplier_snapshot'] = macro_mult
+                    cache['macro_report_snapshot'] = macro_rep
+                    cache['target_2026'] = calculate_intrinsic_target(row, cache, macro_multiplier=macro_mult)
                     supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
-                status.update(label="전체 미디어 모멘텀 스캔 완료!", state="complete")
-            insert_log(supabase, username, "수동 뉴스 스캔", f"{len(portfolio_data)}종목 모멘텀 연산", "감성 스코어 가중치 재계약 완료")
+                status.update(label="미디어 모멘텀 연산 완료!", state="complete")
             st.rerun()
 
         if col_sync3.button("📊 강제 실적 매핑 (IP 주의)", width="stretch"):
             if not portfolio_data: st.warning("장부에 종목이 없습니다."); st.stop()
-            with st.status("FnGuide 및 네이버 펀더멘탈 딥 크롤링 집행...", expanded=True) as status:
+            with st.status("펀더멘탈 핵심 계정 딥 트레이킹...", expanded=True) as status:
                 for row in portfolio_data:
-                    st.write(f"[{row['name']}] 재무 명세표 동기화...")
+                    st.write(f"[{row['name']}] 재무 데이터 동기화...")
                     cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                     fund = fetch_naver_fundamentals(row['ticker'])
                     bm_list = fetch_dynamic_company_bm(row['ticker'])
@@ -315,33 +366,34 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         cache['q_op_profits'] = fund['q_op_profits']
                         cache['summary'] = fund['summary']
                         
-                    cache['target_2026'] = calculate_intrinsic_target(row, cache)
+                    cache['macro_multiplier_snapshot'] = macro_mult
+                    cache['macro_report_snapshot'] = macro_rep
+                    cache['target_2026'] = calculate_intrinsic_target(row, cache, macro_multiplier=macro_mult)
                     supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
-                status.update(label="전체 기업 실적 명세 합성 성공!", state="complete")
-            insert_log(supabase, username, "수동 실적 매핑", f"{len(portfolio_data)}종목 재무 전수조사", "분기 실적 및 BM 데이터베이스 강제 동기화")
+                status.update(label="전체 기업 실적 마스터 매핑 성공!", state="complete")
             st.rerun()
 
         st.divider()
 
-        with st.expander("➕ 장기 가치투자 신규 자산 편입", expanded=False):
+        with st.expander("➕ 장기 가치투자 신규 우량주 편입", expanded=False):
             col1, col2, col3 = st.columns(3)
             with col1: s_name = st.selectbox("우량 종목 선택", list(krx_map.keys()))
-            with col2: buy_p = st.number_input("위대기업 매입 평단가(원)", min_value=1, value=10000)
-            with col3: qty = st.number_input("장기 보유 수량(주)", min_value=1, value=10)
-            if st.button("동업 기업 파트너십 계약(매수 자산 등록)", type="primary"):
+            with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
+            with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
+            if st.button("기업 동업 자산 등록", type="primary"):
                 ticker = krx_map[s_name]
                 try:
                     supabase.table("user_portfolio").upsert({
                         "username": username, "ticker": ticker, "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}
                     }).execute()
-                    insert_log(supabase, username, "신규 편입", f"[{s_name}] 장기 동업 개시", f"단가 {buy_p}원, 수량 {qty}주 등록")
-                    st.success(f"[{s_name}] 자산가 포트폴리오 편입 완료!")
+                    insert_log(supabase, username, "신규 편입", f"[{s_name}] 동업 개시", f"단가 {buy_p}원 등록")
+                    st.success(f"[{s_name}] 포트폴리오 편입 완료!")
                     st.rerun()
                 except Exception as e:
                     st.error("자산 편입 실패! RLS 설정을 확인하세요.")
 
         if not portfolio_data:
-            st.info("현재 포트폴리오에 등록된 동업 기업(보유 주식)이 없습니다. 단타를 멈추고 우량주를 모아가세요.")
+            st.info("현재 포트폴리오에 등록된 자산이 없습니다. 철저하게 여유 현금으로 우량주를 분할 매수해 보세요.")
             return
 
         total_invest, total_value = 0, 0
@@ -359,21 +411,19 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             target_price = cache.get('target_2026', b_price)
             
             bm_scr = cache.get('bm_score', 0)
-            
             pnl_amt = (curr_price - b_price) * s_qty
             pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
             
-            # 레버리지를 쓰지 않으므로 단기 변동성 공포 유발 조건 자동 제거
-            stop_line = int(b_price * 0.85) # 가치투자 관점 분할매수 밴드 진입선
+            stop_line = int(b_price * 0.85) 
             status_emoji = ""
             if name in CORE_CONVICTION_ASSETS:
                 status_emoji = "💎 VIP 코어 확신주"
             else:
-                if bm_scr >= 2 and pnl_pct < -10: status_emoji = "🛒 저점 분할 줍줍"
-                elif curr_price < stop_line: status_emoji = "⚠️ 펀더멘탈 재점검"
+                if bm_scr >= 2 and pnl_pct < -10: status_emoji = "🛒 매크로 과매도 분할추매"
+                elif curr_price < stop_line: status_emoji = "⚠️ 가치 재평가 필요"
                 else:
-                    if target_price > 0 and curr_price >= target_price * 0.95: status_emoji = "🎯 가치 실현 임박"
-                    else: status_emoji = "🟢 본질가치 우상향" if pnl_pct >= 0 else "🔵 가치 축적 구간"
+                    if target_price > 0 and curr_price >= target_price * 0.95: status_emoji = "🎯 분할 가치실현 구간"
+                    else: status_emoji = "🟢 본질가치 작동중" if pnl_pct >= 0 else "🔵 내재가치 축적구간"
             
             total_invest += b_price * s_qty
             total_value += curr_price * s_qty
@@ -387,7 +437,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 "보유지분": f"{int(s_qty):,} 주", 
                 "누적 가치평가액": f"₩ {int(pnl_amt):,}", 
                 "수익률(%)": f"{pnl_pct:+.2f}%",
-                "내재 적정가치": f"₩ {int(target_price):,}", 
+                "매크로반영 적정가치": f"₩ {int(target_price):,}", 
                 "raw_data": row
             })
 
@@ -429,7 +479,8 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         s_cache['year_high'] = int(df_p['High'].max())
                         prev_close = float(df_p['Close'].iloc[-2])
                         s_cache['pct_change'] = round(((s_cache['current_price'] - prev_close) / prev_close) * 100, 2)
-                        s_cache['target_2026'] = calculate_intrinsic_target(raw_row, s_cache)
+                        
+                        s_cache['target_2026'] = calculate_intrinsic_target(raw_row, s_cache, macro_multiplier=macro_mult)
                         supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
                         st.rerun()
             with col_indi2:
@@ -446,7 +497,8 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         s_cache['q_revenues'] = fund['q_revenues']
                         s_cache['q_op_profits'] = fund['q_op_profits']
                         s_cache['summary'] = fund['summary']
-                    s_cache['target_2026'] = calculate_intrinsic_target(raw_row, s_cache)
+                    
+                    s_cache['target_2026'] = calculate_intrinsic_target(raw_row, s_cache, macro_multiplier=macro_mult)
                     supabase.table("user_portfolio").update({"analysis_cache": s_cache}).eq("id", raw_row['id']).execute()
                     st.rerun()
 
@@ -507,9 +559,10 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             with t1:
                 st.markdown(f"**• 현재 종합 인프라 상태:** {selected_stock['인프라 상태']}")
                 st.markdown(f"**• 안전마진 베이스라인 (현재가 기준):** `{s_cache.get('current_price', raw_row['buy_price']):,}`원")
-                st.markdown(f"**• 미디어 소음 필터 가중치:** `{s_cache.get('net_sentiment', 0):+}` 점 (반영률 0.5%로 왜곡 최소화)")
+                st.markdown(f"**• 미디어 소음 필터 가중치:** `{s_cache.get('net_sentiment', 0):+}` 점")
                 st.markdown(f"**• 산업 사이클 및 마진 점수:** `{s_cache.get('bm_score', 0):+}` 점")
-                st.markdown(f"**🚀 최종 안전마진 기반 내재 적정가치:** `{s_cache.get('target_2026', raw_row['buy_price']):,}`원")
+                st.markdown(f"**🌐 현재 적용 매크로 중력 계수:** `{macro_mult:.2f}` (환율 및 IPO 리스크 결합치)")
+                st.markdown(f"**🚀 최종 매크로가 가중된 내재 적정가치:** `{s_cache.get('target_2026', raw_row['buy_price']):,}`원")
                 st.write("**실시간 추적 뉴스 리스트**")
                 for idx, news in enumerate(s_cache.get('news_list', []), 1):
                     st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
@@ -521,11 +574,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     st.table(pd.DataFrame(s_cache['bm_list'], columns=["사업부문", "주요품목", "구분", "비중(%)"]))
                     
             with t3:
-                # 👍 [개선안 4] twinx 착시 현상 전면 제거: 2단 분할 차트(Subplot) 도입
                 if s_cache.get('q_headers') and len(s_cache['q_headers']) >= 2:
                     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6.5), sharex=True)
                     
-                    # 상단 패널: 매출액 (막대)
                     ax1.set_facecolor('#F8F9FA')
                     ax1.bar(s_cache['q_headers'], s_cache['q_revenues'], color='#3182F6', alpha=0.8, width=0.35, label="매출액(억)")
                     ax1.set_ylabel('매출액 (억원)', color='#4E5968', fontweight='bold')
@@ -533,11 +584,10 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     ax1.legend(loc='upper left')
                     ax1.set_title(f"📊 {s_name} 분기별 펀더멘탈 추이 (매출액 vs 영업이익 독립 분석)", fontsize=12, fontweight='bold', pad=10)
                     
-                    # 하단 패널: 영업이익 (선형 차트)
                     ax2.set_facecolor('#F8F9FA')
                     ax2.plot(s_cache['q_headers'], s_cache['q_op_profits'], color='#F04452', marker='o', linewidth=3, markersize=8, label="영업이익(억)")
                     ax2.set_ylabel('영업이익 (억원)', color='#4E5968', fontweight='bold')
-                    ax2.axhline(0, color='#8B95A1', linewidth=1.5, linestyle='--') # 흑자/적자 기준선
+                    ax2.axhline(0, color='#8B95A1', linewidth=1.5, linestyle='--') 
                     ax2.grid(True, linestyle=':', alpha=0.6)
                     ax2.legend(loc='upper left')
                     
@@ -550,7 +600,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         st.subheader("📝 자산 회수(가치투자 청산) 히스토리")
         hist_res = supabase.table("user_history").select("*").eq("username", username).order("created_at", desc=True).execute()
         if not hist_res.data:
-            st.info("아직 자산 회수(매도) 내역이 없습니다. 단타가 아닌 진성 수익의 기록이 이곳에 쌓이게 됩니다.")
+            st.info("아직 자산 회수(매도) 내역이 없습니다. 단타가 아닌 진성 가치수익의 기록이 이곳에 쌓이게 됩니다.")
         else:
             total_realized = sum([r['profit_amt'] for r in hist_res.data])
             win_count = sum([1 for r in hist_res.data if r['profit_amt'] > 0])
