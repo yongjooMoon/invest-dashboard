@@ -192,10 +192,15 @@ class WalkForwardOptimizer:
 # ==========================================
 # UI Dashboard
 # ==========================================
-def run_flawless_quant_system():
+# ==========================================
+# [Layer 4] UI Dashboard : 메인 시스템 연동 규격 매핑
+# ==========================================
+# app.py의 호출 규격(Argument)을 받아내기 위해 함수명과 매개변수 전면 동기화
+def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
     st.title("⚡ 무결점 프로덕션 퀀트 시스템 v29.0")
-    st.markdown("**미래 참조(Leakage) 원천 차단 Predictive Regression** 및 **Square-Root Market Impact**가 적용된 실전 워크포워드 엔진입니다.")
+    st.markdown(r"**미래 참조(Leakage) 원천 차단 Predictive Regression** 및 **Square-Root Market Impact**가 적용된 실전 워크포워드 엔진입니다.")
     
+    # 💡 유저별 포트폴리오 동적 연동이 필요 없다면 기존 유니버스 고정 가동
     universe = ['005930', '000660', '035420', '035720', '207940', '005380', '051910', '000270', '068270', '105560', '028260']
     
     if st.button("🚀 무결점 Walk-Forward 시뮬레이션 가동", width="stretch"):
@@ -218,5 +223,8 @@ def run_flawless_quant_system():
             latest_weights = latest_weights[latest_weights > 0.001].apply(lambda x: f"{x*100:.1f}%")
             st.dataframe(latest_weights, width="stretch")
 
+# 런타임 단독 가동 테스트 세션 방어
 if __name__ == "__main__":
-    run_flawless_quant_system()
+    # 단독 가동 테스트 시 임시 세션 덤프 처리
+    class Dummy: pass
+    run_stock_quant_page(Dummy(), "TEST_USER")
