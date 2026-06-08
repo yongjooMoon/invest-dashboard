@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import time
 
+# ==========================================
+# [Layer 1] 유틸리티 및 무결성 파서 엔진
+# ==========================================
 def parse_num(txt):
     """정규식을 이용해 어떤 접미사 오염 속에서도 순수 숫자만 발라내는 무결성 파서"""
     if not txt: return 0.0
@@ -34,6 +37,32 @@ def format_date_clean(date_str):
         return dt.strftime("%Y-%m-%d %H:%M")
     except:
         return str(date_str)
+
+# ==========================================
+# [Layer 2] 원천 데이터 크롤러 엔진 (글로벌 전역 함수)
+# ==========================================
+def fetch_global_macro_factor():
+    """실시간 환율 및 거시경제 멀티플 보정률 산출"""
+    macro_multiplier = 1.0
+    current_usd = 1541.6  
+    환율상태 = "정상"
+    try:
+        df_usd = fdr.DataReader('USD/KRW', start=(datetime.utcnow() - timedelta(days=45)).strftime('%Y-%m-%d'))
+        if not df_usd.empty:
+            current_usd = round(float(df_usd['Close'].iloc[-1]), 1)
+            usd_ma20 = round(float(df_usd['Close'].rolling(20).mean().iloc[-1]), 1) if len(df_usd) >= 20 else current_usd
+            if current_usd >= 1400:
+                macro_multiplier = 1.00 
+                환율상태 = f"🚨 매크로 유동성 축소 ({current_usd}원)"
+            elif current_usd > usd_ma20:
+                macro_multiplier = 0.95  
+                환율상태 = f"⚠️ 변동성 경계 ({current_usd}원)"
+            else:
+                macro_multiplier = 1.05  
+                환율상태 = f"🍏 매크로 훈풍 ({current_usd}원)"
+    except:
+        환율상태 = "⚠️ 센서 지연"
+    return macro_multiplier, current_usd, 환율상태
 
 def fetch_investor_flows(raw_code):
     url = f"https://finance.naver.com/item/frgn.naver?code={raw_code}"
@@ -143,6 +172,50 @@ def fetch_dynamic_company_bm(raw_code):
     except: pass
     return [["기반사업부", "주요 제품/서비스", "공시분석", "-"]]
 
+def get_auto_momentum(stock_name, client_id, client_secret):
+    if not client_id or not client_secret: return 0, 0, "인증키 누락", []
+    url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(f'\"{stock_name}\"')}&display=10&sort=date"
+    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code != 200: return 0, 0, "인증 대기", []
+        items = res.json().get('items', [])
+        if not items: return 0, 0, "뉴스 없음", []
+        news_list, pos_count, neg_count = [], 0, 0
+        for item in items:
+            headline = html.unescape(re.compile('<.*?>').sub('', item['title'])).strip()
+            news_list.append({"title": headline, "link": item.get('originallink', item['link'])})
+            combined_text = headline.upper()
+            if any(abort_kw in combined_text for abort_kw in ["철수", "중단", "매각", "계약해지"]):
+                neg_count += 3
+                continue
+            for pw in ['수주', '흑자', '돌파', 'AI', '최대', '공급', '계약', '성장', '수혜', '외인매수', '기관매집']:
+                if pw in combined_text: pos_count += 1
+            for nw in ['하락', '적자', '취소', '우려', '부진', '위기', '손실', '외인매도']:
+                if nw in combined_text: neg_count += 1
+        return 0, (pos_count - neg_count), news_list[0]['title'][:25] + "...", news_list
+    except: return 0, 0, "네트워크 오류", []
+
+def calculate_bm_score(fund_data):
+    growth_multiplier = 1.0
+    report = ""
+    if fund_data:
+        q_revs = fund_data.get('q_revenues', [])
+        q_ops = fund_data.get('q_op_profits', [])
+        if len(q_revs) >= 2:
+            last_rev, prev_rev = q_revs[-1], q_revs[-2]
+            last_op, prev_op = q_ops[-1], q_ops[-2]
+            qoq = ((last_rev - prev_rev) / abs(prev_rev)) * 100 if prev_rev != 0 else 0
+            margin = (last_op / last_rev) * 100 if last_rev != 0 else 0
+            if qoq >= 10: growth_multiplier += 0.05
+            if margin >= 10: growth_multiplier += 0.05  
+            if prev_op < 0 and last_op > 0: growth_multiplier += 0.10; report += "🔥 [분기 흑자전환 모멘텀] "
+            report += f"최근 매출 {int(last_rev):,}억 (QoQ {qoq:+.1f}%) / 영업이익 {int(last_op):,}억 (OPM {margin:.1f}%)"
+    return growth_multiplier, report
+
+# ==========================================
+# [Layer 3] 프랍 핵심 계량 밸류에이션 알고리즘
+# ==========================================
 def calculate_intrinsic_target(row, cache, macro_multiplier, current_usd, df_kospi, df_stock):
     ticker = row['ticker']
     s_name = row['name']
@@ -166,7 +239,6 @@ def calculate_intrinsic_target(row, cache, macro_multiplier, current_usd, df_kos
 
     theme_premium = 1.0
     quant_tier = cache.get('applied_trends', ['MARKET_SATELLITE'])[0] if isinstance(cache.get('applied_trends'), list) and cache.get('applied_trends') else 'MARKET_SATELLITE'
-    
     if quant_tier == "MOMENTUM_LEADER": theme_premium = 1.15
     elif quant_tier == "VALUE_CHAIN": theme_premium = 1.08
 
@@ -204,7 +276,6 @@ def calculate_intrinsic_target(row, cache, macro_multiplier, current_usd, df_kos
     is_financial = any(k in krx_sector_name or k in s_name for k in ["은행", "증권", "보험", "생명", "금융", "지주"])
     base_industry_per = cache.get('industry_per', 10.0)
     
-    # 👍 [v16.0] 서버가 완전히 차단당해 데이터 세트가 밀렸을 때 알림 격벽
     if base_industry_per == -1.0:
         krx_sector_name = "🚨 서버 차단 (CMA 대기 권고)"
         base_industry_per = 10.0
@@ -231,6 +302,9 @@ def calculate_intrinsic_target(row, cache, macro_multiplier, current_usd, df_kos
 
     return int(base_target), int(base_target * bear_ratio), int(base_target * bull_ratio), round(target_multiple, 2), round(peg_ratio, 2), [quant_tier, krx_sector_name, model_type]
 
+# ==========================================
+# [Layer 4] 온디맨드 하이브리드 배치 동기화 엔진
+# ==========================================
 def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=False):
     macro_mult, current_usd, _ = fetch_global_macro_factor()
     db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
@@ -335,8 +409,13 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         
     insert_log(supabase, username, "ON_DEMAND_V15_FINAL", "v16.0 최종 무결성 엔진 빌드 완료", "네트워크 원천 차단 및 키 충돌 디버깅 완결.")
 
+# ==========================================
+# [Layer 5] UI 대시보드 엔트리 포인트
+# ==========================================
 def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
     st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v16.0")
+    
+    # 👍 [v16.2 교정 마디] 최상단 전역 매크로 함수 호출부 안전망 보증
     macro_mult, current_usd, 환율상태 = fetch_global_macro_factor()
     
     with st.container(border=True):
@@ -493,7 +572,7 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
                 eps_val = s_cache.get('eps', 0.0)
                 bps_val = s_cache.get('bps', 0.0)
                 
-                current_status = selected_stock['상태']  # 👍 [v16.0] KeyError 방어 완료
+                current_status = selected_stock['상태']  
                 status_tooltip = f"KRX 섹터: {selected_stock['KRX섹터']} | 연산 엔진: {selected_stock['엔진모델']} 모형"
 
                 st.markdown(
@@ -536,7 +615,6 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
         hist_res = supabase.table("user_history").select("*").eq("username", username).execute()
         if hist_res.data:
             df_hist = pd.DataFrame(hist_res.data)
-            # 👍 [v16.0] 지저분한 시분초 포맷 정제화 이식
             if 'created_at' in df_hist.columns:
                 df_hist['created_at'] = df_hist['created_at'].apply(format_date_clean)
             st.dataframe(df_hist, width="stretch")
@@ -546,7 +624,6 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
         log_res = supabase.table("user_logs").select("*").eq("username", username).execute()
         if log_res.data:
             df_log = pd.DataFrame(log_res.data)
-            # 👍 [v16.0] 지저분한 시분초 포맷 정제화 이식
             if 'created_at' in df_log.columns:
                 df_log['created_at'] = df_log['created_at'].apply(format_date_clean)
             st.dataframe(df_log, width="stretch")
