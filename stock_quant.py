@@ -510,11 +510,30 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         styled_df = df_disp.style.apply(style_mts_color, axis=1)
 
+        # --- [보정 후: 마우스오버 툴팁 박스 활성화] ---
         selection_event = st.dataframe(
             styled_df, 
             width="stretch", 
             on_select="rerun", 
-            selection_mode="single-row"
+            selection_mode="single-row",
+            column_config={
+                "상태": st.column_config.TextColumn(
+                    "상태 ⓘ",  # 컬럼명 뒤에 안내 아이콘 추가
+                    help="""💡 [프랍 데스크 밸류에이션 상태 정의]
+                    
+🛒 멀티플 극저평가 (강력매수)
+: 현재가가 2026년 최종 목표가의 50% 미만인 압도적 저평가 영역
+
+🔵 리레이팅 진입 전 안전마진 확보
+: 현재가가 목표가의 50% ~ 75% 사이로 하방 경직성이 단단히 확보된 구간
+
+🟢 2026 Forward 가치 수렴 중
+: 현재가가 목표가의 75% ~ 95% 사이로 정상적인 내재가치 반영 경로
+
+🎯 사이클 고점 타깃 도달 (비중축소 고려)
+: 현재가가 목표가의 95% 이상으로 과열 및 청산 타깃 달성 완료 국면"""
+                )
+            }
         )
         
         selected_indices = selection_event.get("selection", {}).get("rows", [])
