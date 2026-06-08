@@ -15,12 +15,12 @@ def parse_num(txt):
     return float(m.group().replace(',', '')) if m else 0.0
 
 def is_expired(last_update_str, threshold_seconds):
-    """Supabase 시간 문자열을 파싱하여 정밀 만기 여부를 판별하는 함수"""
+    """Supabase 시차 규격 문자열을 파싱하여 정밀 만기 여부를 판별하는 격벽 함수"""
     if not last_update_str: return True
     try:
         clean_str = last_update_str.replace('T', ' ').split('.')[0].split('+')[0]
         dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
-        now = datetime.utcnow() + timedelta(hours=9)
+        now = datetime.utcnow() + timedelta(hours=9) 
         return (now - dt).total_seconds() >= threshold_seconds
     except:
         return True
@@ -237,6 +237,7 @@ def calculate_intrinsic_target(row, cache, macro_multiplier, current_usd, df_kos
             elif alpha_momentum >= 5.0:
                 theme_premium = 1.08
                 quant_tier = "VALUE_CHAIN"
+                
             else:
                 theme_premium = 1.00
                 quant_tier = "MARKET_SATELLITE"
@@ -430,7 +431,12 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
             target_multiple = cache.get('target_multiple', 10.0)
             peg = cache.get('peg', 1.0)
             broker_target = cache.get('broker_target', 0.0)
-            applied_trends = cache.get('applied_trends', ["MARKET_SATELLITE", "기타업종", "PER"])
+            
+            # 👍 [v15.0 인덱스 펑 방어 장치] DB 내 과거 리스트 데이터 크기를 상시 검사 후 안전 분해
+            raw_trends = cache.get('applied_trends', [])
+            quant_tier = raw_trends[0] if (isinstance(raw_trends, list) and len(raw_trends) > 0) else "MARKET_SATELLITE"
+            krx_sector = raw_trends[1] if (isinstance(raw_trends, list) and len(raw_trends) > 1) else "기타업종"
+            engine_model = raw_trends[2] if (isinstance(raw_trends, list) and len(raw_trends) > 2) else "PER"
             
             pnl_amt = (curr_price - row['buy_price']) * row['qty']
             pnl_pct = ((curr_price - row['buy_price']) / row['buy_price']) * 100 if row['buy_price'] > 0 else 0
@@ -443,7 +449,7 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
                 "상태": "🟢 가치 수렴 중" if curr_price < target_price else "🎯 목표가 도달", 
                 "기업명": row['name'], "현재가": curr_price, "전일비": day_pct, "평단가": row['buy_price'], "보유지분": row['qty'], "평가손익": pnl_amt, "수익률": pnl_pct,
                 "비관": bear_target, "기준(최고치)": target_price, "낙관": bull_target, "안전목표가": safe_target_price, "목표평가손익": (safe_target_price - row['buy_price']) * row['qty'],
-                "PEG": peg, "적용배수": target_multiple, "KRX섹터": applied_trends[1], "엔진모델": applied_trends[2],
+                "PEG": peg, "적용배수": target_multiple, "KRX섹터": krx_sector, "엔진모델": engine_model,
                 "외인20일": cache.get('foreign_20d_flow', 0.0), "에프앤목표가": broker_target, "raw_data": row
             })
 
@@ -466,7 +472,122 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
         df_disp["외인 20일(주)"] = df_base["외인20일"].apply(lambda x: f"{int(x):+,}")
         df_disp["진성 PEG"] = df_base["PEG"].apply(lambda x: f"📊 {x:.2f}")
 
-        st.dataframe(df_disp.style.background_gradient(cmap="Blues", subset=["🛡️ 실전안전가(-5%)"]), width="stretch")
+        def style_mts_color(row):
+            styles = [''] * len(row)
+            pnl = df_base.loc[row.name, '수익률']
+            day = df_base.loc[row.name, '전일비']
+            peg_val = df_base.loc[row.name, 'PEG']
+            f_buy = df_base.loc[row.name, '외인20일']
+            m_type = df_base.loc[row.name, '엔진모델']
+            
+            pnl_style = 'background-color: rgba(240, 68, 82, 0.12); color: #F04452; font-weight: bold;' if pnl > 0 else ('background-color: rgba(49, 130, 246, 0.12); color: #3182F6; font-weight: bold;' if pnl < 0 else 'color: #4E5968;')
+            styles[df_disp.columns.get_loc('수익률(%)')] = pnl_style
+            
+            day_style = 'color: #F04452; font-weight: bold;' if day > 0 else ('color: #3182F6; font-weight: bold;' if day < 0 else 'color: #4E5968;')
+            
+            safe_style = 'background-color: rgba(240, 150, 40, 0.08); color: #E67E22; font-weight: bold;'
+            styles[df_disp.columns.get_loc('🛡️ 실전안전가(-5%)')] = safe_style
+            styles[df_disp.columns.get_loc('탈출 시 예상수익')] = safe_style
+            
+            if m_type == "PBR":
+                styles[df_disp.columns.get_loc('연산 모델')] = 'background-color: rgba(155, 89, 182, 0.1); color: #9B59B6; font-weight: bold;'
+            
+            if peg_val < 1.0 and peg_val > 0 and m_type == "PER":
+                styles[df_disp.columns.get_loc('진성 PEG')] = 'background-color: rgba(0, 180, 100, 0.08); color: #00B464; font-weight: bold;'
+            
+            if f_buy > 0:
+                styles[df_disp.columns.get_loc('외인 20일(주)')] = 'color: #F04452; font-weight: bold;'
+            return styles
+
+        styled_df = df_disp.style.apply(style_mts_color, axis=1)
+
+        selection_event = st.dataframe(
+            styled_df, 
+            width="stretch", 
+            on_select="rerun", 
+            selection_mode="single-row",
+            column_config={
+                "상태": st.column_config.TextColumn(
+                    "상태 ⓘ",
+                    help="""💡 [v15.0 프로덕션 멀티 모델 가치 정의]
+                    
+🛒 멀티플 극저평가: 현재가가 2026년 동적 기준 목표가의 50% 미만인 국면
+🔵 안전마진 확보: 현재가가 기준 목표가의 50% ~ 75% 사이 구역
+🟢 가치 수렴 중: 현재가가 기준 목표가의 75% ~ 95% 사이 정상 궤도
+🎯 사이클 고점 도달: 현재가가 기준 목표가의 95% 이상 오버슈팅 완료"""
+                )
+            }
+        )
+        
+        selected_indices = selection_event.get("selection", {}).get("rows", [])
+        
+        if selected_indices:
+            selected_idx = selected_indices[0]
+            selected_stock = display_rows[selected_idx]
+            s_name = selected_stock["기업명"]
+            raw_row = selected_stock["raw_data"]
+            s_ticker = raw_row['ticker']
+            s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
+            
+            st.markdown(f"### 🛠️ [{s_name}] v15.0 정밀 가치 평가 계량 리포트")
+            st.divider()
+            
+            t1, t2, t3 = st.tabs(["📉 3단계 시나리오 및 수급 판세", "📰 전방 사업 명세", "📊 실적 턴어라운드 감지"])
+            with t1:
+                eps_val = s_cache.get('eps', 0.0)
+                bps_val = s_cache.get('bps', 0.0)
+                
+                current_status = selected_stock['밸류에이션 상태']
+                status_tooltip = f"KRX 섹터: {selected_stock['KRX섹터']} | 연산 엔진: {selected_stock['엔진모델']} 모형"
+
+                st.markdown(
+                    f"**• 종합 투자 의견:** <span title='{status_tooltip}' style='cursor: help; border-bottom: 1px dashed #4E5968; font-weight: bold;'>{current_status} ⓘ</span>", 
+                    unsafe_allow_html=True
+                )
+                
+                st.markdown(f"**• TTM 기초 지표:** EPS `{eps_val:,.0f}원` | BPS `{bps_val:,.0f}원` | **진성 PEG (현재 PER 기반):** `{selected_stock['PEG']}x`")
+                st.markdown(f"**📉 비관적 자산 방어선 (Bear Case Target):** `₩ {selected_stock['비관']:,}`원")
+                st.markdown(f"**🟢 기준 시나리오 적정가 (Base Case Target):** `₩ {selected_stock['기준(최고치)']:,}`원")
+                st.markdown(f"**📈 유동성 오버슈팅 상방선 (Bull Case Target):** `₩ {selected_stock['낙관']:,}`원")
+                st.markdown(f"**🛡️ 실전 대기 분할 안전탈출가 (-5%):** `₩ {selected_stock['안전목표가']:,}원` (청산 시 최종 누적 실현이익: `{selected_stock['목표평가손익']:,}원`)")
+                st.markdown(f"**🚨 마지노선 손절가 격벽:** `₩ {selected_stock['손절가']:,}원` (손실 규모: `{selected_stock['손절시손익']:,}원`)")
+                st.markdown(f"**🏛️ 에프앤가이드 여의도 컨센서스 목표주가 평균:** `₩ {int(selected_stock['에프앤목표가']):,}`원")
+                
+            with t2:
+                st.write(f"**📢 기업 개요 및 펀더멘탈 요약:** {s_cache.get('summary', '실적 매핑을 실행해 주세요.')}")
+                st.write(f"**• 실적 턴어라운드율 모멘텀 총평:** {s_cache.get('bm_summary', '-')}")
+                if s_cache.get('bm_list'):
+                    st.table(pd.DataFrame(s_cache['bm_list'], columns=["사업부문", "주요품목", "구분", "비중(%)"]))
+                    
+            with t3:
+                if s_cache.get('q_headers') and len(s_cache['q_headers']) >= 2:
+                    chart_df = pd.DataFrame({
+                        "분기": s_cache['q_headers'],
+                        "매출액(억원)": s_cache['q_revenues'],
+                        "영업이익(억원)": s_cache['q_op_profits']
+                    }).set_index("분기")
+                    
+                    c_col1, c_col2 = st.columns(2)
+                    with c_col1:
+                        st.markdown("**Quarterly Revenue (분기 매출액)**")
+                        st.bar_chart(chart_df["매출액(억원)"], color="#3182F6")
+                    with c_col2:
+                        st.markdown("**Quarterly Operating Profit (분기 영업이익)**")
+                        st.line_chart(chart_df["영업이익(억원)"], color="#F04452")
+
+    with tab_hist:
+        st.subheader("📝 자산 회수 히스토리")
+        hist_res = supabase.table("user_history").select("*").eq("username", username).order("created_at", desc=True).execute()
+        if hist_res.data:
+            df_hist = pd.DataFrame(hist_res.data)
+            st.dataframe(df_hist, width="stretch")
+
+    with tab_log:
+        st.subheader("⚙️ 퀀트 시스템 가동 로그")
+        log_res = supabase.table("user_logs").select("*").eq("username", username).order("created_at", desc=True).execute()
+        if log_res.data:
+            df_log = pd.DataFrame(log_res.data)
+            st.dataframe(df_log, width="stretch")
 
 def insert_log(supabase, username, module, summary, details):
     try:
