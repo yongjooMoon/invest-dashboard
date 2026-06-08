@@ -7,3 +7,6 @@ numpy
 beautifulsoup4
 matplotlib
 finance-datareader
+statsmodels
+scipy
+scikit-learn
