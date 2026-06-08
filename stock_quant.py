@@ -208,7 +208,7 @@ def run_flawless_quant_system():
             
             st.divider()
             st.subheader("📈 1. Flawless Walk-Forward Performance")
-            st.markdown("임의의 알파 스케일링을 폐기하고, 과거 회귀분석으로 도출된 순수 $\lambda$ 값과 시장 충격(Slippage) 비용을 모두 이겨낸 넷(Net) 수익률입니다.")
+            st.markdown(r"임의의 알파 스케일링을 폐기하고, 과거 회귀분석으로 도출된 순수 $\lambda$ 값과 시장 충격(Slippage) 비용을 모두 이겨낸 넷(Net) 수익률입니다.")
             
             st.line_chart(cum_port)
             
