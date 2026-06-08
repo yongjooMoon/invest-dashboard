@@ -213,7 +213,6 @@ def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     
     return int(final_target), round(target_per, 2), applied_trends
 
-
 def auto_sync_job(supabase, username, naver_id, naver_secret):
     """실시간 시세/뉴스는 10분 주기, 기업 실적(펀더멘탈)은 일주일에 한 번(7일 주기) 동기화하는 백그라운드 엔진"""
     last_sync_time = 0
@@ -222,7 +221,6 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
         now_ts = time.time()
         now_kst = datetime.utcnow() + timedelta(hours=9)
         
-        # 장중 가동 시간 통제 (08:00 ~ 18:30) 및 10분(600초) 시간 경과 체크
         if 8 <= now_kst.hour <= 18 and (now_ts - last_sync_time >= 600):
             last_sync_time = now_ts
             try:
@@ -234,7 +232,6 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                     for row in portfolio_data:
                         cache = row.get('analysis_cache') if row.get('analysis_cache') else {}
                         
-                        # [공통/10분 주기] 1. 가격 및 기술적 지표 갱신
                         df_p = fdr.DataReader(row['ticker'], start=(now_kst - pd.DateOffset(days=7)).strftime('%Y-%m-%d'))
                         if not df_p.empty:
                             cache['current_price'] = int(df_p['Close'].iloc[-1])
@@ -242,19 +239,16 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                             cache['pct_change'] = round(((cache['current_price'] - prev_close) / prev_close) * 100, 2)
                             cache['year_high'] = int(df_p['High'].max())
                         
-                        # [공통/10분 주기] 2. 최신 뉴스 모멘텀 스코어링
                         _, net_sent, _, n_list = get_auto_momentum(row['name'], naver_id, naver_secret)
                         cache['net_sentiment'] = net_sent
                         cache['news_list'] = n_list
                         
-                        # 👍 [핵심 패치 1] 네이버 실적 정보 크롤링을 일주일(7일) 주기로 제한
                         last_fund_update = cache.get('last_fundamental_update')
                         need_fund_update = False
                         
                         if not last_fund_update:
                             need_fund_update = True
                         else:
-                            # 저장된 타임스탬프 파싱 후 경과 일수 계산
                             last_date = datetime.strptime(last_fund_update, '%Y-%m-%d')
                             if (now_kst - last_date).days >= 7:
                                 need_fund_update = True
@@ -276,20 +270,15 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                                 cache['bm_list'] = bm_list
                                 cache['bm_growth_factor'] = growth_factor
                                 cache['bm_summary'] = bm_summary
-                                
-                                # 최종 업데이트 일자를 장부에 기록
                                 cache['last_fundamental_update'] = now_kst.strftime('%Y-%m-%d')
                         
-                        # 3. 종합 밸류에이션 리레이팅 가격 산출
                         target_price, target_multiple, applied_trends = calculate_intrinsic_target(row, cache, macro_mult)
                         cache['target_2026'] = target_price
                         cache['target_multiple'] = target_multiple
                         cache['applied_trends'] = applied_trends
                         
-                        # DB 백그라운드 업데이트
                         supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
                     
-                    # 👍 [핵심 패치 2] 백그라운드 자동 가동 로그 DB 강제 인서트
                     insert_log(supabase, username, "BACKGROUND_ENGINE", "자동 시세 및 뉴스 동기화 완료", 
                                f"환율 {current_usd}원 기준 전 종목 정밀 가치 재연산 및 캐싱 스케줄러 처리 완료.")
             except Exception as e:
@@ -297,11 +286,9 @@ def auto_sync_job(supabase, username, naver_id, naver_secret):
                 
         time.sleep(30)
 
-
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
     st.title("📈 스마트 프랍 퀀트 포트폴리오 엔진")
     
-    # 백그라운드 자생 스레드 가동 여부 검증
     if username not in _active_threads or not _active_threads[username].is_alive():
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
         t.start()
@@ -332,7 +319,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
         portfolio_data = db_res.data
 
-        # --- 수동 버튼 가동 시 로그 기록 로직 전면 탑재 ---
         if col_sync1.button("🔄 가치 밸류에이션 전면 재연산", width="stretch"):
             if not portfolio_data: st.stop()
             with st.status("Forward EPS × Dynamic Target PER 정통 밸류에이션 구동 중...", expanded=True) as status:
@@ -352,7 +338,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                         supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
                 status.update(label="미래 실적 추정 및 동적 멀티플 맵핑 완료!", state="complete")
             
-            # 👍 수동 가동 로그 적하
             insert_log(supabase, username, "MANUAL_VALUATION", "수동 밸류에이션 연산 집행", f"보유 자산 {len(portfolio_data)}개 종목의 적정 내재가치 가중치 전면 재계산 갱신 완료.")
             st.rerun()
 
@@ -369,7 +354,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     cache['target_multiple'] = target_multiple
                     supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
             
-            # 👍 뉴스 갱신 수동 로그 적하
             insert_log(supabase, username, "MANUAL_SENTIMENT", "수동 뉴스 센티멘탈 보정 완료", "네이버 OpenAPI 연동 뉴스 긍부정 스코어링 강제 리프레시 반영.")
             st.rerun()
 
@@ -402,7 +386,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                     cache['target_multiple'] = target_multiple
                     supabase.table("user_portfolio").update({"analysis_cache": cache}).eq("id", row['id']).execute()
             
-            # 👍 실적 분석 수동 로그 적하
             insert_log(supabase, username, "MANUAL_FUNDAMENTALS", "수동 실적 분기 데이터 동기화 완료", "FnGuide/Naver 분기 재무제표 팩터 크롤링 스케줄 강제 갱신.")
             st.rerun()
 
@@ -432,8 +415,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             pnl_amt = (curr_price - b_price) * s_qty
             pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
             
-            # 👍 [핵심 패치 3] 프랍 트레이딩 리스크 관리를 위한 '손절가' 및 '손절 시 마이너스 평가액' 수리적 계산
-            # 프랍 데스크 룰: 평단가 대비 고정 -15% 라인을 손절 격벽 가격으로 설정 (캐시에 존재 시 최우선 연동)
             cut_loss_price = int(cache.get('cut_loss_price', b_price * 0.85))
             expected_loss_amt = (cut_loss_price - b_price) * s_qty
             
@@ -483,7 +464,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_disp["수익률(%)"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
         df_disp["평가손익"] = df_base["평가손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
         
-        # 👍 [MTS 인터페이스] 손절 격벽 필드 데이터 그리드 추가 탑재
         df_disp["2026 목표 손절가"] = df_base["손절가"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["손절 시 예상손실"] = df_base["손절시손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
         
@@ -502,7 +482,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             day_style = 'color: #F04452; font-weight: bold;' if day > 0 else ('color: #3182F6; font-weight: bold;' if day < 0 else 'color: #4E5968;')
             styles[df_disp.columns.get_loc('전일비(%)')] = day_style
             
-            # 👍 손절 시 마이너스 예상액 컬럼은 차가운 리스크 경고 색상(파란색 리스크 백그라운드)으로 상시 경고 격벽 처리
             loss_style = 'background-color: rgba(49, 130, 246, 0.08); color: #3182F6; font-weight: 500;'
             styles[df_disp.columns.get_loc('2026 목표 손절가')] = loss_style
             styles[df_disp.columns.get_loc('손절 시 예상손실')] = loss_style
@@ -510,7 +489,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         styled_df = df_disp.style.apply(style_mts_color, axis=1)
 
-        # --- [보정 후: 마우스오버 툴팁 박스 활성화] ---
         selection_event = st.dataframe(
             styled_df, 
             width="stretch", 
@@ -518,7 +496,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             selection_mode="single-row",
             column_config={
                 "상태": st.column_config.TextColumn(
-                    "상태 ⓘ",  # 컬럼명 뒤에 안내 아이콘 추가
+                    "상태 ⓘ",
                     help="""💡 [프랍 데스크 밸류에이션 상태 정의]
                     
 🛒 멀티플 극저평가 (강력매수)
@@ -597,7 +575,23 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 bm_growth = s_cache.get('bm_growth_factor', 1.0)
                 fwd_eps = eps_val * ((1.15 * bm_growth)**2) if eps_val > 0 else 0
                 
-                st.markdown(f"**• 종합 투자 의견:** {selected_stock['밸류에이션 상태']}")
+                current_status = selected_stock['밸류에이션 상태']
+                status_tooltip = "프랍 엔진 연산 데이터"
+                
+                if "🛒" in current_status:
+                    status_tooltip = "현재가 < 2026 목표가의 50% 미만: 역사적 저점 수준의 강력 매수 찬스"
+                elif "🔵" in current_status:
+                    status_tooltip = "현재가 < 2026 목표가의 50%~75% 사이: 하방 위험 대비 상방 기대 이익이 높은 구간"
+                elif "🟢" in current_status:
+                    status_tooltip = "현재가 < 2026 목표가의 75%~95% 사이: 미래 실적과 동적 멀티플이 정상 수렴 중"
+                elif "🎯" in current_status:
+                    status_tooltip = "현재가 >= 2026 목표가의 95% 이상: 오버슈팅 및 목표가 도달에 따른 리스크 청산 신호"
+
+                st.markdown(
+                    f"**• 종합 투자 의견:** <span title='{status_tooltip}' style='cursor: help; border-bottom: 1px dashed #4E5968; font-weight: bold;'>{current_status} ⓘ</span>", 
+                    unsafe_allow_html=True
+                )
+                
                 st.markdown(f"**• TTM 기초 지표:** EPS `{eps_val:,.0f}원` | BPS `{bps_val:,.0f}원`")
                 if eps_val > 0:
                     st.markdown(f"**• 2026 Forward 실적 추정 (연 15% 성장+모멘텀 가중):** `EPS {fwd_eps:,.0f}원`")
