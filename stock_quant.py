@@ -415,6 +415,11 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             pnl_amt = (curr_price - b_price) * s_qty
             pnl_pct = ((curr_price - b_price) / b_price) * 100 if b_price > 0 else 0
             
+            # 👍 [대표님 지침 반영 1] 최고 목표가 대비 -5% 안전 탈출 가격 및 기대 가치 실현액 수리 연산
+            safe_target_price = int(target_price * 0.95)
+            target_pnl_amt = (safe_target_price - b_price) * s_qty
+            target_pnl_pct = ((safe_target_price - b_price) / b_price) * 100 if b_price > 0 else 0
+            
             cut_loss_price = int(cache.get('cut_loss_price', b_price * 0.85))
             expected_loss_amt = (cut_loss_price - b_price) * s_qty
             
@@ -440,6 +445,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 "평가손익": pnl_amt, 
                 "수익률": pnl_pct,
                 "2026 Target": target_price,
+                "안전목표가": safe_target_price,
+                "목표수익률": target_pnl_pct,
+                "목표평가손익": target_pnl_amt,
                 "적용배수": target_multiple,
                 "기반지표": "PER" if eps > 0 else "PBR",
                 "손절가": cut_loss_price,
@@ -464,16 +472,19 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_disp["수익률(%)"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
         df_disp["평가손익"] = df_base["평가손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
         
-        df_disp["2026 목표 손절가"] = df_base["손절가"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp["손절 시 예상손실"] = df_base["손절시손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
+        # 👍 [대표님 지침 반영 2] 익절 청산 그리드 전면 배치 (안전 목표가, 청산 시 확정 수익률, 실현 이익 볼륨)
+        df_disp["2026 안전목표가(-5%)"] = df_base["안전목표가"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["목표 수익률(%)"] = df_base["목표수익률"].apply(lambda x: f"{x:+.2f}%")
+        df_disp["목표 평가손익"] = df_base["목표평가손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
         
-        df_disp["2026 목표가(FWD)"] = df_base["2026 Target"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["2026 최고가(이론치)"] = df_base["2026 Target"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["2026 동적 배수"] = df_base.apply(lambda r: f"🎯 {r['적용배수']}x ({r['기반지표']})", axis=1)
 
         def style_mts_color(row):
             styles = [''] * len(row)
             pnl = df_base.loc[row.name, '수익률']
             day = df_base.loc[row.name, '전일비']
+            tgt_pnl = df_base.loc[row.name, '목표수익률']
             
             pnl_style = 'background-color: rgba(240, 68, 82, 0.12); color: #F04452; font-weight: bold;' if pnl > 0 else ('background-color: rgba(49, 130, 246, 0.12); color: #3182F6; font-weight: bold;' if pnl < 0 else 'color: #4E5968;')
             styles[df_disp.columns.get_loc('수익률(%)')] = pnl_style
@@ -482,9 +493,11 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             day_style = 'color: #F04452; font-weight: bold;' if day > 0 else ('color: #3182F6; font-weight: bold;' if day < 0 else 'color: #4E5968;')
             styles[df_disp.columns.get_loc('전일비(%)')] = day_style
             
-            loss_style = 'background-color: rgba(49, 130, 246, 0.08); color: #3182F6; font-weight: 500;'
-            styles[df_disp.columns.get_loc('2026 목표 손절가')] = loss_style
-            styles[df_disp.columns.get_loc('손절 시 예상손실')] = loss_style
+            # 👍 익절 타깃 자산은 따뜻한 골드/오렌지 하이라이트 색상으로 '수확 대기' 상태를 시각화 연출
+            tgt_style = 'background-color: rgba(240, 150, 40, 0.08); color: #E67E22; font-weight: bold;' if tgt_pnl > 0 else 'background-color: rgba(49, 130, 246, 0.05); color: #3182F6;'
+            styles[df_disp.columns.get_loc('2026 안전목표가(-5%)')] = tgt_style
+            styles[df_disp.columns.get_loc('목표 수익률(%)')] = tgt_style
+            styles[df_disp.columns.get_loc('목표 평가손익')] = tgt_style
             return styles
 
         styled_df = df_disp.style.apply(style_mts_color, axis=1)
@@ -599,8 +612,10 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 else:
                     st.markdown(f"**• 적자 턴어라운드 동적 멀티플 (Target PBR):** `🎯 {t_mult}배` (BPS 가치 스위칭)")
                 
-                st.markdown(f"**🚀 2026년 최종 적정 내재가치(Target):** `₩ {int(s_cache.get('target_2026', raw_row['buy_price'])):,}`원")
-                st.markdown(f"**🚨 리스크 방어망 지정 손절가:** `₩ {selected_stock['손절가']:,}원` (도달 시 강제 청산 권고, 자산 손실 규모: `{selected_stock['손절시손익']:,}원`)")
+                # 👍 [대표님 지침 반영 3] 하단 상세 탭 영역 리포트 텍스트 수치 보정 출력
+                st.markdown(f"**🚀 2026년 이론적 최고 한계가치(Peak Target):** `₩ {int(s_cache.get('target_2026', raw_row['buy_price'])):,}`원")
+                st.markdown(f"**🛡️ 기관용 분할 탈출 안전목표가 (-5% 버퍼):** `₩ {selected_stock['안전목표가']:,}원` (청산 시 기대 수익률: `{selected_stock['목표수익률']:+.2f}%`, 자산 회수금: `{selected_stock['목표평가손익']:,}원`)")
+                st.markdown(f"**🚨 리스크 방어망 마지노선 손절가:** `₩ {selected_stock['손절가']:,}원` (자산 손실 규모: `{selected_stock['손절시손익']:,}원`)")
                 
                 st.write("**최신 뉴스 센티멘탈 체크**")
                 for idx, news in enumerate(s_cache.get('news_list', []), 1):
