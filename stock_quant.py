@@ -40,8 +40,8 @@ def format_date_clean(date_str):
         return dt.strftime("%Y-%m-%d %H:%M")
     except: return str(date_str)
 
-# 👍 [v19.3 긴급 수포 복원] 유실되었던 분기 실적 턴어라운드 및 성장성 계량 스코어링 함수
 def calculate_bm_score(fund_data):
+    """분기 실적 및 QoQ 영업이익률 추적 계량 스코어링 함수"""
     growth_multiplier = 1.0
     report = ""
     if fund_data:
@@ -107,7 +107,7 @@ def load_krx_mapping_from_db(supabase):
     return krx_map
 
 # ==========================================
-# [Layer 3] 원천 데이터 백엔드 크롤러 엔진 (수급 가드 개조)
+# [Layer 3] 원천 데이터 백엔드 크롤러 엔진
 # ==========================================
 def fetch_global_macro_factor():
     macro_multiplier = 1.0
@@ -131,7 +131,6 @@ def fetch_global_macro_factor():
     return macro_multiplier, current_usd, 환율상태
 
 def fetch_investor_flows(raw_code):
-    """👍 [v19.3 격벽 개조] 네이버 차단 우회 시 기존 수급 훼손 방지를 위해 에러 시 None 반환"""
     url = f"https://finance.naver.com/item/frgn.naver?code={raw_code}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
@@ -225,34 +224,6 @@ def fetch_dynamic_company_bm(raw_code):
                 if bm_list: return bm_list
     except: pass
     return [["기반사업부", "주요 제품/서비스", "공시분석", "-"]]
-
-def get_auto_momentum(stock_name, client_id, client_secret):
-    if not client_id or not client_secret: return 0, 0, "인증키 누락", []
-    exact_query = f'"{stock_name}"'
-    url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(exact_query)}&display=10&sort=date"
-    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code != 200: return 0, 0, "인증 대기", []
-        items = res.json().get('items', [])
-        if not items: return 0, 0, "뉴스 없음", []
-        
-        news_list, pos_count, neg_count = [], 0, 0
-        for item in items:
-            headline = html.unescape(re.compile('<.*?>').sub('', item['title'])).strip()
-            news_list.append({"title": headline, "link": item.get('originallink', item['link'])})
-            combined_text = headline.upper()
-            if any(abort_kw in combined_text for abort_kw in ["철수", "중단", "매각", "계약해지"]):
-                neg_count += 3
-                continue
-            for pw in ['수주', '흑자', '돌파', 'AI', '최대', '공급', '계약', '성장', '수혜', '외인매수', '기관매집']:
-                if pw in combined_text: pos_count += 1
-            for nw in ['하락', '적자', '취소', '우려', '부진', '위기', '손실', '외인매도']:
-                if nw in combined_text: neg_count += 1
-                
-        net_sentiment = pos_count - neg_count
-        return 0, net_sentiment, news_list[0]['title'][:25] + "...", news_list
-    except: return 0, 0, "네트워크 오류", []
 
 # ==========================================
 # [Layer 4] v12.0 오리지널 7대 자산 결합형 밸류에이션 엔진
@@ -390,7 +361,6 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
             updated_cache['news_list'] = n_list
             updated_cache['last_news_update'] = now_kst_str
 
-        # 👍 [v19.3 수급 누수 가드 락 인가] 차단 에러 발생 시 기존 캐시 보존
         if is_expired(db_cache.get('last_flow_update'), 3600) or force:
             f_flow, i_flow = fetch_investor_flows(ticker)
             if f_flow is not None and i_flow is not None:
@@ -438,10 +408,10 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
 
 # ==========================================
-# [Layer 6] UI 주 인터페이스 관제 센터
+# [Layer 6] UI 주 인터페이스 관제 센터 (완벽 매핑 완료)
 # ==========================================
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.3")
+    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.4")
     
     if username not in _active_threads or not _active_threads[username].is_alive():
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
@@ -456,7 +426,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         with m_col1:
             st.metric("원/달러 환율 국면", 환율상태, delta="외국인 패시브 수급 불안" if current_usd >= 1400 else "수급 안정 구역", delta_color="inverse")
         with m_col2:
-            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="v12 데몬 및 v19.3 수급 가드 격벽 시스템 작동 중")
+            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="v12 데몬 및 수급 데이터 완전 매핑 복원 모드")
 
     krx_map = load_krx_mapping_from_db(supabase)
 
@@ -490,7 +460,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             if not portfolio_data: st.stop()
             with st.status("원천 유동성 강제 동기화 팩터 연산 중...", expanded=True) as status:
                 execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=True)
-                status.update(label="전역 공용 캐시 수급 및 밸류에이션 리셋 완료!", state="complete")
+                status.update(label="전역 공용 캐시 수급 및 밸류에이션 리레이팅 리셋 완료!", state="complete")
             st.rerun()
 
         st.divider()
@@ -529,10 +499,12 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             elif val_ratio < 0.95: status_emoji = "🟢 가치 수렴 중"
             else: status_emoji = "🎯 사이클 고점 도달"
 
+            # 👍 [핵심 교정] "외인20일"과 "기관20일" 키값을 누락 없이 확실하게 리스트에 결속 바인딩!
             display_rows.append({
                 "밸류에이션 상태": status_emoji, "종목명": row['name'], "현재가": curr_price, "전일비": day_pct, "평단가": row['buy_price'], "보유지분": row['qty'], "평가손익": pnl_amt, "수익률": pnl_pct,
                 "비관": bear_target, "기준(최고치)": target_price, "낙관": bull_target, "안전목표가": safe_target_price, "목표평가손익": (safe_target_price - row['buy_price']) * row['qty'],
-                "PEG": peg, "적용배수": target_multiple, "KRX섹터": krx_sector, "엔진모델": engine_model, "raw_data": row
+                "PEG": peg, "적용배수": target_multiple, "KRX섹터": krx_sector, "엔진모델": engine_model,
+                "외인20일": cache.get('foreign_20d_flow', 0.0), "기관20일": cache.get('institution_20d_flow', 0.0), "raw_data": row
             })
 
         total_pnl = total_value - total_invest
@@ -550,7 +522,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_disp["현재가"] = df_base["현재가"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["전일비(%)"] = df_base["전일비"].apply(lambda x: f"{x:+.2f}%")
         
-        # 👍 실제 계좌 정보 배치 전면 동기화 완료
         df_disp["내 평단가"] = df_base["평단가"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["보유 수량"] = df_base["보유지분"].apply(lambda x: f"{int(x):,} 주")
         df_disp["실시간 수익률"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
@@ -698,7 +669,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             df_hist['created_at'] = pd.to_datetime(df_hist['created_at'], errors='coerce').dt.tz_localize(None) + pd.Timedelta(hours=9)
             df_hist['created_at'] = df_hist['created_at'].dt.strftime('%Y-%m-%d %H:%M')
             
-            # 👍 [NameError의 주범 parse_num 스코프 완전 고정]
             df_hist['진입가'] = df_hist['buy_price'].apply(lambda x: f"₩ {int(parse_num(str(x))):,}")
             df_hist['청산가'] = df_hist['sell_price'].apply(lambda x: f"₩ {int(parse_num(str(x))):,}")
             df_hist['수량'] = df_hist['qty'].apply(lambda x: f"{int(parse_num(str(x))):,} 주")
