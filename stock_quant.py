@@ -33,7 +33,7 @@ def format_date_clean(date_str):
         return dt.strftime("%Y-%m-%d %H:%M")
     except: return str(date_str)
 
-# 👍 [대표님 설계] KRX가 막혔을 때 우회할 최종 보루 (수동 하드코딩 맵)
+# 👍 차단 방어용 하드코딩 맵
 USER_SECTOR_MAP = {
     "000660": "반도체 제조업",
     "032830": "보험업",
@@ -322,7 +322,6 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
     cache_res = supabase.table("stock_cache").select("*").in_("ticker", tickers).execute()
     cache_map = {r['ticker']: r for r in cache_res.data}
 
-    # 👍 [대표님 설계] DB에 없거나 에러인 경우에만 KRX를 1회 긁기 위해 타겟 검사
     need_krx_call = False
     for row in portfolio_data:
         ticker = row['ticker']
@@ -337,7 +336,7 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
             df_k = fdr.StockListing('KRX')
             krx_db = {row['Symbol']: row['Sector'] for _, row in df_k.iterrows() if 'Sector' in row and row['Sector']}
         except:
-            pass # 막혔으면 조용히 패스 (krx_db는 빈 딕셔너리 유지)
+            pass 
 
     price_map = {}
     now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
@@ -350,7 +349,6 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         
         db_cache = cache_map.get(ticker, {})
         
-        # 👍 [대표님 설계] 섹터 결정 로직: 1. 기존 DB -> 2. KRX -> 3. 수동 딕셔너리
         db_sector = db_cache.get('krx_sector', '')
         if db_sector and "차단" not in db_sector and "미등록" not in db_sector:
             final_sector = db_sector
@@ -433,10 +431,10 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         supabase.table("user_portfolio").upsert(user_portfolio_batch).execute()
 
 # ==========================================
-# [Layer 5] UI 대시보드 및 포트폴리오 관리 (부활)
+# [Layer 5] UI 대시보드 (신규 편입 및 동적 관리 UI 적용)
 # ==========================================
 def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
-    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v17.1")
+    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v17.2")
     macro_mult, current_usd, 환율상태 = fetch_global_macro_factor()
     
     with st.container(border=True):
@@ -447,38 +445,33 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
         with m_col2:
             st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="하이브리드 캐싱 (DB ➔ KRX ➔ 폴백) 가동 중")
 
-    # 👍 [핵심 2] 포트폴리오 자산 관리 (매수/매도/수정) 기능 완벽 부활
-    with st.expander("💼 포트폴리오 자산 관리 (수정/매도)"):
-        db_res_all = supabase.table("user_portfolio").select("*").eq("username", username).execute()
-        pf_list = db_res_all.data if db_res_all.data else []
-        
-        if not pf_list:
-            st.info("장부에 등록된 주식이 없습니다. 메인 탭에서 추가해주세요.")
-        else:
-            pf_names = [f"{p['name']} ({p['ticker']})" for p in pf_list]
-            selected_pf = st.selectbox("관리할 종목 선택", pf_names)
+    # 👍 [부활] 신규 종목 추가 UI를 최상단에 깔끔하게 배치
+    with st.expander("➕ 신규 자산 편입 (장부 등록)", expanded=False):
+        st.markdown("새로운 자산을 포트폴리오에 추가합니다. 등록 후 '전면 재연산'을 누르면 가치가 즉시 동기화됩니다.")
+        with st.form("add_new_stock_form"):
+            col_add1, col_add2 = st.columns(2)
+            with col_add1:
+                n_ticker = st.text_input("종목코드 (Ticker) ex: 000660")
+                n_name = st.text_input("기업명 ex: SK하이닉스")
+            with col_add2:
+                n_price = st.number_input("매수 평단가 (₩)", min_value=0, step=100)
+                n_qty = st.number_input("매수 수량 (주)", min_value=1, step=10)
             
-            sel_idx = pf_names.index(selected_pf)
-            sel_row = pf_list[sel_idx]
-            
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                new_price = st.number_input("평단가 수정 (₩)", value=int(sel_row['buy_price']), step=100)
-            with c2:
-                new_qty = st.number_input("보유수량 수정 (주)", value=int(sel_row['qty']), step=10)
-            with c3:
-                st.write("액션")
-                if st.button("✏️ 장부 덮어쓰기", use_container_width=True):
-                    supabase.table("user_portfolio").update({"buy_price": new_price, "qty": new_qty}).eq("id", sel_row['id']).execute()
-                    st.success("수정 완료! 화면을 새로고침합니다.")
+            submit_add = st.form_submit_button("💼 장부에 자산 등록", use_container_width=True)
+            if submit_add:
+                if n_ticker and n_name:
+                    supabase.table("user_portfolio").insert({
+                        "username": username,
+                        "ticker": n_ticker,
+                        "name": n_name,
+                        "buy_price": n_price,
+                        "qty": n_qty
+                    }).execute()
+                    st.success(f"{n_name} 편입 완료! 새로고침합니다.")
                     time.sleep(1)
                     st.rerun()
-                
-                if st.button("🗑️ 전량 매도 (삭제)", type="primary", use_container_width=True):
-                    supabase.table("user_portfolio").delete().eq("id", sel_row['id']).execute()
-                    st.error("매도 처리 완료!")
-                    time.sleep(1)
-                    st.rerun()
+                else:
+                    st.error("종목코드와 기업명을 정확히 입력해주세요.")
 
     tab_port, tab_hist, tab_log = st.tabs(["💼 퀀트 밸류에이션 장부", "📝 가치 실현 내역", "⚙️ 시스템 가동 로그"])
 
@@ -490,14 +483,14 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
 
         if col_sync1.button("🔄 가치 밸류에이션 전면 재연산", width="stretch"):
             if not portfolio_data: st.stop()
-            with st.status("v17.1 지능형 데이터 뱅킹 및 리레이팅 연산 중...", expanded=True) as status:
+            with st.status("v17.2 지능형 데이터 뱅킹 및 리레이팅 연산 중...", expanded=True) as status:
                 execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=True)
                 status.update(label="100% 무결성 및 지능형 우회 연산 수렴 성공!", state="complete")
             st.rerun()
 
         st.divider()
         if not portfolio_data:
-            st.info("장부에 주식이 없습니다.")
+            st.info("장부에 주식이 없습니다. 위의 '신규 자산 편입' 메뉴를 이용해주세요.")
             return
 
         total_invest, total_value = 0, 0
@@ -606,6 +599,23 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
             s_cache = raw_row.get("analysis_cache") if raw_row.get("analysis_cache") else {}
             
             st.markdown(f"### 🛠️ [{s_name}] 퀀트 익절/손절 통제실")
+            
+            # 👍 [동선 최적화] 표에서 종목 클릭 시 바로 평단가 수정 및 매도 버튼이 직관적으로 노출됨
+            st.markdown("#### ⚙️ 선택 종목 포트폴리오 관리")
+            c_ed1, c_ed2, c_ed3 = st.columns(3)
+            with c_ed1:
+                edit_price = st.number_input("평단가 수정 (₩)", value=int(raw_row['buy_price']), step=100, key=f"edit_p_{raw_row['id']}")
+            with c_ed2:
+                edit_qty = st.number_input("보유수량 수정 (주)", value=int(raw_row['qty']), step=10, key=f"edit_q_{raw_row['id']}")
+            with c_ed3:
+                st.write("액션")
+                if st.button("✏️ 장부 덮어쓰기", use_container_width=True, key=f"btn_edit_{raw_row['id']}"):
+                    supabase.table("user_portfolio").update({"buy_price": edit_price, "qty": edit_qty}).eq("id", raw_row['id']).execute()
+                    st.rerun()
+                if st.button("🗑️ 전량 매도 (삭제)", type="primary", use_container_width=True, key=f"btn_del_{raw_row['id']}"):
+                    supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
+                    st.rerun()
+                    
             st.divider()
             
             t1, t2, t3 = st.tabs(["📉 3단계 시나리오 및 수급 판세", "📰 전방 사업 명세", "📊 실적 턴어라운드 감지"])
@@ -627,7 +637,6 @@ def run_stock_quant_page(supabase, username, naver_id=None, naver_secret=None):
                 st.markdown(f"**🏛️ 에프앤가이드 여의도 컨센서스 목표주가 평균:** `₩ {int(selected_stock['에프앤목표가']):,}`원")
                 
             with t2:
-                # 👍 [핵심 3] FnGuide 서버 차단 시 화면 터짐 방지 및 예외 처리
                 summary_text = s_cache.get('summary', '')
                 if not summary_text: summary_text = "기업 분석 데이터를 가져올 수 없습니다 (네트워크 지연)."
                 st.write(f"**📢 기업 개요 및 펀더멘탈 요약:** {summary_text}")
