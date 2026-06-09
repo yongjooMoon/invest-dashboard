@@ -12,7 +12,7 @@ import json
 import time
 
 # ==========================================
-# [Layer 1] 유틸리티 및 오차 보정 파서 엔진
+# [Layer 1] 글로벌 전역 무결성 파서 및 스레드 락 바인더
 # ==========================================
 _active_threads = {}
 
@@ -58,54 +58,60 @@ def calculate_bm_score(fund_data):
             report += f"최근 매출 {int(last_rev):,}억 (QoQ {qoq:+.1f}%) / 영업이익 {int(last_op):,}억 (OPM {margin:.1f}%)"
     return growth_multiplier, report
 
-# 영구 차단 우회 및 레이지 로딩용 전역 랜드마크 풀
-FALLBACK_KRX_DICTIONARY = {
-    "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "삼성전자우": "005935.KS", "SK스퀘어": "402340.KS",
-    "현대차": "005380.KS", "삼성전기": "009150.KS", "LG에너지솔루션": "373220.KS", "삼성생명": "032830.KS",
-    "삼성물산": "028260.KS", "HD현대중공업": "329180.KS", "두산에너빌리티": "034020.KS", "현대모비스": "012330.KS",
-    "기아": "000270.KS", "삼성바이오로직스": "207940.KS", "LG전자": "066570.KS", "한화에어로스페이스": "012450.KS",
-    "KB금융": "105560.KS", "삼성SDI": "006400.KS", "SK": "034730.KS", "신한지주": "055550.KS",
-    "NAVER": "035420.KS", "셀트리온": "068270.KS", "LS ELECTRIC": "010120.KS", "한화오션": "042660.KS",
-    "HD현대일렉트릭": "267260.KS", "두산": "000150.KS", "효성중공업": "298040.KS", "LG이노텍": "011070.KS",
-    "미래에셋증권": "006800.KS", "POSCO홀딩스": "005490.KS", "하나금융지주": "086790.KS", "HD현대중공업": "329180.KS",
-    "삼화콘덴서": "001820.KS", "광전자": "017900.KS", "로보스타": "090360.KQ", "테스": "095610.KQ", 
-    "대원전선우": "006345.KS", "미래에셋벤처투자": "100790.KQ"
-}
-
 # ==========================================
-# [Layer 2] 원천 데이터 인스티튜셔널 크롤러 엔진 (완벽 선선언)
+# [Layer 2] 👍 [대표님 인프라 오더] 30일 만기 영구 보존형 DB 원장 시스템
 # ==========================================
-def load_krx_mapping_from_db(supabase):
+def load_system_krx_data(supabase):
+    """
+    하드코딩 사전을 완전 배제하고, 최초 가동 시 대한민국 전 종목 명세(2,500+ 자산)를 
+    통합 수집하여 DB에 적재한 뒤, 30일 동안 외부 API 타격을 0회로 전면 통제하는 무결성 캐시 기지.
+    """
     now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
     try:
         res = supabase.table("stock_cache").select("*").eq("ticker", "__SYSTEM_KRX_MAP__").execute()
         if res.data:
             row = res.data[0]
+            # 30일 만기 검증 격벽 (30일 이내일 시 외부 요청 없음)
             if not is_expired(row.get('last_price_update'), 2592000):
                 return json.loads(row['bm_summary'])
     except: pass
 
-    krx_map = {}
+    # 만기 만료 혹은 데이터 유실 시 최초 1회 통합 크롤링 집행
     try:
         df = fdr.StockListing('KRX')
-        krx_map = {row['Name']: f"{row['Symbol']}.KS" if row['Market'] == 'KOSPI' else f"{row['Symbol']}.KQ" for _, row in df.iterrows()}
-    except:
-        try:
-            df = fdr.StockListing('KRX-DESC')
-            krx_map = {row['Name']: f"{row['Symbol']}.KS" for _, row in df.iterrows()}
-        except: pass
-
-    if not krx_map: krx_map = FALLBACK_KRX_DICTIONARY
-
-    try:
-        payload = {
-            "ticker": "__SYSTEM_KRX_MAP__", "name": "전역 종목코드 주소록", "krx_sector": "시스템 통제",
-            "bm_summary": json.dumps(krx_map, ensure_ascii=False), "last_price_update": now_kst_str
-        }
-        supabase.table("stock_cache").upsert(payload).execute()
+        if not df.empty:
+            name_to_code = {}
+            code_to_sector = {}
+            for _, r in df.iterrows():
+                if pd.isna(r.get('Name')) or pd.isna(r.get('Symbol')): continue
+                s_name = str(r['Name']).strip()
+                s_code = str(r['Symbol']).strip()
+                s_sector = str(r['Sector']).strip() if ( 'Sector' in df.columns and pd.notna(r['Sector']) ) else "일반제조업"
+                
+                name_to_code[s_name] = s_code
+                code_to_sector[s_code] = s_sector
+                
+            system_data = {"name_to_code": name_to_code, "code_to_sector": code_to_sector}
+            
+            # DB 원장에 압축 업서트 저장 (향후 30일 락 가동)
+            payload = {
+                "ticker": "__SYSTEM_KRX_MAP__", "name": "전역 시스템 마스터 원장", "krx_sector": "시스템",
+                "bm_summary": json.dumps(system_data, ensure_ascii=False), "last_price_update": now_kst_str
+            }
+            supabase.table("stock_cache").upsert(payload).execute()
+            return system_data
     except: pass
-    return krx_map
 
+    # 초도 구동 시 원천 차단 병목에 걸릴 경우를 대비한 최소한의 부트스트랩 안전망
+    bootstrap_data = {
+        "name_to_code": {"SK하이닉스": "000660", "삼화콘덴서": "001820", "광전자": "017900", "LG전자": "066570", "삼성생명": "032830"},
+        "code_to_sector": {"000660": "반도체 제조업", "001820": "전기장비 제조업", "017900": "전자부품 제조업", "066570": "전자부품 제조업", "032830": "보험업"}
+    }
+    return bootstrap_data
+
+# ==========================================
+# [Layer 3] 원천 데이터 백엔드 크롤러 엔진
+# ==========================================
 def fetch_global_macro_factor():
     macro_multiplier = 1.0
     current_usd = 1541.6  
@@ -222,36 +228,8 @@ def fetch_dynamic_company_bm(raw_code):
     except: pass
     return [["기반사업부", "주요 제품/서비스", "공시분석", "-"]]
 
-def get_auto_momentum(stock_name, client_id, client_secret):
-    if not client_id or not client_secret: return 0, 0, "인증키 누락", []
-    exact_query = f'"{stock_name}"'
-    url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(exact_query)}&display=10&sort=date"
-    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code != 200: return 0, 0, "인증 대기", []
-        items = res.json().get('items', [])
-        if not items: return 0, 0, "뉴스 없음", []
-        
-        news_list, pos_count, neg_count = [], 0, 0
-        for item in items:
-            headline = html.unescape(re.compile('<.*?>').sub('', item['title'])).strip()
-            news_list.append({"title": headline, "link": item.get('originallink', item['link'])})
-            combined_text = headline.upper()
-            if any(abort_kw in combined_text for abort_kw in ["철수", "중단", "매각", "계약해지"]):
-                neg_count += 3
-                continue
-            for pw in ['수주', '흑자', '돌파', 'AI', '최대', '공급', '계약', '성장', '수혜', '외인매수', '기관매집']:
-                if pw in combined_text: pos_count += 1
-            for nw in ['하락', '적자', '취소', '우려', '부진', '위기', '손실', '외인매도']:
-                if nw in combined_text: neg_count += 1
-                
-        net_sentiment = pos_count - neg_count
-        return 0, net_sentiment, news_list[0]['title'][:25] + "...", news_list
-    except: return 0, 0, "네트워크 오류", []
-
 # ==========================================
-# [Layer 3] v12.0 오리지널 7대 자산 결합형 밸류에이션 엔진
+# [Layer 4] v12.0 오리지널 7대 자산 결합형 밸류에이션 엔진
 # ==========================================
 def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     ticker = str(row['ticker']).split('.')[0]
@@ -358,7 +336,9 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
     portfolio_data = db_res.data
     if not portfolio_data: return
 
-    krx_db = load_krx_mapping_from_db(supabase)
+    # 30일 주기 통합 원장에서 업종 대분류 지도 추출
+    system_data = load_system_krx_data(supabase)
+    code_to_sector = system_data.get("code_to_sector", {})
     now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
 
     for row in portfolio_data:
@@ -369,7 +349,7 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         db_cache = cache_res.data[0] if cache_res.data else {}
         
         updated_cache = {"ticker": ticker, "name": name}
-        updated_cache['krx_sector'] = krx_db.get(name, "일반제조업")
+        updated_cache['krx_sector'] = code_to_sector.get(ticker, "일반제조업")
 
         if is_expired(db_cache.get('last_price_update'), 600) or force:
             df_p = fdr.DataReader(ticker, start=(datetime.utcnow()-timedelta(days=7)).strftime('%Y-%m-%d'))
@@ -434,7 +414,7 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
 
 # ==========================================
-# [Layer 6] UI 주 관제 센터
+# [Layer 6] UI 주 인터페이스 관제 센터
 # ==========================================
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
     st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.5")
@@ -454,15 +434,17 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         with m_col2:
             st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="v12 데몬 및 v19.5 레이지 캐시 스케줄러 가동")
 
-    krx_map = load_krx_mapping_from_db(supabase)
+    # 30일 주기 통합 원장에서 종목명 주소록 연동
+    system_data = load_system_krx_data(supabase)
+    name_to_code = system_data.get("name_to_code", {})
 
     with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
         col1, col2, col3 = st.columns(3)
-        with col1: s_name = st.selectbox("종목 선택 (한/영 키를 눌러주세요)", list(krx_map.keys()))
+        with col1: s_name = st.selectbox("종목 선택 (한/영 키를 눌러주세요)", list(name_to_code.keys()))
         with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
         with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
         if st.button("장부 조율 및 매수 결제", type="primary"):
-            raw_ticker = str(krx_map[s_name]).split('.')[0]
+            raw_ticker = name_to_code.get(s_name, "000000")
             try:
                 supabase.table("user_portfolio").upsert({
                     "username": username, "ticker": raw_ticker, "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}
@@ -482,7 +464,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
         portfolio_data = db_res.data
 
-        # 👍 [대표님 오더 반영] 버튼 클릭 시 force=False 처리하여 스케줄러 격벽이 정상 작동하게끔 유도!
         if col_sync1.button("🔄 퀀트 밸류에이션 장부 커스텀 재연산", width="stretch"):
             if not portfolio_data: st.stop()
             with st.status("시차 캐시 스케줄러 가동 및 수식 재연산 중...", expanded=True) as status:
