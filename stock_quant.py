@@ -12,7 +12,7 @@ import json
 import time
 
 # ==========================================
-# [Layer 1] 글로벌 전역 무결성 파서 및 스레드 락 바인더
+# [Layer 1] 유틸리티 및 오차 보정 파서 엔진
 # ==========================================
 _active_threads = {}
 
@@ -73,7 +73,7 @@ FALLBACK_KRX_DICTIONARY = {
 }
 
 # ==========================================
-# [Layer 2] 지능형 30일 주기 DB 매핑 연동기
+# [Layer 2] 원천 데이터 인스티튜셔널 크롤러 엔진 (완벽 선선언)
 # ==========================================
 def load_krx_mapping_from_db(supabase):
     now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
@@ -106,9 +106,6 @@ def load_krx_mapping_from_db(supabase):
     except: pass
     return krx_map
 
-# ==========================================
-# [Layer 3] 원천 데이터 백엔드 크롤러 엔진
-# ==========================================
 def fetch_global_macro_factor():
     macro_multiplier = 1.0
     current_usd = 1541.6  
@@ -225,8 +222,36 @@ def fetch_dynamic_company_bm(raw_code):
     except: pass
     return [["기반사업부", "주요 제품/서비스", "공시분석", "-"]]
 
+def get_auto_momentum(stock_name, client_id, client_secret):
+    if not client_id or not client_secret: return 0, 0, "인증키 누락", []
+    exact_query = f'"{stock_name}"'
+    url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(exact_query)}&display=10&sort=date"
+    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code != 200: return 0, 0, "인증 대기", []
+        items = res.json().get('items', [])
+        if not items: return 0, 0, "뉴스 없음", []
+        
+        news_list, pos_count, neg_count = [], 0, 0
+        for item in items:
+            headline = html.unescape(re.compile('<.*?>').sub('', item['title'])).strip()
+            news_list.append({"title": headline, "link": item.get('originallink', item['link'])})
+            combined_text = headline.upper()
+            if any(abort_kw in combined_text for abort_kw in ["철수", "중단", "매각", "계약해지"]):
+                neg_count += 3
+                continue
+            for pw in ['수주', '흑자', '돌파', 'AI', '최대', '공급', '계약', '성장', '수혜', '외인매수', '기관매집']:
+                if pw in combined_text: pos_count += 1
+            for nw in ['하락', '적자', '취소', '우려', '부진', '위기', '손실', '외인매도']:
+                if nw in combined_text: neg_count += 1
+                
+        net_sentiment = pos_count - neg_count
+        return 0, net_sentiment, news_list[0]['title'][:25] + "...", news_list
+    except: return 0, 0, "네트워크 오류", []
+
 # ==========================================
-# [Layer 4] v12.0 오리지널 7대 자산 결합형 밸류에이션 엔진
+# [Layer 3] v12.0 오리지널 7대 자산 결합형 밸류에이션 엔진
 # ==========================================
 def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     ticker = str(row['ticker']).split('.')[0]
@@ -311,7 +336,7 @@ def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     return int(base_target), bear_target, bull_target, round(target_per, 2), round(peg_ratio, 2), [quant_tier, krx_sector_name]
 
 # ==========================================
-# [Layer 5] v12.0 스레드 루프 & v14.0 이중 캐시 스크리닝
+# [Layer 5] v12 데몬 루프 및 v14 지능형 캐시 스케줄러 파이프라인
 # ==========================================
 def auto_sync_job(supabase, username, naver_id, naver_secret):
     last_sync_time = 0
@@ -357,9 +382,10 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
 
         if is_expired(db_cache.get('last_news_update'), 1800) or force:
             _, net_sent, _, n_list = get_auto_momentum(name, naver_id, naver_secret)
-            updated_cache['net_sentiment'] = net_sent
-            updated_cache['news_list'] = n_list
-            updated_cache['last_news_update'] = now_kst_str
+            if net_sent is not None:
+                updated_cache['net_sentiment'] = net_sent
+                updated_cache['news_list'] = n_list
+                updated_cache['last_news_update'] = now_kst_str
 
         if is_expired(db_cache.get('last_flow_update'), 3600) or force:
             f_flow, i_flow = fetch_investor_flows(ticker)
@@ -408,10 +434,10 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
 
 # ==========================================
-# [Layer 6] UI 주 인터페이스 관제 센터 (완벽 매핑 완료)
+# [Layer 6] UI 주 관제 센터
 # ==========================================
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.4")
+    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.5")
     
     if username not in _active_threads or not _active_threads[username].is_alive():
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
@@ -426,7 +452,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         with m_col1:
             st.metric("원/달러 환율 국면", 환율상태, delta="외국인 패시브 수급 불안" if current_usd >= 1400 else "수급 안정 구역", delta_color="inverse")
         with m_col2:
-            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="v12 데몬 및 수급 데이터 완전 매핑 복원 모드")
+            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="v12 데몬 및 v19.5 레이지 캐시 스케줄러 가동")
 
     krx_map = load_krx_mapping_from_db(supabase)
 
@@ -456,11 +482,12 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
         portfolio_data = db_res.data
 
-        if col_sync1.button("🔄 가치 밸류에이션 전면 강제 재연산", width="stretch"):
+        # 👍 [대표님 오더 반영] 버튼 클릭 시 force=False 처리하여 스케줄러 격벽이 정상 작동하게끔 유도!
+        if col_sync1.button("🔄 퀀트 밸류에이션 장부 커스텀 재연산", width="stretch"):
             if not portfolio_data: st.stop()
-            with st.status("원천 유동성 강제 동기화 팩터 연산 중...", expanded=True) as status:
-                execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=True)
-                status.update(label="전역 공용 캐시 수급 및 밸류에이션 리레이팅 리셋 완료!", state="complete")
+            with st.status("시차 캐시 스케줄러 가동 및 수식 재연산 중...", expanded=True) as status:
+                execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=False)
+                status.update(label="스케줄러 기반 안전 재연산 완료!", state="complete")
             st.rerun()
 
         st.divider()
@@ -499,7 +526,6 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             elif val_ratio < 0.95: status_emoji = "🟢 가치 수렴 중"
             else: status_emoji = "🎯 사이클 고점 도달"
 
-            # 👍 [핵심 교정] "외인20일"과 "기관20일" 키값을 누락 없이 확실하게 리스트에 결속 바인딩!
             display_rows.append({
                 "밸류에이션 상태": status_emoji, "종목명": row['name'], "현재가": curr_price, "전일비": day_pct, "평단가": row['buy_price'], "보유지분": row['qty'], "평가손익": pnl_amt, "수익률": pnl_pct,
                 "비관": bear_target, "기준(최고치)": target_price, "낙관": bull_target, "안전목표가": safe_target_price, "목표평가손익": (safe_target_price - row['buy_price']) * row['qty'],
