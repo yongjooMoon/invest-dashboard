@@ -62,17 +62,16 @@ def calculate_bm_score(fund_data):
 # [Layer 2] 30일 만기 영구 보존형 DB 원장 시스템
 # ==========================================
 def load_system_krx_data(supabase):
-    """
-    하드코딩 사전을 완전 배제하고, 최초 가동 시 대한민국 전 종목 명세(2,500+ 자산)를 
-    통합 수집하여 DB에 적재한 뒤, 30일 동안 외부 API 타격을 0회로 전면 통제하는 무결성 캐시 기지.
-    """
     now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
     try:
         res = supabase.table("stock_cache").select("*").eq("ticker", "__SYSTEM_KRX_MAP__").execute()
         if res.data:
             row = res.data[0]
             if not is_expired(row.get('last_price_update'), 2592000):
-                return json.loads(row['bm_summary'])
+                packed_raw = json.loads(row['bm_summary'])
+                if isinstance(packed_raw, dict) and "__PACKED_CONTAINER__" in packed_raw:
+                    return packed_raw["data"]
+                return packed_raw
     except: pass
 
     try:
@@ -84,7 +83,7 @@ def load_system_krx_data(supabase):
                 if pd.isna(r.get('Name')) or pd.isna(r.get('Symbol')): continue
                 s_name = str(r['Name']).strip()
                 s_code = str(r['Symbol']).strip()
-                s_sector = str(r['Sector']).strip() if ( 'Sector' in df.columns and pd.notna(r['Sector']) ) else "일반제조업"
+                s_sector = str(r['Sector']).strip() if ('Sector' in df.columns and pd.notna(r['Sector'])) else "일반제조업"
                 
                 name_to_code[s_name] = s_code
                 code_to_sector[s_code] = s_sector
@@ -93,20 +92,20 @@ def load_system_krx_data(supabase):
             
             payload = {
                 "ticker": "__SYSTEM_KRX_MAP__", "name": "전역 시스템 마스터 원장", "krx_sector": "시스템",
-                "bm_summary": json.dumps(system_data, ensure_ascii=False), "last_price_update": now_kst_str
+                "bm_summary": json.dumps({"__PACKED_CONTAINER__": True, "data": system_data}, ensure_ascii=False), 
+                "last_price_update": now_kst_str
             }
             supabase.table("stock_cache").upsert(payload).execute()
             return system_data
     except: pass
 
-    bootstrap_data = {
+    return {
         "name_to_code": {"SK하이닉스": "000660", "삼화콘덴서": "001820", "광전자": "017900", "LG전자": "066570", "삼성생명": "032830"},
         "code_to_sector": {"000660": "반도체 제조업", "001820": "전기장비 제조업", "017900": "전자부품 제조업", "066570": "전자부품 제조업", "032830": "보험업"}
     }
-    return bootstrap_data
 
 # ==========================================
-# [Layer 3] 원천 데이터 백엔드 크롤러 및 뉴스 분석 엔진 (복구 완료)
+# [Layer 3] 원천 데이터 백엔드 크롤러 엔진
 # ==========================================
 def fetch_global_macro_factor():
     macro_multiplier = 1.0
@@ -225,7 +224,6 @@ def fetch_dynamic_company_bm(raw_code):
     return [["기반사업부", "주요 제품/서비스", "공시분석", "-"]]
 
 def get_auto_momentum(stock_name, client_id, client_secret):
-    """실시간 뉴스 감성 사전을 완전 복구하여 NameError 바인딩 차단"""
     if not client_id or not client_secret: return 0, 0, "인증키 누락", []
     exact_query = f'"{stock_name}"'
     url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(exact_query)}&display=10&sort=date"
@@ -339,7 +337,7 @@ def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     return int(base_target), bear_target, bull_target, round(target_per, 2), round(peg_ratio, 2), [quant_tier, krx_sector_name]
 
 # ==========================================
-# [Layer 5] 데몬 루프 및 지능형 캐시 스케줄러 파이프라인
+# [Layer 5] 데몬 루프 및 유니버설 하이브리드 컨테이너 파이프라인
 # ==========================================
 def auto_sync_job(supabase, username, naver_id, naver_secret):
     last_sync_time = 0
@@ -368,8 +366,20 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         name = row['name']
         
         cache_res = supabase.table("stock_cache").select("*").eq("ticker", ticker).execute()
-        db_cache = cache_res.data[0] if cache_res.data else {}
+        db_cache_row = cache_res.data[0] if cache_res.data else {}
         
+        # 👍 [v19.8 무결성 격벽 해제] DB 원장 하이드레이션 복원 연산
+        db_cache = {}
+        if db_cache_row:
+            for k, v in db_cache_row.items():
+                db_cache[k] = v
+            if db_cache_row.get('bm_summary'):
+                try:
+                    packed = json.loads(db_cache_row['bm_summary'])
+                    if isinstance(packed, dict) and "__PACKED_CONTAINER__" in packed:
+                        db_cache.update(packed["data"])
+                except: pass
+
         updated_cache = {"ticker": ticker, "name": name}
         updated_cache['krx_sector'] = code_to_sector.get(ticker, "일반제조업")
 
@@ -419,7 +429,20 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
             })
 
         full_cache = {**db_cache, **updated_cache}
-        supabase.table("stock_cache").upsert(full_cache).execute()
+        
+        # 👍 [v19.8 핵심 교정] undefined_column APIError 완벽 분쇄용 패킹 기법 인가
+        payload = {
+            "ticker": ticker,
+            "name": name,
+            "krx_sector": updated_cache.get('krx_sector', '일반제조업'),
+            "last_price_update": now_kst_str
+        }
+        for col in ['current_price', 'pct_change', 'year_high', 'net_sentiment']:
+            if col in db_cache_row:
+                payload[col] = full_cache.get(col)
+                
+        payload["bm_summary"] = json.dumps({"__PACKED_CONTAINER__": True, "data": full_cache}, ensure_ascii=False)
+        supabase.table("stock_cache").upsert(payload).execute()
         
         base_tgt, bear_tgt, bull_tgt, target_multiple, peg, applied_trends = calculate_intrinsic_target(row, full_cache, macro_mult)
         
@@ -436,10 +459,10 @@ def execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=Fal
         supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
 
 # ==========================================
-# [Layer 6] UI 주 인터페이스 관제 센터
+# [Layer 6] UI 주 관제 센터 Center
 # ==========================================
 def run_stock_quant_page(supabase, username, naver_id, naver_secret):
-    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.7")
+    st.title("🛡️ 스마트 프랍 퀀트 포트폴리오 엔진 v19.8")
     
     if username not in _active_threads or not _active_threads[username].is_alive():
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, naver_id, naver_secret), daemon=True)
@@ -454,7 +477,7 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         with m_col1:
             st.metric("원/달러 환율 국면", 환율상태, delta="외국인 패시브 수급 불안" if current_usd >= 1400 else "수급 안정 구역", delta_color="inverse")
         with m_col2:
-            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="뉴스 및 캐시 복구 완전 수렴 가동")
+            st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="유니버설 JSON 컨테이너 격벽 가동 중")
 
     system_data = load_system_krx_data(supabase)
     name_to_code = system_data.get("name_to_code", {})
@@ -487,9 +510,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
 
         if col_sync1.button("🔄 퀀트 밸류에이션 장부 커스텀 재연산", width="stretch"):
             if not portfolio_data: st.stop()
-            with st.status("시차 캐시 스케줄러 가동 및 수식 재연산 중...", expanded=True) as status:
+            with st.status("유니버설 컨테이너 패킹 수식 동적 연산 중...", expanded=True) as status:
                 execute_on_demand_sync(supabase, username, naver_id, naver_secret, force=False)
-                status.update(label="스케줄러 기반 안전 재연산 완료!", state="complete")
+                status.update(label="스케줄러 기반 무결성 재연산 완결!", state="complete")
             st.rerun()
 
         st.divider()
@@ -502,6 +525,11 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         
         for row in portfolio_data:
             cache = row.get('analysis_cache', {})
+            if isinstance(cache, str):
+                try: cache = json.loads(cache)
+                except: cache = {}
+            if not isinstance(cache, dict): cache = {}
+
             curr_price = cache.get('current_price', row['buy_price'])
             day_pct = cache.get('pct_change', 0.0)
             target_price = cache.get('target_2026', row['buy_price'])
@@ -532,7 +560,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
                 "밸류에이션 상태": status_emoji, "종목명": row['name'], "현재가": curr_price, "전일비": day_pct, "평단가": row['buy_price'], "보유지분": row['qty'], "평가손익": pnl_amt, "수익률": pnl_pct,
                 "비관": bear_target, "기준(최고치)": target_price, "낙관": bull_target, "안전목표가": safe_target_price, "목표평가손익": (safe_target_price - row['buy_price']) * row['qty'],
                 "PEG": peg, "적용배수": target_multiple, "KRX섹터": krx_sector, "엔진모델": engine_model,
-                "외인20일": cache.get('foreign_20d_flow', 0.0), "기관20일": cache.get('institution_20d_flow', 0.0), "raw_data": row
+                "외인20일": cache.get('foreign_20d_flow', 0.0) if cache.get('foreign_20d_flow') is not None else 0.0, 
+                "기관20일": cache.get('institution_20d_flow', 0.0) if cache.get('institution_20d_flow') is not None else 0.0, 
+                "raw_data": row
             })
 
         total_pnl = total_value - total_invest
@@ -558,8 +588,8 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
         df_disp["📉 비관(Bear)"] = df_base["비관"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["🟢 기준(Base)"] = df_base["기준(최고치)"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["📈 낙관(Bull)"] = df_base["낙관"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp["외인 20일(주)"] = df_base["외인20일"].apply(lambda x: f"{int(x):+,}")
-        df_disp["기관 20일(주)"] = df_base["기관20일"].apply(lambda x: f"{int(x):+,}")
+        df_disp["외인 20일(주)"] = df_base["외인20일"].apply(lambda x: f"{int(parse_num(str(x))):+,}")
+        df_disp["기관 20일(주)"] = df_base["기관20일"].apply(lambda x: f"{int(parse_num(str(x))):+,}")
         df_disp["진성 PEG"] = df_base["PEG"].apply(lambda x: f"📊 {x:.2f}")
 
         def style_mts_color(row):
@@ -591,6 +621,9 @@ def run_stock_quant_page(supabase, username, naver_id, naver_secret):
             raw_row = selected_stock["raw_data"]
             s_ticker = str(raw_row['ticker']).split('.')[0]
             s_cache = raw_row.get("analysis_cache", {})
+            if isinstance(s_cache, str):
+                try: s_cache = json.loads(s_cache)
+                except: s_cache = {}
             
             st.markdown(f"### 🛠️ [{s_name}] 퀀트 익절/손절 실전 통제실")
             
