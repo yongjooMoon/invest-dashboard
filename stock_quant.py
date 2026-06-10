@@ -19,7 +19,7 @@ _active_threads = {}
 def parse_num(txt):
     if not txt: return 0.0
     cleaned = str(txt).replace('₩', '').replace(',', '').replace('주', '').strip()
-    m = re.search(r'[-+]?[0-9]+(:\.[0-9]?)+', cleaned)
+    m = re.search(r'[-+]?[0-9]+(?:\.[0-9]+)?', cleaned)
     return float(m.group()) if m else 0.0
 
 def is_expired(last_update_str, threshold_seconds):
@@ -32,6 +32,7 @@ def is_expired(last_update_str, threshold_seconds):
     except: return True
 
 def calculate_bm_score(fund_data):
+    """분기 실적 및 QoQ 영업이익률 추적 계량 스코어링 함수"""
     growth_multiplier = 1.0
     report = ""
     if fund_data:
@@ -221,7 +222,7 @@ def calculate_intrinsic_target(row, cache, macro_multiplier=1.0):
     return int(base_target), int(base_target * 0.78), int(base_target * 1.35), round(target_per, 2), round(target_per / eps_growth_rate, 2), [quant_tier, krx_sector_name]
 
 # ==========================================
-# [Layer 5] 🔥 6대 인자 하이브리드 캐시 파이프라인 (완벽 동기화)
+# [Layer 5] 6대 인자 하이브리드 캐시 파이프라인
 # ==========================================
 def auto_sync_job(supabase, username, app_key, app_secret, naver_id, naver_secret):
     last_sync_time = 0
@@ -273,7 +274,6 @@ def execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, na
             f_flow, i_flow = fetch_kis_investor_flows(ticker, token, app_key, app_secret)
             updated_cache.update({'foreign_20d_flow': f_flow, 'institution_20d_flow': i_flow, 'last_flow_update': now_kst_str})
 
-        # 📰 [네이버 뉴스 결속선 완전 가동] 
         if is_expired(db_cache.get('last_news_update'), 1800) or force:
             _, net_sent, _, n_list = get_auto_momentum(name, naver_id, naver_secret)
             updated_cache.update({'net_sentiment': net_sent, 'news_list': n_list, 'last_news_update': now_kst_str})
@@ -284,8 +284,15 @@ def execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, na
                 updated_cache.update({
                     'eps': fund['eps'], 'per': fund['per'], 'pbr': fund['pbr'], 'bps': fund['bps'],
                     'industry_per': fund['industry_per'], 'shares_outstanding': fund['shares_outstanding'],
-                    'broker_target': fund['broker_target'], 'summary': fund.get('summary', ''), 'last_fundamental_update': now_kst_str
+                    'broker_target': fund['broker_target'], 'summary': fund.get('summary', ''),
+                    'q_headers': fund.get('q_headers', []), 'q_revenues': fund.get('q_revenues', []), 'q_op_profits': fund.get('q_op_profits', []), 'last_fundamental_update': now_kst_str
                 })
+
+        if is_expired(db_cache.get('last_bm_update'), 2592000) or force:
+            bm_list = fetch_dynamic_company_bm(ticker)
+            mock_fund = {**db_cache, **updated_cache}
+            growth_factor, bm_summary = calculate_bm_score(mock_fund)
+            updated_cache.update({'bm_list': bm_list, 'bm_growth_factor': growth_factor, 'bm_summary': bm_summary, 'last_bm_update': now_kst_str})
 
         full_cache = {**db_cache, **updated_cache}
         payload = {
@@ -297,148 +304,262 @@ def execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, na
         
         base_tgt, bear_tgt, bull_tgt, target_multiple, peg, applied_trends = calculate_intrinsic_target(row, full_cache, macro_mult)
         user_cache = {
-            'current_price': full_cache.get('current_price', row['buy_price']), 'pct_change': full_cache.get('pct_change', 0.0),
+            'current_price': full_cache.get('current_price', row['buy_price']), 'pct_change': full_cache.get('pct_change', 0.0), 'year_high': full_cache.get('year_high', 0),
             'eps': full_cache.get('eps', 0.0), 'per': full_cache.get('per', 10.0), 'pbr': full_cache.get('pbr', 1.0), 'bps': full_cache.get('bps', 0.0),
             'foreign_20d_flow': full_cache.get('foreign_20d_flow', 0.0), 'institution_20d_flow': full_cache.get('institution_20d_flow', 0.0),
             'target_2026': base_tgt, 'bear_target': bear_tgt, 'bull_target': bull_tgt, 'target_multiple': target_multiple, 'peg': peg, 'applied_trends': applied_trends,
-            'summary': full_cache.get('summary', ''), 'krx_sector': full_cache.get('krx_sector', '일반제조업'), 'news_list': full_cache.get('news_list', [])
+            'summary': full_cache.get('summary', ''), 'bm_summary': full_cache.get('bm_summary', ''), 'bm_list': full_cache.get('bm_list', []),
+            'q_headers': full_cache.get('q_headers', []), 'q_revenues': full_cache.get('q_revenues', []), 'q_op_profits': full_cache.get('q_op_profits', []), 'news_list': full_cache.get('news_list', [])
         }
         supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
 
 # ==========================================
-# [Layer 6] UI 주 인터페이스 관제 센터 (6대 인자 전격 탑재)
+# [Layer 6] UI 주 관제 센터 (v19.8 UI 레이아웃 100% 원복)
 # ==========================================
 def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, naver_secret):
-    st.title("🛡️ 스마트 제도권 융합 퀀트 엔진 v21.0")
+    st.title("🛡️ 스마트 제도권 융합 퀀트 엔진 v22.0")
     
     if username not in _active_threads or not _active_threads[username].is_alive():
         t = threading.Thread(target=auto_sync_job, args=(supabase, username, app_key, app_secret, naver_id, naver_secret), daemon=True)
         t.start()
         _active_threads[username] = t
 
-    macro_mult, _, 환율상태 = fetch_global_macro_factor()
+    macro_mult, current_usd, 환율상태 = fetch_global_macro_factor()
     
     with st.container(border=True):
-        st.markdown("##### 🌐 REGULATED FIN-NET FLOW (제도권 정식 금융망 및 심리 레이더)")
+        st.markdown("##### 🌐 GLOBAL MACRO FLOW (매크로 유동성 및 심리 레이더)")
         m_col1, m_col2 = st.columns(2)
-        with m_col1: st.metric("원/달러 환율 국면", 환율상태, delta="한투 KIS 오픈 API 수급 엔진 동조화")
-        with m_col2: st.metric("뉴스 감성 분석 가동 상태", "네이버 오픈 API 정상 결속", delta="실시간 호재 스캐너 정상 작동 중")
+        with m_col1: st.metric("원/달러 환율 국면", 환율상태, delta="한투 KIS 오픈 API 수급 엔진 동조화", delta_color="inverse")
+        with m_col2: st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="네이버 뉴스 소스 실시간 호재 분석")
 
     system_data = load_system_krx_data(supabase)
     name_to_code = system_data.get("name_to_code", {})
 
-    with st.sidebar:
-        st.divider()
-        with st.expander("➕ 포트폴리오 자산 편입", expanded=False):
-            s_name = st.selectbox("종목 선택", list(name_to_code.keys()))
-            buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
-            qty = st.number_input("보유 수량(주)", min_value=1, value=10)
-            if st.button("장부 결제", type="primary", use_container_width=True):
-                try:
-                    supabase.table("user_portfolio").upsert({"username": username, "ticker": name_to_code.get(s_name, "000000"), "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}}).execute()
-                    st.success("장부 반영 완료!")
-                    time.sleep(0.3); st.rerun()
-                except Exception as e: st.error(str(e))
-
-    db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
-    portfolio_data = db_res.data
-
-    col_sync1 = st.columns(1)[0]
-    if col_sync1.button("🔄 KIS 금융망 및 뉴스 감성 융합 재연산", width="stretch"):
-        if not portfolio_data: st.stop()
-        with st.status("한투 수급망 및 네이버 뉴스 실시간 동시 타격 중...", expanded=True) as status:
-            execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, naver_secret, force=True)
-            status.update(label="융합 데이터 캐시 패킹 완결!", state="complete")
-        st.rerun()
-
-    if not portfolio_data:
-        st.info("장부에 보유 주식이 없습니다.")
-        return
-
-    total_invest, total_value = 0, 0
-    display_rows = []
-    
-    for row in portfolio_data:
-        cache = row.get('analysis_cache', {})
-        if isinstance(cache, str):
-            try: cache = json.loads(cache)
-            except: cache = {}
-        if not isinstance(cache, dict): cache = {}
-
-        curr_price = cache.get('current_price', row['buy_price'])
-        day_pct = cache.get('pct_change', 0.0)
-        target_price = cache.get('target_2026', row['buy_price'])
-        
-        total_invest += row['buy_price'] * row['qty']
-        total_value += curr_price * row['qty']
-        
-        status_emoji = "🔵 안전마진 확보" if curr_price / max(1, target_price) < 0.75 else "🟢 가치 수렴 중"
-
-        display_rows.append({
-            "상태": status_emoji, "종목명": row['name'], "현재가": curr_price, "전일비": day_pct, "평단가": row['buy_price'], "보유지분": row['qty'], "평가손익": (curr_price - row['buy_price']) * row['qty'], "수익률": ((curr_price - row['buy_price']) / row['buy_price'] * 100) if row['buy_price'] > 0 else 0.0,
-            "비관": cache.get('bear_target', int(target_price * 0.78)), "기준": target_price, "낙관": cache.get('bull_target', int(target_price * 1.35)), "PEG": cache.get('peg', 1.0), "적용배수": cache.get('target_multiple', 10.0), "KRX섹터": cache.get('krx_sector', '일반제조업'),
-            "외인20일": cache.get('foreign_20d_flow', 0.0), "기관20일": cache.get('institution_20d_flow', 0.0), "raw_data": row
-        })
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("총 투입 자본", f"{total_invest:,} 원")
-    c2.metric("현재 평가 자산", f"{total_value:,} 원")
-    c3.metric("포트폴리오 수익", f"{total_value - total_invest:,} 원", f"{((total_value - total_invest)/total_invest)*100:+.2f}%" if total_invest > 0 else "0.00%")
-    
-    df_base = pd.DataFrame(display_rows)
-    df_disp = pd.DataFrame()
-    df_disp["상태"] = df_base["상태"]
-    df_disp["종목명"] = df_base["종목명"]
-    df_disp["현재가"] = df_base["현재가"].apply(lambda x: f"₩ {int(x):,}")
-    df_disp["전일비(%)"] = df_base["전일비"].apply(lambda x: f"{x:+.2f}%")
-    df_disp["실시간 수익률"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
-    df_disp["현재 평가손익"] = df_base["평가손익"].apply(lambda x: f"₩ {int(x):+,}")
-    df_disp["📉 비관(Bear)"] = df_base["비관"].apply(lambda x: f"₩ {int(x):,}")
-    df_disp["🟢 기준(Base)"] = df_base["기준"].apply(lambda x: f"₩ {int(x):,}")
-    df_disp["📈 낙관(Bull)"] = df_base["낙관"].apply(lambda x: f"₩ {int(x):,}")
-    df_disp["외인 20일(주)"] = df_base["외인20일"].apply(lambda x: f"{int(x):+,}")
-    df_disp["기관 20일(주)"] = df_base["기관20일"].apply(lambda x: f"{int(x):+,}")
-    df_disp["진성 PEG"] = df_base["PEG"].apply(lambda x: f"📊 {x:.2f}")
-
-    # 👍 [AttributeError 완전 진압] 최신 스트림릿 객체/딕셔너리 호환성 격벽 처리
-    selection_event = st.dataframe(df_disp, width="stretch", on_select="rerun", selection_mode="single-row")
-    
-    selected_indices = []
-    if selection_event is not None:
-        if hasattr(selection_event, "selection") and selection_event.selection.rows:
-            selected_indices = selection_event.selection.rows
-        elif isinstance(selection_event, dict) and selection_event.get("selection", {}).get("rows"):
-            selected_indices = selection_event["selection"]["rows"]
-    
-    if selected_indices:
-        selected_stock = display_rows[selected_indices[0]]
-        raw_row = selected_stock["raw_data"]
-        s_name = selected_stock["종목명"]
-        s_ticker = str(raw_row['ticker']).split('.')[0]
-        s_cache = raw_row.get("analysis_cache", {})
-        if isinstance(s_cache, str):
-            try: s_cache = json.loads(s_cache)
-            except: s_cache = {}
-
-        st.markdown(f"### 🛠️ [{s_name}] 정식 금융망 및 뉴스 통제실")
-        
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("🚨 해당 포지션 청산(장부 삭제)", key=f"b_sl_{s_ticker}", use_container_width=True, type="primary"):
-                supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
-                st.success("포지션 청산 완결!")
+    # 👍 [UI 복원 1] 신규 자산 편입 메인화면 배치 복구
+    with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1: s_name = st.selectbox("종목 선택 (한/영 키를 눌러주세요)", list(name_to_code.keys()))
+        with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
+        with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
+        if st.button("장부 조율 및 매수 결제", type="primary"):
+            try:
+                supabase.table("user_portfolio").upsert({"username": username, "ticker": name_to_code.get(s_name, "000000"), "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}}).execute()
+                st.success(f"[{s_name}] 장부 편입 완료!")
                 time.sleep(0.3); st.rerun()
-        with col_btn2:
-            st.caption("🔒 본 데이터는 한국투자증권 공식 가상망과 네이버 보안 크레덴셜에 의해 보호받고 있습니다.")
+            except Exception as e: st.error(f"자산 편입 실패: {str(e)}")
 
-        t1, t2 = st.tabs(["📉 3단계 융합 멀티플 판세", "📰 실시간 뉴스 수집 명세"])
-        with t1:
-            st.markdown(f"**• 종합 투자 의견:** `{selected_stock['상태']}` | **진성 기하학적 PEG:** `{selected_stock['PEG']}x`")
-            st.markdown(f"**📉 비관적 저점 방어선:** `₩ {selected_stock['비관']:,}원` | **📈 낙관적 상방 한계선:** `₩ {selected_stock['낙관']:,}원`")
-            st.markdown(f"**📢 기업 개요 및 펀더멘탈:** {s_cache.get('summary', '데이터 정렬 완결')}")
-        with t2:
-            st.write("**📡 네이버 오픈 API 실시간 수집 뉴스 대장**")
-            n_list = s_cache.get('news_list', [])
-            if n_list:
-                for idx, news in enumerate(n_list, 1): st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
-            else: st.info("수집된 뉴스가 없습니다. 재연산 버튼을 눌러주십시오.")
+    st.divider()
+
+    # 👍 [UI 복원 2] 기존 3대 오리지널 메인 탭 완전 부활
+    tab_port, tab_hist, tab_log = st.tabs(["💼 포트폴리오 자산", "📝 가치 실현 내역", "⚙️ 시스템 가동 로그"])
+
+    with tab_port:
+        st.write("⚡ **Forward 멀티 모델 실시간 제어판**")
+        col_sync1 = st.columns(1)[0]
+        db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
+        portfolio_data = db_res.data
+
+        if col_sync1.button("🔄 퀀트 밸류에이션 장부 커스텀 재연산", width="stretch"):
+            if not portfolio_data: st.stop()
+            with st.status("유니버설 컨테이너 패킹 수식 동적 연산 중...", expanded=True) as status:
+                execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, naver_secret, force=True)
+                status.update(label="스케줄러 기반 무결성 재연산 완결!", state="complete")
+            st.rerun()
+
+        st.divider()
+        if not portfolio_data:
+            st.info("장부에 보유 주식이 없습니다.")
+            return
+
+        total_invest, total_value = 0, 0
+        display_rows = []
+        
+        for row in portfolio_data:
+            cache = row.get('analysis_cache', {})
+            if isinstance(cache, str):
+                try: cache = json.loads(cache)
+                except: cache = {}
+            if not isinstance(cache, dict): cache = {}
+
+            curr_price = cache.get('current_price', row['buy_price'])
+            day_pct = cache.get('pct_change', 0.0)
+            target_price = cache.get('target_2026', row['buy_price'])
+            bear_target = cache.get('bear_target', int(target_price * 0.78))
+            bull_target = cache.get('bull_target', int(target_price * 1.25))
+            target_multiple = cache.get('target_multiple', 10.0)
+            peg = cache.get('peg', 1.0)
+            
+            raw_trends = cache.get('applied_trends', ["MARKET_SATELLITE", "일반제조업"])
+            quant_tier = raw_trends[0]
+            krx_sector = cache.get('krx_sector', raw_trends[1])
+            engine_model = "PER" if cache.get('eps', 0.0) > 0 else "PBR"
+            
+            pnl_amt = (curr_price - row['buy_price']) * row['qty']
+            pnl_pct = ((curr_price - row['buy_price']) / row['buy_price']) * 100 if row['buy_price'] > 0 else 0
+            safe_target_price = int(target_price * 0.95)
+            
+            total_invest += row['buy_price'] * row['qty']
+            total_value += curr_price * row['qty']
+            
+            val_ratio = curr_price / target_price if target_price > 0 else 1.0
+            if val_ratio < 0.5: status_emoji = "🛒 멀티플 극저평가"
+            elif val_ratio < 0.75: status_emoji = "🔵 안전마진 확보"
+            elif val_ratio < 0.95: status_emoji = "🟢 가치 수렴 중"
+            else: status_emoji = "🎯 사이클 고점 도달"
+
+            display_rows.append({
+                "밸류에이션 상태": status_emoji, "종목명": row['name'], "현재가": curr_price, "전일비": day_pct, "평단가": row['buy_price'], "보유지분": row['qty'], "평가손익": pnl_amt, "수익률": pnl_pct,
+                "비관": bear_target, "기준(최고치)": target_price, "낙관": bull_target, "안전목표가": safe_target_price, "목표평가손익": (safe_target_price - row['buy_price']) * row['qty'],
+                "PEG": peg, "적용배수": target_multiple, "KRX섹터": krx_sector, "엔진모델": engine_model,
+                "외인20일": cache.get('foreign_20d_flow', 0.0), "기관20일": cache.get('institution_20d_flow', 0.0), "raw_data": row
+            })
+
+        total_pnl = total_value - total_invest
+        total_pnl_pct = (total_pnl / total_invest) * 100 if total_invest > 0 else 0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("총 투입 자본", f"{total_invest:,} 원")
+        c2.metric("현재 평가 자산", f"{total_value:,} 원")
+        c3.metric("포트폴리오 수익", f"{total_pnl:,} 원", f"{total_pnl_pct:+.2f}%")
+        
+        df_base = pd.DataFrame(display_rows)
+        df_disp = pd.DataFrame()
+        df_disp["상태"] = df_base["밸류에이션 상태"]
+        df_disp["종목명"] = df_base["종목명"]
+        df_disp["KRX 업종"] = df_base["KRX섹터"]
+        df_disp["현재가"] = df_base["현재가"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["전일비(%)"] = df_base["전일비"].apply(lambda x: f"{x:+.2f}%")
+        df_disp["내 평단가"] = df_base["평단가"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["보유 수량"] = df_base["보유지분"].apply(lambda x: f"{int(x):,} 주")
+        df_disp["실시간 수익률"] = df_base["수익률"].apply(lambda x: f"{x:+.2f}%")
+        df_disp["현재 평가손익"] = df_base["평가손익"].apply(lambda x: f"₩ {int(x):+,}" if x != 0 else "₩ 0")
+        df_disp["📉 비관(Bear)"] = df_base["비관"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["🟢 기준(Base)"] = df_base["기준(최고치)"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["📈 낙관(Bull)"] = df_base["낙관"].apply(lambda x: f"₩ {int(x):,}")
+        df_disp["외인 20일(주)"] = df_base["외인20일"].apply(lambda x: f"{int(x):+,}")
+        df_disp["기관 20일(주)"] = df_base["기관20일"].apply(lambda x: f"{int(x):+,}")
+        df_disp["진성 PEG"] = df_base["PEG"].apply(lambda x: f"📊 {x:.2f}")
+
+        def style_mts_color(row):
+            styles = [''] * len(row)
+            pnl = df_base.loc[row.name, '수익률']
+            day = df_base.loc[row.name, '전일비']
+            peg_val = df_base.loc[row.name, 'PEG']
+            f_buy = df_base.loc[row.name, '외인20일']
+            pnl_style = 'background-color: rgba(240, 68, 82, 0.12); color: #F04452; font-weight: bold;' if pnl > 0 else ('background-color: rgba(49, 130, 246, 0.12); color: #3182F6; font-weight: bold;' if pnl < 0 else 'color: #4E5968;')
+            day_style = 'color: #F04452; font-weight: bold;' if day > 0 else ('color: #3182F6; font-weight: bold;' if day < 0 else 'color: #4E5968;')
+            if "실시간 수익률" in df_disp.columns: styles[df_disp.columns.get_loc('실시간 수익률')] = pnl_style
+            if "현재 평가손익" in df_disp.columns: styles[df_disp.columns.get_loc('현재 평가손익')] = pnl_style
+            if "전일비(%)" in df_disp.columns: styles[df_disp.columns.get_loc('전일비(%)')] = day_style
+            if peg_val < 1.0 and peg_val > 0 and "진성 PEG" in df_disp.columns: styles[df_disp.columns.get_loc('진성 PEG')] = 'background-color: rgba(0, 180, 100, 0.08); color: #00B464; font-weight: bold;'
+            if f_buy > 0 and "외인 20일(주)" in df_disp.columns: styles[df_disp.columns.get_loc('외인 20일(주)')] = 'color: #F04452; font-weight: bold;'
+            return styles
+
+        styled_df = df_disp.style.apply(style_mts_color, axis=1)
+        selection_event = st.dataframe(styled_df, width="stretch", on_select="rerun", selection_mode="single-row")
+        
+        # Attribute/Dict 하이브리드 안전 처리로 AttributeError 완전 진압
+        selected_indices = []
+        if selection_event is not None:
+            if hasattr(selection_event, "selection") and selection_event.selection.rows: selected_indices = selection_event.selection.rows
+            elif isinstance(selection_event, dict) and selection_event.get("selection", {}).get("rows"): selected_indices = selection_event["selection"]["rows"]
+        
+        if selected_indices:
+            selected_idx = selected_indices[0]
+            selected_stock = display_rows[selected_idx]
+            s_name = selected_stock["종목명"]
+            raw_row = selected_stock["raw_data"]
+            s_ticker = str(raw_row['ticker']).split('.')[0]
+            s_cache = raw_row.get("analysis_cache", {})
+            if isinstance(s_cache, str):
+                try: s_cache = json.loads(s_cache)
+                except: s_cache = {}
+            
+            st.markdown(f"### 🛠️ [{s_name}] 퀀트 익절/손절 실전 통제실 (제도권 결속형)")
+            
+            # 👍 [UI 복원 3] 3대 매매/수정 팝오버 기능 완전 복원
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            with col_btn1:
+                with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
+                    new_p = st.number_input("수정할 평단가", value=int(raw_row['buy_price']), key=f"p_ed_{s_ticker}")
+                    new_q = st.number_input("수정할 보유수량", value=int(raw_row['qty']), key=f"q_ed_{s_ticker}")
+                    if st.button("수정 장부 인가", key=f"b_ed_{s_ticker}", use_container_width=True):
+                        supabase.table("user_portfolio").update({"buy_price": new_p, "qty": new_q}).eq("id", raw_row['id']).execute()
+                        st.success("장부 정보 정정 고시 완료!")
+                        time.sleep(0.3); st.rerun()
+            with col_btn2:
+                with st.popover("🛒 분할 추가매수", use_container_width=True):
+                    add_p = st.number_input("추가 매수가격", value=int(selected_stock['현재가']), key=f"p_add_{s_ticker}")
+                    add_q = st.number_input("추가 매수수량", value=10, key=f"q_add_{s_ticker}")
+                    if st.button("추가매수 체결", key=f"b_add_{s_ticker}", use_container_width=True):
+                        new_qty = raw_row['qty'] + add_q
+                        new_avg = int(((raw_row['buy_price'] * raw_row['qty']) + (add_p * add_q)) / new_qty)
+                        supabase.table("user_portfolio").update({"buy_price": new_avg, "qty": new_qty}).eq("id", raw_row['id']).execute()
+                        st.success("가중평균 평단가 합성 완료!")
+                        time.sleep(0.3); st.rerun()
+            with col_btn3:
+                with st.popover("❌ 자산 매도(청산)", use_container_width=True):
+                    sell_p = st.number_input("매도 단가", value=int(selected_stock['현재가']), key=f"p_sl_{s_ticker}")
+                    sell_q = st.number_input("매도 수량", min_value=1, max_value=int(raw_row['qty']), value=int(raw_row['qty']), key=f"q_sl_{s_ticker}")
+                    if st.button("🚨 매도 집행", key=f"b_sl_{s_ticker}", use_container_width=True, type="primary"):
+                        profit_amt = (sell_p - raw_row['buy_price']) * sell_q
+                        try:
+                            supabase.table("user_history").insert({"username": username, "ticker": raw_row['ticker'], "name": s_name, "buy_price": raw_row['buy_price'], "sell_price": sell_p, "qty": sell_q, "profit_amt": profit_amt, "profit_pct": round((sell_p - raw_row['buy_price'])/raw_row['buy_price']*100, 2)}).execute()
+                        except: pass
+                        if sell_q == raw_row['qty']: supabase.table("user_portfolio").delete().eq("id", raw_row['id']).execute()
+                        else: supabase.table("user_portfolio").update({"qty": raw_row['qty'] - sell_q}).eq("id", raw_row['id']).execute()
+                        st.error("포지션 청산 오더 집행 완결!")
+                        time.sleep(0.3); st.rerun()
+
+            st.divider()
+            
+            # 👍 [UI 복원 4] 하위 세부 정보 3대 정식 탭 및 실적 분기 차트 전면 복구
+            t1, t2, t3 = st.tabs(["📉 3단계 시나리오 및 수급 판세", "📰 전방 사업 명세", "📊 실적 턴어라운드 감지"])
+            with t1:
+                st.markdown(f"**• 종합 투자 의견:** {selected_stock['밸류에이션 상태']}")
+                st.markdown(f"**• TTM 기초 지표:** EPS `{s_cache.get('eps', 0.0):,.0f}원` | BPS `{s_cache.get('bps', 0.0):,.0f}원` | **진성 기하학적 PEG:** `{selected_stock['PEG']}x`")
+                st.markdown(f"**📉 비관적 저점 방어선 (Bear Target):** `₩ {selected_stock['비관']:,}`원")
+                st.markdown(f"**🟢 기준 내재가치 최고점 (Base Target):** `₩ {selected_stock['기준(최고치)']:,}`원")
+                st.markdown(f"**📈 유동성 오버슈팅 상방선 (Bull Target):** `₩ {selected_stock['낙관']:,}`원")
+                st.markdown(f"**🛡️ 안전 대기 탈출가 (-5%):** `₩ {selected_stock['안전목표가']:,}원` (목표 예상손익: `{selected_stock['목표평가손익']:,}원`)")
+                
+                st.write("**📡 네이버 오픈 API 실시간 수집 뉴스 대장**")
+                n_list = s_cache.get('news_list', [])
+                if n_list:
+                    for idx, news in enumerate(n_list, 1): st.markdown(f"[{idx}] [{news['title']}]({news['link']})")
+                else: st.info("수집된 뉴스가 없습니다. 재연산 버튼을 누르십시오.")
+                
+            with t2:
+                st.write(f"**📢 기업 개요 및 펀더멘탈 요약:** {s_cache.get('summary', '')}")
+                st.write(f"**• 실적 모멘텀 총평:** {s_cache.get('bm_summary', '-')}")
+                bm_list = s_cache.get('bm_list', [])
+                if bm_list: st.table(pd.DataFrame(bm_list, columns=["사업부문", "주요품목", "구분", "비중(%)"]))
+                    
+            with t3:
+                q_hd = s_cache.get('q_headers', [])
+                if q_hd and len(q_hd) >= 2:
+                    fig, ax1 = plt.subplots(figsize=(10, 4.5))
+                    ax1.set_facecolor('#FFFFFF')
+                    ax1.bar(q_hd, s_cache.get('q_revenues', []), color='#3182F6', alpha=0.8, width=0.3, label="매출액(억)")
+                    ax1.set_ylabel('매출액', color='#8B95A1')
+                    ax2 = ax1.twinx()
+                    ax2.plot(q_hd, s_cache.get('q_op_profits', []), color='#F04452', marker='o', linewidth=3, markersize=8, label="영업이익(억)")
+                    ax2.set_ylabel('영업이익', color='#8B95A1')
+                    ax2.axhline(0, color='#8B95A1', linewidth=1, linestyle='--')
+                    st.pyplot(fig)
+                else: st.info("분기 실적 차트 시각화 데이터가 부족합니다.")
+
+    with tab_hist:
+        st.subheader("📝 자산 매도(청산) 히스토리")
+        hist_res = supabase.table("user_history").select("*").eq("username", username).execute()
+        if not hist_res.data: st.info("매도 내역이 없습니다.")
+        else:
+            df_hist = pd.DataFrame(hist_res.data)
+            st.dataframe(df_hist, width="stretch")
+
+    with tab_log:
+        st.subheader("⚙️ 시스템 엔진 처리 기록")
+        log_res = supabase.table("user_logs").select("*").eq("username", username).execute()
+        if not log_res.data: st.info("처리 기록이 없습니다.")
+        else:
+            df_log = pd.DataFrame(log_res.data)
+            st.dataframe(df_log, width="stretch")
