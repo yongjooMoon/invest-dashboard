@@ -111,7 +111,6 @@ def fetch_naver_fundamentals(raw_code):
             'per': 10.0, 'eps': 0.0, 'pbr': 1.0, 'bps': 0.0, 'roe': 5.0, 
             'industry_per': 10.0, 'shares_outstanding': 10000000.0, 'krx_sector': '일반제조업', 'summary': ''
         }
-        
         sector_a = soup.find('a', href=re.compile(r'sise_group_detail\.naver'))
         if sector_a: val_data['krx_sector'] = sector_a.text.strip()
 
@@ -139,6 +138,17 @@ def fetch_naver_fundamentals(raw_code):
         return val_data
     except: return None
 
+def fetch_global_macro_factor():
+    macro_multiplier, current_usd, 환율상태 = 1.0, 1541.6, "정상"
+    try:
+        df_usd = fdr.DataReader('USD/KRW', start=(datetime.utcnow() - timedelta(days=45)).strftime('%Y-%m-%d'))
+        if not df_usd.empty:
+            current_usd = round(float(df_usd['Close'].iloc[-1]), 1)
+            macro_multiplier = 0.90 if current_usd >= 1400 else 1.05
+            환율상태 = f"🚨 고환율 경계 ({current_usd}원)" if current_usd >= 1400 else f"🍏 수급 안정 ({current_usd}원)"
+    except: pass
+    return macro_multiplier, current_usd, 환율상태
+
 def get_auto_momentum(stock_name, client_id, client_secret):
     if not client_id or not client_secret: return 0, 0, "키 누락", []
     url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(f'\"{stock_name}\"')}&display=10&sort=date"
@@ -159,7 +169,7 @@ def get_auto_momentum(stock_name, client_id, client_secret):
     except: return 0, 0, "에러", []
 
 # ==========================================
-# [Layer 4] 🔥 진성 데이터 기반 3개년 시변 시나리오 호라이즌 엔진
+# [Layer 4] 7대 자산 결합형 시변 시나리오 엔진
 # ==========================================
 def calculate_horizon_matrix(row, cache, macro_multiplier=1.0):
     current_price = cache.get('current_price', row['buy_price'])
@@ -175,38 +185,29 @@ def calculate_horizon_matrix(row, cache, macro_multiplier=1.0):
     ind_per = cache.get('industry_per', 10.0)
     pbr = cache.get('pbr', 1.0)
 
-    # 1) 실제 분기 매출 성장률(Revenue Growth) 산정
     rev_growth = 0.0
     if len(q_rev) >= 2 and q_rev[-2] > 0: rev_growth = (q_rev[-1] - q_rev[-2]) / q_rev[-2]
     rev_impact = min(0.25, max(-0.25, rev_growth * 0.4))
 
-    # 2) 실제 영업이익률(OPM) 추세 변화 산정
     opm_change = 0.0
     if len(q_rev) >= 2 and len(q_op) >= 2 and q_rev[-1] > 0 and q_rev[-2] > 0:
         opm_change = (q_op[-1] / q_rev[-1]) - (q_op[-2] / q_rev[-2])
     opm_impact = min(0.20, max(-0.20, opm_change * 0.5))
 
-    # 3) 실제 기관/외인 수급 밀도 산정 (상장주식수 대비 매집 비중)
     flow_ratio = (f_flow + i_flow) / shares
     flow_impact = min(0.25, max(-0.25, flow_ratio * 4.0))
 
-    # 4) 실제 멀티플 매력도(산업 평균 대비 현재 괴리율) 산정
     val_impact = 0.0
     if per > 0 and ind_per > 0: val_impact = min(0.20, max(-0.20, (ind_per - per) / ind_per * 0.3))
     macro_impact = 0.05 if macro_multiplier > 1.0 else -0.05
 
-    # 🚀 [진성 데이터 연산 기반 0.8 ~ 2.0 범위 Bull Factor 공식 안착]
     bull_factor = 1.2 + rev_impact + opm_impact + flow_impact + val_impact + macro_impact
     bull_factor = min(2.0, max(0.8, bull_factor))
 
-    # 기초 가치 산정 (적자 종목 예외 격벽 처리)
     if eps > 0: base_v0 = eps * ind_per
     else: base_v0 = bps * pbr if bps > 0 else current_price
 
-    # Year 0 (올해 말 가치 범위 도출)
     base_yr0 = max(current_price * 0.70, min(base_v0 * (1.0 + flow_impact), current_price * 1.85))
-
-    # 내재 성장 동력 CAGR 기반 3개년 복리 확장
     compounded_g = min(0.28, max(0.06, rev_growth)) 
     base_yr1 = base_yr0 * (1.0 + compounded_g)
     base_yr2 = base_yr1 * (1.0 + compounded_g)
@@ -278,7 +279,7 @@ def execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, na
                     updated_cache.update({
                         'eps': fund['eps'], 'per': fund['per'], 'pbr': fund['pbr'], 'bps': fund['bps'],
                         'industry_per': fund['industry_per'], 'shares_outstanding': fund['shares_outstanding'],
-                        'krx_sector': fund.get('krx_sector', existing_sector), 'summary': fund.get('summary', ''),
+                        'krx_sector': fund.get('krx_sector', existing_sector),
                         'q_headers': fund.get('q_headers', []), 'q_revenues': fund.get('q_revenues', []), 'q_op_profits': fund.get('q_op_profits', []), 'last_fundamental_update': now_kst_str
                     })
 
@@ -291,13 +292,14 @@ def execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, na
             'eps': full_cache.get('eps', 0.0), 'per': full_cache.get('per', 10.0), 'pbr': full_cache.get('pbr', 1.0), 'bps': full_cache.get('bps', 0.0),
             'foreign_20d_flow': full_cache.get('foreign_20d_flow', 0.0), 'institution_20d_flow': full_cache.get('institution_20d_flow', 0.0),
             'target_2026': matrix["year0"]["base"], 'bear_target': matrix["year0"]["bear"], 'bull_target': matrix["year0"]["bull"], 'horizon_matrix': matrix,
-            'summary': full_cache.get('summary', ''), 'krx_sector': full_cache.get('krx_sector', '일반제조업'),
-            'q_headers': full_cache.get('q_headers', []), 'q_revenues': full_cache.get('q_revenues', []), 'q_op_profits': full_cache.get('q_op_profits', []), 'news_list': full_cache.get('news_list', [])
+            'summary': full_cache.get('summary', ''), 'bm_summary': full_cache.get('bm_summary', ''), 'bm_list': full_cache.get('bm_list', []),
+            'q_headers': full_cache.get('q_headers', []), 'q_revenues': full_cache.get('q_revenues', []), 'q_op_profits': full_cache.get('q_op_profits', []), 'news_list': full_cache.get('news_list', []),
+            'krx_sector': full_cache.get('krx_sector', '일반제조업')
         }
         supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
 
 # ==========================================
-# [Layer 6] UI 관제 센터 (오리지널 v19.8 프레임워크 완벽 고수)
+# [Layer 6] UI 관제 센터 (오리지널 v19.8 완벽 봉인본)
 # ==========================================
 def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, naver_secret):
     current_yr = (datetime.utcnow() + timedelta(hours=9)).year
@@ -307,7 +309,6 @@ def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, nave
     system_data = load_system_krx_data(supabase)
     name_to_code = system_data.get("name_to_code", {})
 
-    # 👍 [UI 복원 1] 포트폴리오 신규 자산 편입 폼 완벽 원복
     with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
         col1, col2, col3 = st.columns(3)
         with col1: s_name = st.selectbox("종목 선택 (한/영 키를 눌러주세요)", list(name_to_code.keys()) if name_to_code else ["삼성전자"])
@@ -320,8 +321,6 @@ def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, nave
             except Exception as e: st.error(f"자산 편입 실패: {str(e)}")
 
     st.divider()
-
-    # 👍 [UI 복원 2] 오리지널 v19.8 메인 3대 탭 완전 부활
     tab_port, tab_hist, tab_log = st.tabs(["💼 포트폴리오 자산", "📝 가치 실현 내역", "⚙️ 시스템 가동 로그"])
 
     with tab_port:
@@ -385,7 +384,6 @@ def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, nave
         df_base = pd.DataFrame(display_rows)
         df_disp = pd.DataFrame()
         
-        # 👍 [대표님 지시 스펙 완전 적용 컴팩트 컬럼 그리드]
         df_disp["종목명"] = df_base["종목명"]
         df_disp["현재가"] = df_base["현재가"].apply(lambda x: f"₩ {int(x):,}")
         df_disp["평단가"] = df_base["내 평단가"].apply(lambda x: f"₩ {int(x):,}")
@@ -411,7 +409,6 @@ def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, nave
             
             st.markdown(f"### 🛠️ [{sel['종목명']}] 퀀트 익절/손절 실전 통제실 (시변 기대수익률)")
             
-            # 👍 [UI 복원 3] 3대 매매/수정 팝오버 완벽 복원 및 버그 전면 박멸
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
                 with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
@@ -448,12 +445,10 @@ def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, nave
 
             st.divider()
             
-            # 👍 [UI 복원 4] 하위 3대 정식 세부 탭 및 실적 차트 전면 부활
             t1, t2, t3 = st.tabs(["📉 3단계 시나리오 및 평단대비 기대수익률", "📰 전방 사업 명세", "📊 실적 턴어라운드 감지"])
             with t1:
                 st.caption(f"**실시간 계량 팩터 수신 정보:** 업종 [{sel['KRX 업종']}] | 동적 연산 진성 Bull Factor: **{mx.get('bull_factor', 1.25)}x** (매출성장속도 복리: {mx.get('sector_cagr', 10.0)}%)")
                 
-                # 대표님 핵심 오더: 연도별 3개 시나리오 및 평단가 대비 기대수익률 매트릭스 표출
                 mc0, mc1, mc2 = st.columns(3)
                 with mc0:
                     with st.container(border=True):
