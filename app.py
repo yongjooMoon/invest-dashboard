@@ -11,15 +11,15 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="토스 스타일 퀀트 대시보드", page_icon="✨", layout="wide")
 
-# --- [2. 세션 상태 초기화] ---
+# --- [2. 세션 상태 초기화 (한투 금융망 변수명 정렬 완료)] ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
     st.session_state.username = None
 if "api_keys" not in st.session_state:
-    st.session_state.api_keys = {"rtms_key": "", "naver_id": "", "naver_secret": ""}
+    st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": ""}
 
-# --- [3. 로그인 전용 단일 UI (회원가입 삭제, 이메일 형식 해제)] ---
+# --- [3. 로그인 전용 단일 UI] ---
 if not st.session_state.logged_in:
     st.title("✨ 투자 자산 대시보드")
     st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
@@ -45,12 +45,17 @@ if not st.session_state.logged_in:
                     if user_keys.data:
                         st.session_state.api_keys = {
                             "rtms_key": user_keys.data[0].get("rtms_key", ""),
-                            "naver_id": user_keys.data[0].get("naver_id", ""),
-                            "naver_secret": user_keys.data[0].get("naver_secret", "")
+                            "app_key": user_keys.data[0].get("app_key", ""),
+                            "app_secret": user_keys.data[0].get("app_secret", "")
                         }
                     else:
-                        # 키 레코드가 없다면 에러 방지를 위해 공백 행 초기 주입
-                        supabase.table("user_api_keys").insert({"username": login_username, "rtms_key": "", "naver_id": "", "naver_secret": ""}).execute()
+                        # 키 레코드가 없다면 에러 방지를 위해 공백 행 초기 주입 (한투 규격 컬럼 반영)
+                        supabase.table("user_api_keys").insert({
+                            "username": login_username, 
+                            "rtms_key": "", 
+                            "app_key": "", 
+                            "app_secret": ""
+                        }).execute()
                     
                     st.success(f"🎉 인증 성공! {login_username}님 환영합니다.")
                     st.rerun()
@@ -65,7 +70,7 @@ st.sidebar.markdown(f"👤 데스크 제어권: **{st.session_state.username}**"
 if st.sidebar.button("시스템 로그아웃", type="secondary"):
     st.session_state.logged_in = False
     st.session_state.username = None
-    st.session_state.api_keys = {"rtms_key": "", "naver_id": "", "naver_secret": ""}
+    st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": ""}
     st.rerun()
 
 menu = st.sidebar.radio("원하는 데스크를 선택하세요", ["⚙️ 내 API 키 자산 설정", "🏢 부동산 실거래가 스캔", "📈 주식 포트폴리오 퀀트"])
@@ -75,18 +80,19 @@ if menu == "⚙️ 내 API 키 자산 설정":
     st.markdown("사용자님의 고유 자산 데이터 연동을 위한 API 키를 안전하게 보관합니다.")
     
     rtms = st.text_input("1. 국토교통부 실거래 API Key (Decoding)", value=st.session_state.api_keys["rtms_key"], type="password")
-    n_id = st.text_input("2. 네이버 오픈 API Client ID", value=st.session_state.api_keys["naver_id"])
-    n_sec = st.text_input("3. 네이버 오픈 API Client Secret", value=st.session_state.api_keys["naver_secret"], type="password")
+    a_key = st.text_input("2. 한국투자증권 오픈 API App Key (모의투자)", value=st.session_state.api_keys["app_key"])
+    a_sec = st.text_input("3. 한국투자증권 오픈 API App Secret (모의투자)", value=st.session_state.api_keys["app_secret"], type="password")
     
     if st.button("크레덴셜 장부 업데이트", type="primary"):
         try:
+            # Supabase 테이블 원장에 정식 데이터 커밋 (변수명 완전 동기화)
             supabase.table("user_api_keys").upsert({
                 "username": st.session_state.username,
                 "rtms_key": rtms,
-                "naver_id": n_id,
-                "naver_secret": n_sec
+                "app_key": a_key,
+                "app_secret": a_sec
             }).execute()
-            st.session_state.api_keys = {"rtms_key": rtms, "naver_id": n_id, "naver_secret": n_sec}
+            st.session_state.api_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec}
             st.success("보안 데이터가 테이블에 무결점 반영되었습니다.")
         except Exception as e:
             st.error(f"저장 실패: {str(e)}")
@@ -95,5 +101,10 @@ elif menu == "🏢 부동산 실거래가 스캔":
     real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
 
 elif menu == "📈 주식 포트폴리오 퀀트":
-    # 💡 user_id 대신 계정 아이디(username)를 아규먼트로 바인딩
-    stock_quant.run_stock_quant_page(supabase, st.session_state.username, st.session_state.api_keys["naver_id"], st.session_state.api_keys["naver_secret"])
+    # 💡 세션 및 DB 원장에서 끌어올린 무결성 KIS API 키값을 stock_quant 가속 패널로 다이렉트 토스
+    stock_quant.run_stock_quant_page(
+        supabase, 
+        st.session_state.username, 
+        st.session_state.api_keys["app_key"], 
+        st.session_state.api_keys["app_secret"]
+    )
