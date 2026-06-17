@@ -32,13 +32,43 @@ def is_expired(ts_str, threshold_sec):
 # ==========================================
 # [Layer 1] 데이터 수집 — KRX 전종목 + 가격 이력
 # ==========================================
+def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
+    """
+    FDR 버전마다 컬럼명이 다르게 내려옴 → 방어적 정규화
+    Symbol : Code / Symbol / Ticker
+    Name   : Name / 종목명
+    Sector : Sector / Industry / 업종
+    """
+    col = raw.columns.tolist()
+
+    # Symbol
+    sym_col = next((c for c in ['Symbol', 'Code', 'Ticker'] if c in col), None)
+    # Name
+    name_col = next((c for c in ['Name', '종목명'] if c in col), None)
+    # Sector
+    sec_col = next((c for c in ['Sector', 'Industry', '업종'] if c in col), None)
+
+    if sym_col is None or name_col is None:
+        raise ValueError(f"필수 컬럼 없음. 실제 컬럼: {col}")
+
+    df = pd.DataFrame()
+    df['Symbol'] = raw[sym_col].astype(str).str.zfill(6)
+    df['Name']   = raw[name_col].astype(str)
+    df['Market'] = market
+    df['Sector'] = raw[sec_col].astype(str) if sec_col else '-'
+    return df
+
+
 def load_krx_universe() -> pd.DataFrame:
-    """KRX 전종목 리스트 (KOSPI + KOSDAQ)"""
+    """KRX 전종목 리스트 (KOSPI + KOSDAQ) — FDR 버전 무관 방어 처리"""
     try:
-        kospi = fdr.StockListing('KOSPI')[['Symbol', 'Name', 'Market', 'Sector']]
-        kosdaq = fdr.StockListing('KOSDAQ')[['Symbol', 'Name', 'Market', 'Sector']]
+        kospi_raw  = fdr.StockListing('KOSPI')
+        kosdaq_raw = fdr.StockListing('KOSDAQ')
+        kospi  = _normalize_listing(kospi_raw,  'KOSPI')
+        kosdaq = _normalize_listing(kosdaq_raw, 'KOSDAQ')
         df = pd.concat([kospi, kosdaq], ignore_index=True).dropna(subset=['Symbol', 'Name'])
-        df['Symbol'] = df['Symbol'].astype(str).str.zfill(6)
+        # ETF·우선주 등 6자리 미만 코드 제외 (선택)
+        df = df[df['Symbol'].str.len() == 6].reset_index(drop=True)
         return df
     except Exception as e:
         st.error(f"KRX 종목 로드 실패: {e}")
@@ -49,13 +79,29 @@ def fetch_price_history(symbol: str, years: int = 3) -> pd.DataFrame:
     """
     일봉 가격 데이터 최근 N년치.
     반환 컬럼: Open, High, Low, Close, Volume
+    FDR 버전마다 컬럼 대소문자가 다를 수 있으므로 방어 처리.
     """
     start = (now_kst() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
     try:
-        df = fdr.DataReader(symbol, start=start)
-        if df is None or df.empty:
+        raw = fdr.DataReader(symbol, start=start)
+        if raw is None or raw.empty:
             return pd.DataFrame()
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+
+        # 컬럼 정규화 (소문자 → 타이틀케이스 매핑)
+        col_map = {c.lower(): c for c in raw.columns}
+        rename = {}
+        for std in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            found = col_map.get(std.lower())
+            if found and found != std:
+                rename[found] = std
+        if rename:
+            raw = raw.rename(columns=rename)
+
+        needed = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in raw.columns]
+        if 'Close' not in needed:
+            return pd.DataFrame()
+
+        df = raw[needed].dropna()
         df.index = pd.to_datetime(df.index)
         return df
     except:
