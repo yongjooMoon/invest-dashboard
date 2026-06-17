@@ -352,7 +352,7 @@ def render_filter_badge(passed: bool) -> str:
     return "✅" if passed else "❌"
 
 
-def run_stock_quant_page(supabase, username: str = "admin"):
+def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트 추격매수 스크리너")
     st.caption("논문 기반 6대 리스크 필터 ALL-PASS 종목만 선별 · 매일 14:30 KST 자동 배치")
 
