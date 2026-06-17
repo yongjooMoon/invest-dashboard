@@ -10,3 +10,4 @@ finance-datareader
 statsmodels
 scipy
 scikit-learn
+schedule
