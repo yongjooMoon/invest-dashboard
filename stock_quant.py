@@ -1,545 +1,515 @@
 import streamlit as st
 import requests
 import re
-import html
 import FinanceDataReader as fdr
 import pandas as pd
-from bs4 import BeautifulSoup
-import matplotlib.pyplot as plt
+import numpy as np
 from datetime import datetime, timedelta
-import threading
 import json
 import time
+import schedule
+import threading
 
 # ==========================================
-# [Layer 1] 글로벌 전역 무결성 파서
+# [공통 유틸]
 # ==========================================
-_active_threads = {}
+def now_kst():
+    return datetime.utcnow() + timedelta(hours=9)
 
-def parse_num(txt):
-    if not txt: return 0.0
-    cleaned = str(txt).replace('₩', '').replace(',', '').replace('주', '').strip()
-    m = re.search(r'[-+]?[0-9]+(?:\.[0-9]+)?', cleaned)
-    return float(m.group()) if m else 0.0
+def now_kst_str():
+    return now_kst().strftime('%Y-%m-%d %H:%M:%S')
 
-def is_expired(last_update_str, threshold_seconds):
-    if not last_update_str: return True
+def is_expired(ts_str, threshold_sec):
+    if not ts_str:
+        return True
     try:
-        clean_str = last_update_str.replace('T', ' ').split('.')[0].split('+')[0]
-        dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
-        now = datetime.utcnow() + timedelta(hours=9) 
-        return (now - dt).total_seconds() >= threshold_seconds
-    except: return True
+        clean = ts_str.replace('T', ' ').split('.')[0].split('+')[0]
+        dt = datetime.strptime(clean, "%Y-%m-%d %H:%M:%S")
+        return (now_kst() - dt).total_seconds() >= threshold_sec
+    except:
+        return True
 
 # ==========================================
-# [Layer 2] 30일 만기 영구 보존형 DB 원장 시스템
+# [Layer 1] 데이터 수집 — KRX 전종목 + 가격 이력
 # ==========================================
-def load_system_krx_data(supabase):
-    now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
+def load_krx_universe() -> pd.DataFrame:
+    """KRX 전종목 리스트 (KOSPI + KOSDAQ)"""
     try:
-        res = supabase.table("stock_cache").select("*").eq("ticker", "__SYSTEM_KRX_MAP__").execute()
+        kospi = fdr.StockListing('KOSPI')[['Symbol', 'Name', 'Market', 'Sector']]
+        kosdaq = fdr.StockListing('KOSDAQ')[['Symbol', 'Name', 'Market', 'Sector']]
+        df = pd.concat([kospi, kosdaq], ignore_index=True).dropna(subset=['Symbol', 'Name'])
+        df['Symbol'] = df['Symbol'].astype(str).str.zfill(6)
+        return df
+    except Exception as e:
+        st.error(f"KRX 종목 로드 실패: {e}")
+        return pd.DataFrame()
+
+
+def fetch_price_history(symbol: str, years: int = 3) -> pd.DataFrame:
+    """
+    일봉 가격 데이터 최근 N년치.
+    반환 컬럼: Open, High, Low, Close, Volume
+    """
+    start = (now_kst() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
+    try:
+        df = fdr.DataReader(symbol, start=start)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        df.index = pd.to_datetime(df.index)
+        return df
+    except:
+        return pd.DataFrame()
+
+
+# ==========================================
+# [Layer 2] 6대 리스크 필터 (논문 기반)
+# ==========================================
+#
+# [1] 모멘텀 필터 — Jegadeesh & Titman (1993)
+#     "Returns to Buying Winners and Selling Losers"
+#     • 12개월 수익률에서 최근 1개월 제외 (12-1 모멘텀)
+#     • 상위 30% 이상만 통과
+#
+# [2] 저변동성 필터 — Ang et al. (2006)
+#     "The Cross-Section of Volatility and Expected Returns"
+#     • 60일 일간 수익률 표준편차 연환산
+#     • 연환산 변동성 60% 이하만 통과 (추격매수 안정성)
+#
+# [3] 최대낙폭(MDD) 필터 — 실무 리스크 관리 표준
+#     • 1년 내 MDD 25% 이내만 통과
+#     • 급락 종목 추격매수 차단
+#
+# [4] 유동성 필터 — Amihud (2002)
+#     "Illiquidity and Stock Returns"
+#     • 최근 20일 일평균 거래대금 50억 원 이상
+#     • 슬리피지 리스크 차단
+#
+# [5] 거래량 모멘텀 필터 — Lee & Swaminathan (2000)
+#     "Price Momentum and Trading Volume"
+#     • 최근 5일 평균 거래량 ÷ 60일 평균 거래량 >= 1.3
+#     • 거래량 동반 상승: 추격매수 신호
+#
+# [6] 수익성 필터 — Novy-Marx (2013)
+#     "The Other Side of Value: The Gross Profitability Premium"
+#     • 60일 가격 추세(선형 회귀 기울기) 양(+)일 것
+#     • 추세 없는 단순 반등 종목 차단
+#
+# ==========================================
+
+def filter_momentum(df: pd.DataFrame) -> dict:
+    """
+    [필터 1] 12-1 모멘텀 (Jegadeesh & Titman 1993)
+    최소 252 거래일 필요
+    """
+    if len(df) < 252:
+        return {"pass": False, "value": None, "reason": "데이터 부족 (<252일)"}
+    close = df['Close']
+    # 12개월 전 → 1개월 전 수익률 (최근 1개월 제외)
+    ret_12_1 = (close.iloc[-21] - close.iloc[-252]) / close.iloc[-252] * 100
+    passed = ret_12_1 > 0  # 양의 모멘텀 (분위수 컷은 전체 유니버스 정렬 후 적용)
+    return {
+        "pass": passed,
+        "value": round(ret_12_1, 2),
+        "reason": f"12-1 모멘텀 {ret_12_1:+.1f}%"
+    }
+
+
+def filter_volatility(df: pd.DataFrame) -> dict:
+    """
+    [필터 2] 저변동성 (Ang et al. 2006)
+    60일 일간 수익률 표준편차 연환산 60% 이하
+    """
+    if len(df) < 60:
+        return {"pass": False, "value": None, "reason": "데이터 부족 (<60일)"}
+    daily_ret = df['Close'].pct_change().dropna()
+    vol_60d = daily_ret.iloc[-60:].std() * np.sqrt(252) * 100  # 연환산 %
+    passed = vol_60d <= 60.0
+    return {
+        "pass": passed,
+        "value": round(vol_60d, 2),
+        "reason": f"연환산 변동성 {vol_60d:.1f}% (기준 60%)"
+    }
+
+
+def filter_mdd(df: pd.DataFrame) -> dict:
+    """
+    [필터 3] MDD 최대낙폭 리스크
+    최근 1년 이내 MDD 25% 이내
+    """
+    if len(df) < 60:
+        return {"pass": False, "value": None, "reason": "데이터 부족"}
+    close_1y = df['Close'].iloc[-252:] if len(df) >= 252 else df['Close']
+    roll_max = close_1y.cummax()
+    drawdown = (close_1y - roll_max) / roll_max * 100
+    mdd = drawdown.min()  # 음수
+    passed = mdd >= -25.0
+    return {
+        "pass": passed,
+        "value": round(mdd, 2),
+        "reason": f"1년 MDD {mdd:.1f}% (기준 -25%)"
+    }
+
+
+def filter_liquidity(df: pd.DataFrame) -> dict:
+    """
+    [필터 4] 유동성 (Amihud 2002)
+    20일 일평균 거래대금 50억 원 이상
+    """
+    if len(df) < 20:
+        return {"pass": False, "value": None, "reason": "데이터 부족 (<20일)"}
+    trading_value = (df['Close'] * df['Volume']).iloc[-20:]
+    avg_tv = trading_value.mean()
+    passed = avg_tv >= 5_000_000_000  # 50억
+    return {
+        "pass": passed,
+        "value": round(avg_tv / 1e8, 1),  # 억 원 단위
+        "reason": f"일평균 거래대금 {avg_tv/1e8:.0f}억 (기준 50억)"
+    }
+
+
+def filter_volume_momentum(df: pd.DataFrame) -> dict:
+    """
+    [필터 5] 거래량 모멘텀 (Lee & Swaminathan 2000)
+    최근 5일 평균 거래량 / 60일 평균 거래량 >= 1.3
+    """
+    if len(df) < 60:
+        return {"pass": False, "value": None, "reason": "데이터 부족 (<60일)"}
+    vol = df['Volume']
+    ratio = vol.iloc[-5:].mean() / vol.iloc[-60:].mean()
+    passed = ratio >= 1.3
+    return {
+        "pass": passed,
+        "value": round(ratio, 3),
+        "reason": f"거래량 비율 {ratio:.2f}x (기준 1.3x)"
+    }
+
+
+def filter_trend_strength(df: pd.DataFrame) -> dict:
+    """
+    [필터 6] 추세 강도 (Novy-Marx 2013 변형)
+    60일 종가 선형 회귀 기울기가 양(+)
+    + R² >= 0.5 (추세 신뢰도)
+    """
+    if len(df) < 60:
+        return {"pass": False, "value": None, "reason": "데이터 부족 (<60일)"}
+    close = df['Close'].iloc[-60:].values
+    x = np.arange(len(close))
+    # 선형 회귀
+    p = np.polyfit(x, close, 1)
+    slope = p[0]
+    # R² 계산
+    y_hat = np.polyval(p, x)
+    ss_res = np.sum((close - y_hat) ** 2)
+    ss_tot = np.sum((close - close.mean()) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+    passed = slope > 0 and r2 >= 0.5
+    return {
+        "pass": passed,
+        "value": round(slope, 4),
+        "reason": f"추세 기울기 {slope:+.2f}, R² {r2:.2f} (기준: 기울기>0, R²≥0.5)"
+    }
+
+
+# ==========================================
+# [Layer 3] 전종목 스크리닝 배치 엔진
+# ==========================================
+
+RISK_FILTERS = [
+    ("모멘텀 (Jegadeesh & Titman)", filter_momentum),
+    ("저변동성 (Ang et al.)", filter_volatility),
+    ("MDD 리스크", filter_mdd),
+    ("유동성 (Amihud)", filter_liquidity),
+    ("거래량 모멘텀 (Lee & Swaminathan)", filter_volume_momentum),
+    ("추세 강도 (Novy-Marx 변형)", filter_trend_strength),
+]
+
+def run_full_screening(supabase, universe_df: pd.DataFrame, top_n: int = 10) -> list:
+    """
+    전종목 대상 6개 필터 All-Pass 스크리닝.
+    통과 종목을 12-1 모멘텀 점수 기준 상위 top_n개 반환.
+    """
+    results = []
+    total = len(universe_df)
+    progress = st.progress(0, text="스크리닝 시작...")
+
+    for i, (_, row) in enumerate(universe_df.iterrows()):
+        symbol = row['Symbol']
+        name = row.get('Name', symbol)
+        progress.progress((i + 1) / total, text=f"[{i+1}/{total}] {name} 분석 중...")
+
+        df = fetch_price_history(symbol, years=3)
+        if df.empty or len(df) < 60:
+            continue
+
+        filter_results = {}
+        all_pass = True
+
+        for filter_name, filter_fn in RISK_FILTERS:
+            result = filter_fn(df)
+            filter_results[filter_name] = result
+            if not result["pass"]:
+                all_pass = False
+                break  # 하나라도 탈락하면 즉시 중단 (효율)
+
+        if not all_pass:
+            continue
+
+        # 모멘텀 점수 (최종 랭킹용)
+        momentum_score = filter_results["모멘텀 (Jegadeesh & Titman)"]["value"] or 0
+
+        # 현재가 및 기본 지표
+        curr_price = int(df['Close'].iloc[-1])
+        price_1m_ago = df['Close'].iloc[-21] if len(df) >= 21 else df['Close'].iloc[0]
+        ret_1m = (df['Close'].iloc[-1] - price_1m_ago) / price_1m_ago * 100
+
+        results.append({
+            "symbol": symbol,
+            "name": name,
+            "sector": row.get('Sector', '-'),
+            "market": row.get('Market', '-'),
+            "current_price": curr_price,
+            "ret_1m": round(ret_1m, 2),
+            "momentum_score": round(momentum_score, 2),
+            "vol_ratio": filter_results["거래량 모멘텀 (Lee & Swaminathan)"]["value"],
+            "annual_vol": filter_results["저변동성 (Ang et al.)"]["value"],
+            "mdd": filter_results["MDD 리스크"]["value"],
+            "avg_trading_value_억": filter_results["유동성 (Amihud)"]["value"],
+            "trend_slope": filter_results["추세 강도 (Novy-Marx 변형)"]["value"],
+            "filter_details": filter_results,
+            "screened_at": now_kst_str(),
+        })
+
+    progress.empty()
+
+    # 12-1 모멘텀 기준 상위 top_n
+    results.sort(key=lambda x: x["momentum_score"], reverse=True)
+    return results[:top_n]
+
+
+# ==========================================
+# [Layer 4] Supabase 저장 / 조회
+# ==========================================
+CACHE_TABLE = "quant_screening_cache"
+
+def save_screening_result(supabase, results: list):
+    payload = {
+        "id": 1,  # 단일 행 유지 (upsert)
+        "results": json.dumps(results, ensure_ascii=False),
+        "updated_at": now_kst_str(),
+    }
+    supabase.table(CACHE_TABLE).upsert(payload).execute()
+
+
+def load_screening_result(supabase) -> tuple[list, str]:
+    """(결과 리스트, 마지막 업데이트 시각) 반환"""
+    try:
+        res = supabase.table(CACHE_TABLE).select("*").eq("id", 1).execute()
         if res.data:
             row = res.data[0]
-            if not is_expired(row.get('last_price_update'), 2592000):
-                packed_raw = json.loads(row['bm_summary'])
-                if isinstance(packed_raw, dict) and "__PACKED_CONTAINER__" in packed_raw:
-                    return packed_raw["data"]
-    except: pass
+            return json.loads(row["results"]), row.get("updated_at", "")
+    except:
+        pass
+    return [], ""
 
+
+# ==========================================
+# [Layer 5] 스케줄러 (매일 14:30 KST 배치)
+# ==========================================
+_scheduler_started = False
+
+def _batch_job(supabase):
     try:
-        df = fdr.StockListing('KRX')
-        if not df.empty:
-            name_to_code = {}
-            for _, r in df.iterrows():
-                if pd.isna(r.get('Name')) or pd.isna(r.get('Symbol')): continue
-                name_to_code[str(r['Name']).strip()] = str(r['Symbol']).strip()
-                
-            system_data = {"name_to_code": name_to_code}
-            payload = {
-                "ticker": "__SYSTEM_KRX_MAP__", "name": "전역 시스템 마스터 원장", "krx_sector": "시스템",
-                "bm_summary": json.dumps({"__PACKED_CONTAINER__": True, "data": system_data}, ensure_ascii=False), 
-                "last_price_update": now_kst_str
-            }
-            supabase.table("stock_cache").upsert(payload).execute()
-            return system_data
-    except: pass
-    return {"name_to_code": {}}
+        universe = load_krx_universe()
+        if universe.empty:
+            return
+        results = run_full_screening(supabase, universe)
+        save_screening_result(supabase, results)
+    except:
+        pass
+
+def start_scheduler(supabase):
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+
+    def _run():
+        schedule.every().day.at("14:30").do(_batch_job, supabase=supabase)
+        while True:
+            schedule.run_pending()
+            time.sleep(30)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
 
 # ==========================================
-# [Layer 3] 미래 데이터(Forward Data) 정식 수집기
+# [Layer 6] UI — 퀀트 스크리너 메인 페이지
 # ==========================================
-def get_kis_access_token(app_key, app_secret):
-    url = "https://openapivts.koreainvestment.com:29443/oauth2/tokenP"
-    payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": app_secret}
-    headers = {"content-type": "application/json"}
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
-        return res.json().get("access_token")
-    except: return None
 
-def fetch_kis_realtime_price(ticker, token, app_key, app_secret):
-    url = "https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-price"
-    headers = {"content-type": "application/json", "authorization": f"Bearer {token}", "appkey": app_key, "appsecret": app_secret, "tr_id": "FHKST01010100"}
-    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=5).json()
-        out = res.get("output", {})
-        return {"current_price": int(out.get("stck_prpr", 0)), "pct_change": float(out.get("prdy_ctrt", 0.0)), "year_high": int(out.get("w52_hgpr", 0))}
-    except: return None
+def render_filter_badge(passed: bool) -> str:
+    return "✅" if passed else "❌"
 
-def fetch_kis_investor_flows(ticker, token, app_key, app_secret):
-    url = "https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-investor"
-    headers = {"content-type": "application/json", "authorization": f"Bearer {token}", "appkey": app_key, "appsecret": app_secret, "tr_id": "FHKST01010900"}
-    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=5).json()
-        outputs = res.get("output", [])
-        f_sum, i_sum = 0, 0
-        for row in outputs[:20]:
-            f_sum += float(row.get("frgn_ntby_qty", 0))  
-            i_sum += float(row.get("orgn_ntby_qty", 0))  
-        return f_sum, i_sum
-    except: return 0, 0
 
-def fetch_naver_fundamentals(raw_code):
-    url = f"https://finance.naver.com/item/main.naver?code={raw_code}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.content, 'html.parser')
-        val_data = {
-            'per': 10.0, 'eps': 0.0, 'pbr': 1.0, 'bps': 0.0, 'roe': 5.0, 
-            'industry_per': 10.0, 'shares_outstanding': 10000000.0, 'krx_sector': '일반제조업', 'summary': '', 'fwd_eps': []
-        }
-        
-        sector_a = soup.find('a', href=re.compile(r'sise_group_detail\.naver'))
-        if sector_a: val_data['krx_sector'] = sector_a.text.strip()
+def run_quant_screener_page(supabase, username: str = "admin"):
+    st.title("📡 퀀트 추격매수 스크리너")
+    st.caption("논문 기반 6대 리스크 필터 ALL-PASS 종목만 선별 · 매일 14:30 KST 자동 배치")
 
-        summary_div = soup.select_one('.summary_info')
-        val_data['summary'] = summary_div.text.replace('\n', ' ').strip() if summary_div else ""
+    # 스케줄러 기동 (세션당 1회)
+    if "scheduler_started" not in st.session_state:
+        start_scheduler(supabase)
+        st.session_state["scheduler_started"] = True
 
-        for th in soup.find_all('th'):
-            if "상장주식수" in th.text: val_data['shares_outstanding'] = parse_num(th.find_next_sibling('td').text)
-        for td in soup.find_all('td'):
-            if "동종업종 PER" in td.text and td.parent:
-                em_val = td.parent.select_one('em')
-                if em_val: val_data['industry_per'] = parse_num(em_val.text)
-        for td in soup.find_all('td'):
-            td_id = td.get('id', '')
-            if '_per' in td_id: val_data['per'] = parse_num(td.text)
-            if '_eps' in td_id: val_data['eps'] = parse_num(td.text)
-            if '_pbr' in td_id: val_data['pbr'] = parse_num(td.text)
-            if '_bps' in td_id: val_data['bps'] = parse_num(td.text)
-            
-        # 👍 [핵심 개조] 미래 3년 애널리스트 추정 EPS (Forward EPS) 탈취
-        table = soup.select_one('div.cop_analysis table')
-        if table:
-            rows = table.select_one('tbody').select('tr')
-            val_data['q_revenues'] = [parse_num(td.text) for td in rows[0].select('td')[5:10] if parse_num(td.text) != 0]
-            val_data['q_op_profits'] = [parse_num(td.text) for td in rows[1].select('td')[5:10] if parse_num(td.text) != 0]
-            
-            for tr in rows:
-                th = tr.select_one('th')
-                if th and 'EPS' in th.text:
-                    tds = tr.select('td')
-                    # 컨센서스가 존재하는 우측(미래 3년) 칼럼 데이터를 역순으로 확보
-                    if len(tds) >= 3:
-                        fwd = []
-                        for td in tds[-3:]:
-                            val = parse_num(td.text)
-                            if val != 0: fwd.append(val)
-                        val_data['fwd_eps'] = fwd
-                    break
-        return val_data
-    except: return None
+    # ── 전략 설명 expander ──
+    with st.expander("📚 적용 퀀트 전략 및 리스크 필터 상세", expanded=False):
+        st.markdown("""
+| # | 필터명 | 논문 근거 | 기준값 | 목적 |
+|---|--------|-----------|--------|------|
+| 1 | **12-1 모멘텀** | Jegadeesh & Titman (1993) | 12-1개월 수익률 > 0% | 추세 추종 종목 선별 |
+| 2 | **저변동성** | Ang et al. (2006) | 연환산 변동성 ≤ 60% | 급등락 종목 차단 |
+| 3 | **MDD 리스크** | 실무 리스크 표준 | 1년 MDD ≥ -25% | 급락 추격매수 차단 |
+| 4 | **유동성** | Amihud (2002) | 일평균 거래대금 ≥ 50억 | 슬리피지·유동성 위험 차단 |
+| 5 | **거래량 모멘텀** | Lee & Swaminathan (2000) | 5일/60일 거래량 ≥ 1.3x | 추격매수 타이밍 포착 |
+| 6 | **추세 강도** | Novy-Marx (2013) 변형 | 기울기>0, R²≥0.5 | 단순 반등 종목 차단 |
 
-def fetch_global_macro_factor():
-    macro_multiplier, current_usd, 환율상태 = 1.0, 1541.6, "정상"
-    try:
-        df_usd = fdr.DataReader('USD/KRW', start=(datetime.utcnow() - timedelta(days=45)).strftime('%Y-%m-%d'))
-        if not df_usd.empty:
-            current_usd = round(float(df_usd['Close'].iloc[-1]), 1)
-            macro_multiplier = 0.90 if current_usd >= 1400 else 1.05
-            환율상태 = f"🚨 고환율 압박 ({current_usd}원)" if current_usd >= 1400 else f"🍏 환율 하향 안정 ({current_usd}원)"
-    except: pass
-    return macro_multiplier, current_usd, 환율상태
+> **6개 필터 ALL-PASS** 종목만 최종 후보에 진입하며, 12-1 모멘텀 점수 기준 **상위 10개** 종목을 추출합니다.
+        """)
 
-def get_auto_momentum(stock_name, client_id, client_secret):
-    """
-    👍 [뉴스 분석 전면 개조] 문맥 기반의 가짜 호재 필터링 엔진
-    """
-    if not client_id or not client_secret: return 0, 0, "키 누락", []
-    url = f"https://openapi.naver.com/v1/search/news.json?query={requests.utils.quote(f'\"{stock_name}\"')}&display=10&sort=date"
-    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        items = res.json().get('items', [])
-        news_list, pos_score, neg_score = [], 0, 0
-        
-        for item in items:
-            headline = html.unescape(re.compile('<.*?>').sub('', item['title'])).strip()
-            news_list.append({"title": headline, "link": item.get('originallink', item['link'])})
-            text = headline.upper()
-            
-            # 🚨 1차 방어선: 치명적 부정어가 문장에 있으면 'AI'가 있어도 무조건 악재 처리 (가짜 호재 차단)
-            if any(k in text for k in ["철수", "중단", "매각", "해지", "취소", "우려", "부진", "위기", "손실", "적자전환", "하락", "쇼크"]):
-                neg_score += 1
-                continue 
-            
-            # 🟢 2차 방어선: 진성 호재 및 수주잔고 증가 키워드
-            if any(pw in text for pw in ['수주', '흑자', '돌파', '최대', '공급', '계약', '성장', 'MOU', '투자', '승인']): 
-                pos_score += 1
-                
-            # 🚀 3차 방어선: 테마성 키워드는 "진성 호재"와 결합될 때만 0.5점의 추가 프리미엄 부여
-            if any(tw in text for tw in ['AI', 'HBM', '전력', '로봇', '우주', '자율주행']):
-                if pos_score > 0: 
-                    pos_score += 0.5
+    # ── 현재 캐시 결과 로드 ──
+    cached_results, last_updated = load_screening_result(supabase)
 
-        return 0, (pos_score - neg_score), "", news_list
-    except: return 0, 0, "에러", []
-
-# ==========================================
-# [Layer 4] 🔥 미래 시변 예측 퀀트 엔진 (Forward Matrix)
-# ==========================================
-def get_forward_sector_cagr(sector_name, stock_name):
-    """애널리스트 및 프랍 데스크 뷰에 기반한 미래 3년 산업 내재 성장률(CAGR)"""
-    if not sector_name: return 0.08
-    # 수주 및 메가트렌드 반영
-    if any(k in sector_name for k in ["반도체", "IT", "소프트웨어", "전자장비"]) or any(k in stock_name for k in ["하이닉스", "한미"]): return 0.18
-    if any(k in sector_name for k in ["전기장비", "전력", "기계"]) or any(k in stock_name for k in ["일렉트릭", "LS", "효성"]): return 0.15
-    if any(k in sector_name for k in ["제약", "바이오", "의료"]): return 0.12
-    if any(k in sector_name for k in ["자동차", "화학", "2차전지"]): return 0.10
-    if any(k in sector_name for k in ["금융", "증권", "은행", "보험"]): return 0.05
-    return 0.08
-
-def calculate_horizon_matrix(row, cache, macro_multiplier=1.0):
-    current_price = cache.get('current_price', row['buy_price'])
-    shares = max(1.0, cache.get('shares_outstanding', 10000000.0))
-    krx_sector = cache.get('krx_sector', '일반제조업')
-    
-    # 1) 기관/외인 진성 수급 매집률 (Flow Impact)
-    f_flow, i_flow = cache.get('foreign_20d_flow', 0.0), cache.get('institution_20d_flow', 0.0)
-    flow_ratio = (f_flow + i_flow) / shares
-    flow_impact = min(0.20, max(-0.20, flow_ratio * 3.0))
-
-    # 2) 가짜 호재를 필터링한 진성 뉴스 임팩트
-    net_sentiment = cache.get('net_sentiment', 0)
-    news_impact = min(0.15, max(-0.15, net_sentiment * 0.02))
-    
-    # 3) 멀티플 리레이팅 (수급과 뉴스가 몰리면 PER 자체가 확장됨)
-    ind_per = max(8.0, cache.get('industry_per', 10.0))
-    target_per = ind_per * (1.0 + flow_impact + news_impact) * macro_multiplier
-
-    # 4) 🚀 미래 Forward EPS 동기화 (과거 선형 외삽 폐기)
-    fwd_eps_list = cache.get('fwd_eps', [])
-    eps_ttm = cache.get('eps', 0.0)
-    sector_cagr = get_forward_sector_cagr(krx_sector, row['name'])
-
-    # 애널리스트 컨센서스가 있으면 1순위 사용, 없으면 산업 CAGR로 추정 투사
-    eps_yr0 = fwd_eps_list[0] if len(fwd_eps_list) > 0 and fwd_eps_list[0] > 0 else eps_ttm * (1 + sector_cagr)
-    eps_yr1 = fwd_eps_list[1] if len(fwd_eps_list) > 1 and fwd_eps_list[1] > 0 else eps_yr0 * (1 + sector_cagr)
-    eps_yr2 = fwd_eps_list[2] if len(fwd_eps_list) > 2 and fwd_eps_list[2] > 0 else eps_yr1 * (1 + sector_cagr)
-
-    # 5) 연도별 Base 가격 도출 (적자일 경우 BPS 방어 로직)
-    bps = cache.get('bps', 0.0)
-    pbr = cache.get('pbr', 1.0)
-    def get_base_price(eps_val):
-        if eps_val > 0: return eps_val * target_per
-        else: return (bps * pbr) if bps > 0 else current_price
-
-    base_yr0 = get_base_price(eps_yr0)
-    base_yr1 = get_base_price(eps_yr1)
-    base_yr2 = get_base_price(eps_yr2)
-
-    # 6) 데이터 기반 진성 Bull / Bear Factor 가중치 산출
-    # 기본 변동성 20%에 수급과 뉴스의 긍정/부정 수치를 가감하여 범위 산정
-    dynamic_bull_factor = 1.20 + max(0, flow_impact) + max(0, news_impact)
-    dynamic_bear_factor = 0.80 - abs(min(0, flow_impact))
-
-    matrix = {
-        "year0": {"bear": int(base_yr0 * dynamic_bear_factor), "base": int(base_yr0), "bull": int(base_yr0 * dynamic_bull_factor)},
-        "year1": {"bear": int(base_yr1 * dynamic_bear_factor), "base": int(base_yr1), "bull": int(base_yr1 * dynamic_bull_factor)},
-        "year2": {"bear": int(base_yr2 * dynamic_bear_factor), "base": int(base_yr2), "bull": int(base_yr2 * dynamic_bull_factor)},
-        "bull_factor": round(dynamic_bull_factor, 2),
-        "sector_cagr": round(sector_cagr * 100, 1),
-        "raw_scores": {"supply": round(flow_impact, 3), "news": round(news_impact, 3), "macro": round(macro_multiplier - 1.0, 3)},
-        "실적상태": "🟢 흑자 (Forward)" if eps_yr0 > 0 else "🔴 적자 (PBR 기반)"
-    }
-    return matrix
-
-# ==========================================
-# [Layer 5] DB-First 하이브리드 캐시 파이프라인
-# ==========================================
-def auto_sync_job(supabase, username, app_key, app_secret, naver_id, naver_secret):
-    last_sync_time = 0
-    while True:
-        now_ts = time.time()
-        if now_ts - last_sync_time >= 600:
-            last_sync_time = now_ts
-            try: execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, naver_secret, force=False)
-            except: pass
-        time.sleep(30)
-
-def execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, naver_secret, force=False):
-    if not app_key or not app_secret: return
-    token = get_kis_access_token(app_key, app_secret)
-    if not token: return
-
-    macro_mult, _, _ = fetch_global_macro_factor()
-    db_res = supabase.table("user_portfolio").select("*").eq("username", username).execute()
-    if not db_res.data: return
-
-    now_kst_str = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
-
-    for row in db_res.data:
-        ticker = str(row['ticker']).split('.')[0]
-        name = row['name']
-        
-        cache_res = supabase.table("stock_cache").select("*").eq("ticker", ticker).execute()
-        db_cache_row = cache_res.data[0] if cache_res.data else {}
-        db_cache = {}
-        if db_cache_row:
-            if db_cache_row.get('bm_summary'):
-                try: db_cache.update(json.loads(db_cache_row['bm_summary'])["data"])
-                except: pass
-
-        existing_sector = db_cache.get('krx_sector', '일반제조업')
-        updated_cache = {"ticker": ticker, "name": name, "krx_sector": existing_sector}
-
-        if is_expired(db_cache.get('last_price_update'), 600) or force:
-            p_data = fetch_kis_realtime_price(ticker, token, app_key, app_secret)
-            if p_data: updated_cache.update({'current_price': p_data['current_price'], 'pct_change': p_data['pct_change'], 'year_high': p_data['year_high'], 'last_price_update': now_kst_str})
-
-        if is_expired(db_cache.get('last_flow_update'), 1200) or force:
-            f_flow, i_flow = fetch_kis_investor_flows(ticker, token, app_key, app_secret)
-            updated_cache.update({'foreign_20d_flow': f_flow, 'institution_20d_flow': i_flow, 'last_flow_update': now_kst_str})
-
-        if is_expired(db_cache.get('last_news_update'), 1800) or force:
-            _, net_sent, _, n_list = get_auto_momentum(name, naver_id, naver_secret)
-            updated_cache.update({'net_sentiment': net_sent, 'news_list': n_list, 'last_news_update': now_kst_str})
-
-        if existing_sector == '일반제조업' or is_expired(db_cache.get('last_fundamental_update'), 86400):
-            if not (force and existing_sector != '일반제조업'):
-                fund = fetch_naver_fundamentals(ticker)
-                if fund:
-                    updated_cache.update({
-                        'eps': fund['eps'], 'per': fund['per'], 'pbr': fund['pbr'], 'bps': fund['bps'],
-                        'industry_per': fund['industry_per'], 'shares_outstanding': fund['shares_outstanding'],
-                        'krx_sector': fund.get('krx_sector', existing_sector), 'summary': fund.get('summary', ''),
-                        'fwd_eps': fund.get('fwd_eps', []), # 🟢 [핵심] 컨센서스 EPS DB 저장
-                        'q_headers': fund.get('q_headers', []), 'q_revenues': fund.get('q_revenues', []), 'q_op_profits': fund.get('q_op_profits', []), 'last_fundamental_update': now_kst_str
-                    })
-
-        full_cache = {**db_cache, **updated_cache}
-        supabase.table("stock_cache").upsert({"ticker": ticker, "name": name, "krx_sector": full_cache.get('krx_sector', '일반제조업'), "bm_summary": json.dumps({"__PACKED_CONTAINER__": True, "data": full_cache}, ensure_ascii=False)}).execute()
-        
-        matrix = calculate_horizon_matrix(row, full_cache, macro_mult)
-        user_cache = {
-            'current_price': full_cache.get('current_price', row['buy_price']), 'pct_change': full_cache.get('pct_change', 0.0), 'year_high': full_cache.get('year_high', 0),
-            'eps': full_cache.get('eps', 0.0), 'per': full_cache.get('per', 10.0), 'pbr': full_cache.get('pbr', 1.0), 'bps': full_cache.get('bps', 0.0),
-            'foreign_20d_flow': full_cache.get('foreign_20d_flow', 0.0), 'institution_20d_flow': full_cache.get('institution_20d_flow', 0.0),
-            'target_2026': matrix["year0"]["base"], 'bear_target': matrix["year0"]["bear"], 'bull_target': matrix["year0"]["bull"], 'horizon_matrix': matrix,
-            'summary': full_cache.get('summary', ''), 'krx_sector': full_cache.get('krx_sector', '일반제조업'),
-            'q_headers': full_cache.get('q_headers', []), 'q_revenues': full_cache.get('q_revenues', []), 'q_op_profits': full_cache.get('q_op_profits', []), 'news_list': full_cache.get('news_list', [])
-        }
-        supabase.table("user_portfolio").update({"analysis_cache": user_cache}).eq("id", row['id']).execute()
-
-# ==========================================
-# [Layer 6] UI 관제 센터 (대표님이 지시하신 원본 UI 100% 보존)
-# ==========================================
-def run_stock_quant_page(supabase, username, app_key, app_secret, naver_id, naver_secret):
-    current_yr = (datetime.utcnow() + timedelta(hours=9)).year
-    yr0, yr1, yr2 = current_yr, current_yr + 1, current_yr + 2
-
-    macro_mult, current_usd, 환율상태 = fetch_global_macro_factor()
-    system_data = load_system_krx_data(supabase)
-    name_to_code = system_data.get("name_to_code", {})
-
-    with st.container(border=True):
-        st.markdown("##### 🌐 GLOBAL MACRO FLOW (매크로 유동성 및 실시간 환율 레이더)")
-        m_col1, m_col2 = st.columns(2)
-        with m_col1: st.metric("원/달러 환율 국면", 환율상태, delta=f"{current_usd} 원", delta_color="inverse")
-        with m_col2: st.metric("시장 기본 PER 멀티플 보정률", f"{int(macro_mult*100)}%", delta="금융망 및 네이버 뉴스 융합 스캐너 가동 중")
-
-    with st.expander("➕ 포트폴리오 신규 자산 편입", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1: s_name = st.selectbox("종목 선택 (한/영 키를 눌러주세요)", list(name_to_code.keys()) if name_to_code else ["삼성전자"])
-        with col2: buy_p = st.number_input("매입 평단가(원)", min_value=1, value=10000)
-        with col3: qty = st.number_input("보유 수량(주)", min_value=1, value=10)
-        if st.button("장부 조율 및 매수 결제", type="primary"):
-            try:
-                supabase.table("user_portfolio").upsert({"username": username, "ticker": name_to_code.get(s_name, "000000"), "name": s_name, "buy_price": buy_p, "qty": qty, "analysis_cache": {}}).execute()
-                st.success(f"[{s_name}] 장부 편입 완료!"); time.sleep(0.3); st.rerun()
-            except Exception as e: st.error(f"자산 편입 실패: {str(e)}")
+    # ── 상단 상태 바 ──
+    col_stat1, col_stat2, col_stat3 = st.columns(3)
+    with col_stat1:
+        st.metric("마지막 스크리닝", last_updated if last_updated else "미실행")
+    with col_stat2:
+        st.metric("통과 종목 수", f"{len(cached_results)} / 10")
+    with col_stat3:
+        next_run = "오늘 14:30 KST" if now_kst().hour < 14 else "내일 14:30 KST"
+        st.metric("다음 자동 실행", next_run)
 
     st.divider()
-    tab_port, tab_hist, tab_log = st.tabs(["💼 포트폴리오 자산", "📝 가치 실현 내역", "⚙️ 시스템 가동 로그"])
 
-    with tab_port:
-        st.write("⚡ **Forward 멀티 모델 실시간 제어판**")
-        col_sync1 = st.columns(1)[0]
-        db_res = supabase.table("user_portfolio").select("*").eq("username", username).order("id", desc=False).execute()
-        portfolio_data = db_res.data
+    # ── 수동 즉시 실행 버튼 ──
+    col_btn1, col_btn2 = st.columns([1, 3])
+    with col_btn1:
+        manual_run = st.button("⚡ 지금 즉시 스크리닝 실행", type="primary", use_container_width=True)
 
-        if col_sync1.button("🔄 퀀트 밸류에이션 장부 커스텀 재연산", width="stretch"):
-            if not portfolio_data: st.stop()
-            with st.status("한투 금융망 및 3개년 시나리오 매트릭스 전면 동기화 중...", expanded=True) as status:
-                execute_on_demand_sync(supabase, username, app_key, app_secret, naver_id, naver_secret, force=True)
-                status.update(label="3x3 시변 기대수익률 맵핑 완결!", state="complete")
+    if manual_run:
+        universe = load_krx_universe()
+        if universe.empty:
+            st.error("종목 리스트 로드 실패")
+        else:
+            with st.status(f"📡 KRX 전종목 {len(universe)}개 대상 6대 필터 스크리닝 중...", expanded=True) as status:
+                st.write("▶ 3년치 일봉 데이터 수집 및 리스크 필터 적용 중...")
+                results = run_full_screening(supabase, universe)
+                save_screening_result(supabase, results)
+                status.update(label=f"✅ 스크리닝 완료 — {len(results)}개 종목 ALL-PASS", state="complete")
             st.rerun()
 
+    # ── 결과 없음 안내 ──
+    if not cached_results:
+        st.info("스크리닝 결과가 없습니다. '지금 즉시 스크리닝 실행' 버튼을 눌러주세요.")
+        return
+
+    # ── 결과 요약 테이블 ──
+    st.subheader("🏆 최종 선별 종목 (6필터 ALL-PASS · 모멘텀 Top 10)")
+
+    rows = []
+    for r in cached_results:
+        rows.append({
+            "순위": cached_results.index(r) + 1,
+            "종목명": r["name"],
+            "종목코드": r["symbol"],
+            "시장": r["market"],
+            "업종": r["sector"],
+            "현재가": f"₩{r['current_price']:,}",
+            "1개월수익률": f"{r['ret_1m']:+.1f}%",
+            "12-1모멘텀": f"{r['momentum_score']:+.1f}%",
+            "연환산변동성": f"{r['annual_vol']:.1f}%",
+            "MDD": f"{r['mdd']:.1f}%",
+            "거래대금(억)": f"{r['avg_trading_value_억']:.0f}",
+            "거래량비율": f"{r['vol_ratio']:.2f}x",
+            "추세기울기": f"{r['trend_slope']:+.4f}",
+        })
+
+    df_display = pd.DataFrame(rows)
+
+    selection = st.dataframe(
+        df_display,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        hide_index=True,
+    )
+
+    # ── 종목 상세 드릴다운 ──
+    selected_rows = []
+    if selection and hasattr(selection, "selection") and selection.selection.rows:
+        selected_rows = selection.selection.rows
+
+    if selected_rows:
+        sel = cached_results[selected_rows[0]]
         st.divider()
-        if not portfolio_data:
-            st.info("장부에 보유 주식이 없습니다.")
-            return
+        st.subheader(f"🔬 [{sel['name']} ({sel['symbol']})] 필터 상세 결과")
 
-        total_invest, total_value = 0, 0
-        display_rows = []
-        
-        for row in portfolio_data:
-            cache = row.get('analysis_cache', {})
-            if isinstance(cache, str):
-                try: cache = json.loads(cache)
-                except: cache = {}
-            if not isinstance(cache, dict): cache = {}
+        fd = sel.get("filter_details", {})
 
-            curr_price = cache.get('current_price', row['buy_price'])
-            matrix = cache.get('horizon_matrix', {
-                "year0": {"bear": curr_price, "base": curr_price, "bull": curr_price},
-                "year1": {"bear": curr_price, "base": curr_price, "bull": curr_price},
-                "year2": {"bear": curr_price, "base": curr_price, "bull": curr_price},
-                "실적상태": "🟢 흑자 (Forward)", "raw_scores": {"supply": 0.0, "news": 0.0, "macro": 0.0}
+        col1, col2, col3 = st.columns(3)
+        filters_list = list(RISK_FILTERS)
+
+        for idx, (fname, _) in enumerate(filters_list):
+            col = [col1, col2, col3][idx % 3]
+            detail = fd.get(fname, {})
+            passed = detail.get("pass", False)
+            reason = detail.get("reason", "-")
+            val = detail.get("value", "-")
+            with col:
+                with st.container(border=True):
+                    badge = "🟢 통과" if passed else "🔴 탈락"
+                    st.markdown(f"**{fname}**")
+                    st.markdown(f"{badge}")
+                    st.caption(reason)
+
+        st.divider()
+
+        # 가격 차트 (최근 1년)
+        st.markdown(f"**📈 {sel['name']} 최근 1년 가격 추이**")
+        df_price = fetch_price_history(sel["symbol"], years=1)
+        if not df_price.empty:
+            chart_df = df_price[['Close']].rename(columns={"Close": "종가"})
+            st.line_chart(chart_df)
+
+        # 추격매수 판단 요약
+        st.markdown("**📋 추격매수 적합성 판단**")
+        score_color = "#00B464" if sel["momentum_score"] > 20 else "#E6A23C" if sel["momentum_score"] > 0 else "#F04452"
+        st.markdown(f"""
+- **모멘텀 강도:** <span style='color:{score_color}; font-weight:bold;'>{sel['momentum_score']:+.1f}%</span>
+- **거래량 급증 배율:** {sel['vol_ratio']:.2f}x (1.3x 이상 = 추격매수 신호)
+- **변동성 수준:** 연환산 {sel['annual_vol']:.1f}% (낮을수록 안전)
+- **MDD:** {sel['mdd']:.1f}% (손절 기준선 참고)
+- **스크리닝 시각:** {sel['screened_at']}
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── 필터별 통과율 현황 (전체 결과 기준) ──
+    with st.expander("📊 필터별 통과 현황", expanded=False):
+        st.caption(f"최종 통과 {len(cached_results)}개 종목 기준 각 지표 분포")
+        if cached_results:
+            mom_vals = [r["momentum_score"] for r in cached_results]
+            vol_vals = [r["annual_vol"] for r in cached_results]
+            vr_vals = [r["vol_ratio"] for r in cached_results]
+            mdd_vals = [r["mdd"] for r in cached_results]
+
+            stat_df = pd.DataFrame({
+                "종목": [r["name"] for r in cached_results],
+                "12-1 모멘텀(%)": mom_vals,
+                "연환산변동성(%)": vol_vals,
+                "거래량비율(x)": vr_vals,
+                "MDD(%)": mdd_vals,
             })
-            
-            pnl_amt = (curr_price - row['buy_price']) * row['qty']
-            pnl_pct = ((curr_price - row['buy_price']) / row['buy_price']) * 100 if row['buy_price'] > 0 else 0
-            
-            total_invest += row['buy_price'] * row['qty']
-            total_value += curr_price * row['qty']
+            st.dataframe(stat_df, use_container_width=True, hide_index=True)
 
-            display_rows.append({
-                "종목명": row['name'], "실적 구분": matrix.get("실적상태", "🟢 흑자 (Forward)"),
-                "현재가": curr_price, "평단가": row['buy_price'], "보유수량": row['qty'],
-                "실시간 수익률": pnl_pct, "현재 평가손익": pnl_amt,
-                f"{yr0}▲": matrix["year0"]["bull"], f"{yr1}▲": matrix["year1"]["bull"], f"{yr2}▲": matrix["year2"]["bull"],
-                "matrix": matrix, "raw_data": row, "krx_sector": cache.get('krx_sector', '제조업')
-            })
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("총 투입 자본", f"{total_invest:,} 원")
-        c2.metric("현재 평가 자산", f"{total_value:,} 원")
-        c3.metric("포트폴리오 수익", f"{total_value - total_invest:,} 원", f"{((total_value - total_invest)/total_invest)*100:+.2f}%" if total_invest > 0 else "0.00%")
-        
-        df_base = pd.DataFrame(display_rows)
-        df_disp = pd.DataFrame()
-        
-        df_disp["종목명"] = df_base["종목명"]
-        df_disp["실적 구분"] = df_base["실적 구분"]
-        df_disp["현재가"] = df_base["현재가"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp["평단가"] = df_base["평단가"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp["보유수량"] = df_base["보유수량"].apply(lambda x: f"{int(x):,} 주")
-        df_disp["수익률"] = df_base["실시간 수익률"].apply(lambda x: f"{x:+.2f}%")
-        df_disp[f"{yr0}▲"] = df_base[f"{yr0}▲"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp[f"{yr1}▲"] = df_base[f"{yr1}▲"].apply(lambda x: f"₩ {int(x):,}")
-        df_disp[f"{yr2}▲"] = df_base[f"{yr2}▲"].apply(lambda x: f"₩ {int(x):,}")
-
-        selection_event = st.dataframe(df_disp, width="stretch", on_select="rerun", selection_mode="single-row")
-        
-        selected_indices = []
-        if selection_event is not None:
-            if hasattr(selection_event, "selection") and selection_event.selection.rows: selected_indices = selection_event.selection.rows
-            elif isinstance(selection_event, dict) and selection_event.get("selection", {}).get("rows"): selected_indices = selection_event["selection"]["rows"]
-        
-        if selected_indices:
-            sel = display_rows[selected_indices[0]]
-            raw = sel["raw_data"]
-            mx = sel["matrix"]
-            sc = mx.get("raw_scores", {"supply": 0.0, "news": 0.0, "macro": 0.0})
-            avg_cost = float(raw['buy_price'])
-            s_ticker = str(raw['ticker']).split('.')[0]
-            
-            st.markdown(f"### 🛠️ [{sel['종목명']}] 퀀트 익절/손절 실전 통제실")
-            
-            col_btn1, col_btn2, col_btn3 = st.columns(3)
-            with col_btn1:
-                with st.popover("✏️ 장부 평단/수량 수정", use_container_width=True):
-                    new_p = st.number_input("수정할 평단가", value=int(raw['buy_price']), key=f"p_ed_{s_ticker}")
-                    new_q = st.number_input("수정할 보유수량", value=int(raw['qty']), key=f"q_ed_{s_ticker}")
-                    if st.button("수정 장부 인가", key=f"b_ed_{s_ticker}", use_container_width=True):
-                        supabase.table("user_portfolio").update({"buy_price": new_p, "qty": new_q}).eq("id", raw['id']).execute()
-                        st.success("장부 정보 정정 고시 완료!"); time.sleep(0.3); st.rerun()
-            with col_btn2:
-                with st.popover("🛒 분할 추가매수", use_container_width=True):
-                    add_p = st.number_input("추가 매수가격", value=int(sel['현재가']), key=f"p_add_{s_ticker}")
-                    add_q = st.number_input("추가 매수수량", value=10, key=f"q_add_{s_ticker}")
-                    if st.button("추가매수 체결", key=f"b_add_{s_ticker}", use_container_width=True):
-                        new_qty = raw['qty'] + add_q
-                        new_avg = int(((raw['buy_price'] * raw['qty']) + (add_p * add_q)) / new_qty)
-                        supabase.table("user_portfolio").update({"buy_price": new_avg, "qty": new_qty}).eq("id", raw['id']).execute()
-                        st.success("가중평균 평단가 합성 완료!"); time.sleep(0.3); st.rerun()
-            with col_btn3:
-                if st.button("🚨 포지션 청산 (장부 삭제)", type="primary", use_container_width=True, key=f"b_del_{s_ticker}"):
-                    supabase.table("user_portfolio").delete().eq("id", raw['id']).execute()
-                    st.success("포지션 청산 완결!"); time.sleep(0.3); st.rerun()
-
-            st.divider()
-            
-            t1, t2, t3 = st.tabs(["📉 3단계 시나리오 및 평단대비 기대수익률", "📰 전방 사업 명세 및 수급점수", "📊 실적 턴어라운드 감지"])
-            with t1:
-                st.caption(f"**실시간 퀀트 계량 레이다:** 업종 [{sel['krx_sector']}] | 진성 Bull Factor 승수: **{mx.get('bull_factor', 1.25)}x** (매출성장속도 복리: {mx.get('sector_cagr', 10.0)}%)")
-                st.markdown(f"**💡 결합형 퀀트 스코어 스캔:** 수급 가중치 `({sc.get('supply', 0.0):+})` | 뉴스 호재 가중치 `({sc.get('news', 0.0):+})` | 매크로 가중치 `({sc.get('macro', 0.0):+})`")
-                
-                mc0, mc1, mc2 = st.columns(3)
-                with mc0:
-                    with st.container(border=True):
-                        st.markdown(f"#### 📅 {yr0} 예상 국면")
-                        st.markdown(f"**Bear (25%):** ₩{mx['year0']['bear']:,} <br><span style='color:#3182F6'>평단대비: {((mx['year0']['bear']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Base (50%):** ₩{mx['year0']['base']:,} <br><span style='color:#E6A23C'>평단대비: {((mx['year0']['base']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Bull (25%):** ₩{mx['year0']['bull']:,} <br><span style='color:#00B464'>평단대비: {((mx['year0']['bull']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                with mc1:
-                    with st.container(border=True):
-                        st.markdown(f"#### 📅 {yr1} 예상 국면")
-                        st.markdown(f"**Bear (25%):** ₩{mx['year1']['bear']:,} <br><span style='color:#3182F6'>평단대비: {((mx['year1']['bear']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Base (50%):** ₩{mx['year1']['base']:,} <br><span style='color:#E6A23C'>평단대비: {((mx['year1']['base']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Bull (25%):** ₩{mx['year1']['bull']:,} <br><span style='color:#00B464'>평단대비: {((mx['year1']['bull']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                with mc2:
-                    with st.container(border=True):
-                        st.markdown(f"#### 📅 {yr2} 예상 국면")
-                        st.markdown(f"**Bear (25%):** ₩{mx['year2']['bear']:,} <br><span style='color:#3182F6'>평단대비: {((mx['year2']['bear']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Base (50%):** ₩{mx['year2']['base']:,} <br><span style='color:#E6A23C'>평단대비: {((mx['year2']['base']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                        st.markdown(f"**Bull (25%):** ₩{mx['year2']['bull']:,} <br><span style='color:#00B464'>평단대비: {((mx['year2']['bull']-avg_cost)/avg_cost*100):+.1f}%</span>", unsafe_allow_html=True)
-                
-            with t2:
-                s_cache = raw.get("analysis_cache", {})
-                st.write(f"**📢 기업 개요 및 펀더멘탈 요약:** {s_cache.get('summary', '데이터 정렬 완료')}")
-                st.write(f"**• 회계 연산용 지표:** TTM EPS `{s_cache.get('eps', 0.0):,.0f}원` | BPS `{s_cache.get('bps', 0.0):,.0f}원` | 동종업종 PER `{s_cache.get('per', 10.0)}배`")
-                st.write(f"**• 실시간 수급 동향 (20일):** 외인 누적 `{int(s_cache.get('foreign_20d_flow', 0.0)):+,}주` | 기관 누적 `{int(s_cache.get('institution_20d_flow', 0.0)):+,}주`")
-                    
-            with t3:
-                s_cache = raw.get("analysis_cache", {})
-                q_hd = s_cache.get('q_headers', [])
-                q_rev = s_cache.get('q_revenues', [])
-                q_op = s_cache.get('q_op_profits', [])
-                if q_rev and len(q_rev) >= 2:
-                    fig, ax1 = plt.subplots(figsize=(10, 3))
-                    ax1.bar(range(len(q_rev)), q_rev, color='#3182F6', alpha=0.7, width=0.2, label="매출액")
-                    ax2 = ax1.twinx()
-                    ax2.plot(range(len(q_op)), q_op, color='#F04452', marker='o', linewidth=2, label="영업이익")
-                    st.pyplot(fig)
-                else: st.info("분기 실적 차트 시각화 데이터가 캐시 원장에 존재하지 않습니다.")
-
-    with tab_hist:
-        st.subheader("📝 자산 매도(청산) 히스토리")
-        hist_res = supabase.table("user_history").select("*").eq("username", username).execute()
-        if not hist_res.data: st.info("아직 자산 매도 내역이 없습니다.")
-        else:
-            df_hist = pd.DataFrame(hist_res.data)
-            st.dataframe(df_hist, width="stretch")
-
-    with tab_log:
-        st.subheader("⚙️ 시스템 엔진 처리 기록")
-        log_res = supabase.table("user_logs").select("*").eq("username", username).execute()
-        if not log_res.data: st.info("시스템 처리 기록이 없습니다.")
-        else:
-            df_log = pd.DataFrame(log_res.data)
-            st.dataframe(df_log, width="stretch")
+            st.bar_chart(stat_df.set_index("종목")["12-1 모멘텀(%)"])
