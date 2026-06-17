@@ -114,4 +114,4 @@ elif menu == "🏢 부동산 실거래가 스캔":
     real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
 
 elif menu == "📈 주식 포트폴리오 퀀트":
-    stock_quant.run_stock_quant_page(supabase, username)
+    stock_quant.run_stock_quant_page(supabase, st.session_state.username)
