@@ -114,12 +114,4 @@ elif menu == "🏢 부동산 실거래가 스캔":
     real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
 
 elif menu == "📈 주식 포트폴리오 퀀트":
-    # 💡 한투 금융 키 2개와 네이버 뉴스 키 2개를 stock_quant 엔진 내부로 정밀 동시 토스합니다.
-    stock_quant.run_stock_quant_page(
-        supabase, 
-        st.session_state.username, 
-        st.session_state.api_keys["app_key"], 
-        st.session_state.api_keys["app_secret"],
-        st.session_state.api_keys["naver_id"],
-        st.session_state.api_keys["naver_secret"]
-    )
+    stock_quant.run_stock_quant_page(supabase, username)
