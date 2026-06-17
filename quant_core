@@ -1,9 +1,3 @@
-"""
-quant_core.py
-─────────────────────────────────────────────
-공용 유틸, 6대 리스크 필터, 스크리닝 엔진
-init / cron / streamlit UI 세 파일이 모두 import 해서 사용
-"""
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
