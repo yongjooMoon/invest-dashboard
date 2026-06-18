@@ -5,7 +5,7 @@ import streamlit as st
 import pandas as pd
 from quant_core import (
     load_price_from_db, load_screening_result,
-    ALL_FILTER_NAMES, TECH_FILTERS, FUNDA_FILTERS,
+    TECH_FILTERS, FUNDA_FILTERS,
     now_kst,
 )
 
