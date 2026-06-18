@@ -10,7 +10,7 @@ from quant_core import (
 )
 
 
-def run_quant_screener_page(supabase, username: str = "admin"):
+def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트 추격매수 스크리너")
     st.caption("기술적 6필터 + 펀더멘털 2필터 ALL-PASS · 팩터 점수 랭킹 · 매일 14:30 KST 자동 갱신")
 
