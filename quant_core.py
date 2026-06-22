@@ -1,35 +1,18 @@
 """
-quant_core.py
+coreAi.py
 ─────────────────────────────────────────────
-공용 유틸 + 유니버스 사전필터링 + 8대 필터 + 팩터 점수화
+공용 유틸 + 유니버스 사전필터링 + 11대 필터 + 팩터 점수화
 
-[속도 개선 핵심]
-  전종목 2700개 → 사전필터링 300~400개 → 8필터 적용
-  사전필터: 시가총액 ≥ 500억 + 20일 거래대금 ≥ 30억
+[사전필터 (5단계)]
+  1. 시가총액 ≥ 300억
+  2. 거래대금 ≥ 50억
+  3. 보통주만 (ETF·스팩·리츠·우선주 제거)
+  4. 상장 1년 이상
+  5. 주가 ≥ 1,000원
 
-[실전 API 전환]
-  KIS_BASE_URL = https://openapi.koreainvestment.com:9443
-
-Supabase DDL
-──────────────────────────────────────────────
-CREATE TABLE stock_daily (
-    symbol TEXT NOT NULL, name TEXT,
-    date DATE NOT NULL, open NUMERIC, high NUMERIC,
-    low NUMERIC, close NUMERIC NOT NULL, volume BIGINT,
-    PRIMARY KEY (symbol, date)
-);
-CREATE TABLE stock_fundamental (
-    symbol TEXT PRIMARY KEY, name TEXT,
-    roe NUMERIC, debt_ratio NUMERIC,
-    op_profit_cur NUMERIC, op_profit_prev NUMERIC,
-    eps_cur NUMERIC, eps_prev NUMERIC, updated_at TEXT
-);
-CREATE TABLE quant_screening_cache (
-    id INT PRIMARY KEY, results JSONB, updated_at TEXT
-);
-CREATE TABLE quant_watchlist_cache (
-    id INT PRIMARY KEY, results JSONB, updated_at TEXT
-);
+[11대 필터]
+  기술 7: 모멘텀, 저변동성, MDD, 유동성, 거래량모멘텀, 추세강도, 이평정배열
+  펀더멘털 4: 실적모멘텀, 재무건전성, PER밸류, PBR밸류
 """
 
 import json, re, time
@@ -59,6 +42,21 @@ def is_expired(ts_str: str, threshold_sec: int) -> bool:
     except:
         return True
 
+
+class NumpyEncoder(json.JSONEncoder):
+    """numpy 타입 → Python 네이티브 변환 (JSON 직렬화 오류 방지)"""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 # ──────────────────────────────────────────
 # 테이블 상수
 # ──────────────────────────────────────────
@@ -70,18 +68,25 @@ TBL_WATCH   = "quant_watchlist_cache"
 ROLLING_DAYS       = 756
 MIN_DAYS           = 252
 FUNDA_TTL_SEC      = 86400 * 90   # 90일 캐시
-WATCHLIST_MIN_PASS = 6
+WATCHLIST_MIN_PASS = 8            # 11필터 중 8개 이상 → 워치리스트
 
 # ──────────────────────────────────────────
 # 사전 필터링 기준
 # ──────────────────────────────────────────
-PREFILTER_MARCAP_억  = 500     # 시가총액 500억 이상
-PREFILTER_TVOL_억    = 30      # 20일 평균 거래대금 30억 이상
+PREFILTER_MARCAP_억        = 300     # 시가총액 300억 이상 (코스닥 포함 확대)
+PREFILTER_TVOL_억          = 50      # 거래대금 50억 이상 (유동성 강화)
+PREFILTER_MIN_PRICE        = 1000    # 주가 1000원 이상 (동전주 제거)
+PREFILTER_MIN_LISTING_DAYS = 252     # 상장 1년 이상 (신규상장 노이즈 제거)
+
+# 종목명 기반 제외 키워드 (ETF·스팩·리츠·ETN 등)
+_EXCLUDE_NAME_KEYWORDS = [
+    "스팩", "SPAC", "리츠", "REIT", "ETN",
+    "인버스", "레버리지", "선물", "합병",
+]
 
 
 # ══════════════════════════════════════════
 # [A] 유니버스 사전 필터링
-#     FDR Marcap + KRX 거래대금으로 2700 → 300~400개로 축소
 # ══════════════════════════════════════════
 def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
     col  = raw.columns.tolist()
@@ -89,6 +94,8 @@ def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
     name = next((c for c in ["Name", "종목명"]            if c in col), None)
     sec  = next((c for c in ["Sector", "Industry", "업종"] if c in col), None)
     cap  = next((c for c in ["Marcap", "시가총액"]          if c in col), None)
+    close_col   = next((c for c in ["Close", "종가"]       if c in col), None)
+    listing_col = next((c for c in ["ListingDate", "상장일"] if c in col), None)
     if not sym or not name:
         raise ValueError(f"필수 컬럼 없음: {col}")
     df = pd.DataFrame({
@@ -97,53 +104,73 @@ def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
         "Market": market,
         "Sector": raw[sec].astype(str) if sec else "-",
         "Marcap": pd.to_numeric(raw[cap], errors="coerce") if cap else 0,
+        "Close":  pd.to_numeric(raw[close_col], errors="coerce") if close_col else 0,
     })
+    if listing_col:
+        df["ListingDate"] = pd.to_datetime(raw[listing_col], errors="coerce")
+    else:
+        df["ListingDate"] = pd.NaT
     return df
 
 
 def load_krx_trading_volume() -> dict:
     """
     KRX 정보데이터시스템에서 전종목 거래대금 조회 (무료, 인증 불필요)
-    반환: {symbol: 20일평균거래대금(억원)}
+    ★ 주말/공휴일 대응: 당일 데이터 없으면 최근 5영업일 역순 탐색
     """
-    try:
-        today = now_kst().strftime("%Y%m%d")
-        url   = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-        data  = {
-            "bld":          "dbms/MDC/STAT/standard/MDCSTAT01501",
-            "mktId":        "ALL",
-            "trdDd":        today,
-            "share":        "1",
-            "money":        "1",
-            "csvxls_isNo":  "false",
-        }
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer":    "http://data.krx.co.kr/",
-        }
-        res  = requests.post(url, data=data, headers=headers, timeout=15)
-        rows = res.json().get("OutBlock_1", [])
-        result = {}
-        for r in rows:
-            code = str(r.get("ISU_SRT_CD", "")).strip().zfill(6)
-            tv   = float(str(r.get("ACC_TRDVAL", "0")).replace(",", "") or 0) / 1e8
-            if code:
-                result[code] = tv
-        print(f"[KRX] 거래대금 로드: {len(result)}개")
-        return result
-    except Exception as e:
-        print(f"[KRX] 거래대금 로드 실패 (무시하고 계속): {e}")
-        return {}
+    url     = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "http://data.krx.co.kr/"}
+
+    for offset in range(0, 7):
+        dt = now_kst() - timedelta(days=offset)
+        if dt.weekday() >= 5:   # 토·일 스킵
+            continue
+        trd_dd = dt.strftime("%Y%m%d")
+        try:
+            data = {
+                "bld":          "dbms/MDC/STAT/standard/MDCSTAT01501",
+                "mktId":        "ALL",
+                "trdDd":        trd_dd,
+                "share":        "1",
+                "money":        "1",
+                "csvxls_isNo":  "false",
+            }
+            res  = requests.post(url, data=data, headers=headers, timeout=15)
+            rows = res.json().get("OutBlock_1", [])
+            if not rows:
+                continue   # 이 날짜에 데이터 없음 → 이전 영업일 시도
+            result = {}
+            for r in rows:
+                code = str(r.get("ISU_SRT_CD", "")).strip().zfill(6)
+                tv   = float(str(r.get("ACC_TRDVAL", "0")).replace(",", "") or 0) / 1e8
+                if code:
+                    result[code] = tv
+            print(f"[KRX] 거래대금 로드: {len(result)}개 (기준일: {trd_dd})")
+            return result
+        except Exception as e:
+            print(f"[KRX] {trd_dd} 조회 실패: {e}")
+            continue
+
+    print("[KRX] 거래대금 로드 실패 — 최근 7일 내 유효 데이터 없음")
+    return {}
+
+
+def _is_common_stock(symbol: str, name: str) -> bool:
+    """보통주 여부 판별"""
+    if not symbol[-1].isdigit() or int(symbol[-1]) != 0:
+        return False
+    for kw in _EXCLUDE_NAME_KEYWORDS:
+        if kw in name:
+            return False
+    if re.search(r"우[A-C]?$", name):
+        return False
+    return True
 
 
 def load_filtered_universe(
     marcap_min_억: int = PREFILTER_MARCAP_억,
     tvol_min_억:   int = PREFILTER_TVOL_억,
 ) -> pd.DataFrame:
-    """
-    KOSPI + KOSDAQ 전종목 로드 후 사전 필터링.
-    시가총액 ≥ marcap_min_억 AND 거래대금 ≥ tvol_min_억 인 종목만 반환.
-    """
     print(f"[유니버스] KRX 전종목 로드 중...")
     kospi  = _normalize_listing(fdr.StockListing("KOSPI"),  "KOSPI")
     kosdaq = _normalize_listing(fdr.StockListing("KOSDAQ"), "KOSDAQ")
@@ -151,23 +178,45 @@ def load_filtered_universe(
     raw_df = raw_df[raw_df["Symbol"].str.len() == 6].dropna(subset=["Symbol", "Name"])
     total  = len(raw_df)
 
-    # 1차: 시가총액 필터 (FDR Marcap, 단위: 원)
-    marcap_원 = marcap_min_억 * 1e8
-    cap_filtered = raw_df[raw_df["Marcap"] >= marcap_원].copy()
+    common = raw_df[raw_df.apply(lambda r: _is_common_stock(r["Symbol"], r["Name"]), axis=1)].copy()
+    cnt_common = len(common)
 
-    # 2차: 거래대금 필터 (KRX 당일 데이터)
+    marcap_원 = marcap_min_억 * 1e8
+    cap_filtered = common[common["Marcap"] >= marcap_원].copy()
+    cnt_cap = len(cap_filtered)
+
+    cutoff_date = now_kst() - timedelta(days=PREFILTER_MIN_LISTING_DAYS)
+    if cap_filtered["ListingDate"].notna().any():
+        listing_filtered = cap_filtered[
+            cap_filtered["ListingDate"].isna() |
+            (cap_filtered["ListingDate"] <= cutoff_date)
+        ].copy()
+    else:
+        listing_filtered = cap_filtered.copy()
+    cnt_listing = len(listing_filtered)
+
+    if "Close" in listing_filtered.columns and listing_filtered["Close"].sum() > 0:
+        price_filtered = listing_filtered[
+            (listing_filtered["Close"] <= 0) |
+            (listing_filtered["Close"] >= PREFILTER_MIN_PRICE)
+        ].copy()
+    else:
+        price_filtered = listing_filtered.copy()
+    cnt_price = len(price_filtered)
+
     tvol_map = load_krx_trading_volume()
     if tvol_map:
-        cap_filtered["TradingVol억"] = cap_filtered["Symbol"].map(tvol_map).fillna(0)
-        final = cap_filtered[cap_filtered["TradingVol억"] >= tvol_min_억].copy()
+        price_filtered["TradingVol억"] = price_filtered["Symbol"].map(tvol_map).fillna(0)
+        final = price_filtered[price_filtered["TradingVol억"] >= tvol_min_억].copy()
     else:
-        # KRX 조회 실패 시 시가총액 필터만 적용
-        final = cap_filtered.copy()
+        final = price_filtered.copy()
         final["TradingVol억"] = 0
 
     final = final.reset_index(drop=True)
-    print(f"[유니버스] 전체 {total}개 → 시가총액 필터 {len(cap_filtered)}개 → "
-          f"거래대금 필터 {len(final)}개 (사전필터 완료)")
+    print(f"[유니버스] 전체 {total}개 → 보통주 {cnt_common}개 → "
+          f"시총 {cnt_cap}개 → 상장1년 {cnt_listing}개 → "
+          f"주가≥{PREFILTER_MIN_PRICE} {cnt_price}개 → "
+          f"거래대금≥{tvol_min_억}억 {len(final)}개 (사전필터 완료)")
     return final
 
 
@@ -198,13 +247,11 @@ def load_price_from_db(supabase, symbol: str) -> pd.DataFrame:
         print(f"[DB] {symbol} 조회 실패: {e}")
         return pd.DataFrame()
 
-
 def upsert_daily_rows(supabase, symbol: str, name: str, rows: list):
     if not rows:
         return
     payload = [{**r, "symbol": symbol, "name": name} for r in rows]
     supabase.table(TBL_DAILY).upsert(payload, on_conflict="symbol,date").execute()
-
 
 def trim_old_rows(supabase, symbol: str):
     try:
@@ -230,7 +277,6 @@ def _parse_num(txt) -> float:
         return float(re.sub(r"[^\d.\-]", "", str(txt).replace(",", "")))
     except:
         return 0.0
-
 
 def fetch_dart_financial(corp_code: str, dart_api_key: str, year: int = None) -> dict:
     if year is None:
@@ -265,7 +311,6 @@ def fetch_dart_financial(corp_code: str, dart_api_key: str, year: int = None) ->
         except:
             pass
     return result
-
 
 def fetch_naver_fundamental(symbol: str) -> dict:
     result = {"roe": None, "debt_ratio": None,
@@ -307,7 +352,6 @@ def fetch_naver_fundamental(symbol: str) -> dict:
         pass
     return result
 
-
 def load_fundamental_from_db(supabase, symbol: str) -> dict | None:
     try:
         res = supabase.table(TBL_FUNDA).select("*").eq("symbol", symbol).execute()
@@ -319,9 +363,8 @@ def load_fundamental_from_db(supabase, symbol: str) -> dict | None:
         pass
     return None
 
-
 def save_fundamental_to_db(supabase, symbol: str, name: str, data: dict):
-    supabase.table(TBL_FUNDA).upsert({
+    payload = {
         "symbol": symbol, "name": name,
         "roe":            data.get("roe"),
         "debt_ratio":     data.get("debt_ratio"),
@@ -330,8 +373,28 @@ def save_fundamental_to_db(supabase, symbol: str, name: str, data: dict):
         "eps_cur":        data.get("eps_cur"),
         "eps_prev":       data.get("eps_prev"),
         "updated_at":     now_kst_str(),
-    }).execute()
+    }
+    if data.get("per") is not None:
+        payload["per"] = data["per"]
+    if data.get("pbr") is not None:
+        payload["pbr"] = data["pbr"]
+    try:
+        supabase.table(TBL_FUNDA).upsert(payload).execute()
+    except Exception as e:
+        payload.pop("per", None)
+        payload.pop("pbr", None)
+        supabase.table(TBL_FUNDA).upsert(payload).execute()
 
+def save_per_pbr(supabase, symbol: str, per: float | None, pbr: float | None):
+    if per is None and pbr is None:
+        return
+    update = {}
+    if per is not None: update["per"] = per
+    if pbr is not None: update["pbr"] = pbr
+    try:
+        supabase.table(TBL_FUNDA).update(update).eq("symbol", symbol).execute()
+    except:
+        pass
 
 def get_fundamental(supabase, symbol: str, name: str,
                     dart_api_key: str = "", dart_corp_map: dict = None) -> dict:
@@ -369,53 +432,42 @@ def get_fundamental(supabase, symbol: str, name: str,
 
 
 # ══════════════════════════════════════════
-# [D] 8대 필터 (reason 필드 포함)
+# [D] 11대 필터
 # ══════════════════════════════════════════
 def filter_momentum(df: pd.DataFrame) -> dict:
-    """[1] 12-1 모멘텀 (Jegadeesh & Titman 1993)"""
     if len(df) < MIN_DAYS:
         return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
     ret = (df["Close"].iloc[-21] - df["Close"].iloc[-252]) / df["Close"].iloc[-252] * 100
-    return {"pass": ret > 0, "value": round(float(ret), 2),
-            "reason": f"12-1 모멘텀 {ret:+.1f}%"}
+    return {"pass": bool(ret > 0), "value": round(float(ret), 2), "reason": f"12-1 모멘텀 {ret:+.1f}%"}
 
 def filter_volatility(df: pd.DataFrame) -> dict:
-    """[2] 저변동성 (Ang et al. 2006)"""
     if len(df) < 60:
         return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
     vol = df["Close"].pct_change().dropna().iloc[-60:].std() * np.sqrt(252) * 100
-    return {"pass": vol <= 60.0, "value": round(float(vol), 2),
-            "reason": f"연환산 변동성 {vol:.1f}% (기준 ≤60%)"}
+    return {"pass": bool(vol <= 60.0), "value": round(float(vol), 2), "reason": f"연환산 변동성 {vol:.1f}%"}
 
 def filter_mdd(df: pd.DataFrame) -> dict:
-    """[3] MDD 최대낙폭"""
     if len(df) < 60:
         return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
     close = df["Close"].iloc[-252:] if len(df) >= 252 else df["Close"]
     mdd   = ((close - close.cummax()) / close.cummax() * 100).min()
-    return {"pass": mdd >= -25.0, "value": round(float(mdd), 2),
-            "reason": f"1년 MDD {mdd:.1f}% (기준 ≥-25%)"}
+    return {"pass": bool(mdd >= -25.0), "value": round(float(mdd), 2), "reason": f"1년 MDD {mdd:.1f}%"}
 
 def filter_liquidity(df: pd.DataFrame) -> dict:
-    """[4] 유동성 (Amihud 2002) — 사전필터 통과했으므로 기준 완화 가능"""
     if len(df) < 20 or "Volume" not in df.columns:
         return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
     avg_tv = (df["Close"] * df["Volume"]).iloc[-20:].mean()
-    return {"pass": avg_tv >= 3_000_000_000,   # 사전필터 30억 통과 후 30억 재확인
-            "value": round(float(avg_tv / 1e8), 1),
-            "reason": f"20일 평균 거래대금 {avg_tv/1e8:.0f}억 (기준 ≥30억)"}
+    return {"pass": bool(avg_tv >= 5_000_000_000), "value": round(float(avg_tv / 1e8), 1),
+            "reason": f"20일 평균 거래대금 {avg_tv/1e8:.0f}억"}
 
 def filter_volume_momentum(df: pd.DataFrame) -> dict:
-    """[5] 거래량 모멘텀 (Lee & Swaminathan 2000)"""
     if len(df) < 60 or "Volume" not in df.columns:
         return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
     vol60 = df["Volume"].iloc[-60:].mean()
     ratio = df["Volume"].iloc[-5:].mean() / vol60 if vol60 > 0 else 0
-    return {"pass": ratio >= 1.3, "value": round(float(ratio), 3),
-            "reason": f"거래량 비율 {ratio:.2f}x (기준 ≥1.3x)"}
+    return {"pass": bool(ratio >= 1.3), "value": round(float(ratio), 3), "reason": f"거래량 비율 {ratio:.2f}x"}
 
 def filter_trend_strength(df: pd.DataFrame) -> dict:
-    """[6] 추세 강도 (Novy-Marx 2013 변형)"""
     if len(df) < 60:
         return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
     close  = df["Close"].iloc[-60:].values
@@ -426,19 +478,28 @@ def filter_trend_strength(df: pd.DataFrame) -> dict:
     ss_tot = np.sum((close - close.mean()) ** 2)
     r2     = 1 - ss_res / ss_tot if ss_tot > 0 else 0
     slope  = p[0]
-    return {"pass": slope > 0 and r2 >= 0.5, "value": round(float(slope), 4),
-            "reason": f"기울기 {slope:+.2f}, R² {r2:.2f} (기준: >0, ≥0.5)"}
+    return {"pass": bool(slope > 0 and r2 >= 0.5), "value": round(float(slope), 4),
+            "reason": f"기울기 {slope:+.2f}, R² {r2:.2f}"}
+
+def filter_ma_alignment(df: pd.DataFrame) -> dict:
+    if len(df) < 120:
+        return {"pass": False, "value": None, "reason": f"데이터 부족 ({len(df)}일)"}
+    close = float(df["Close"].iloc[-1])
+    ma20  = float(df["Close"].iloc[-20:].mean())
+    ma60  = float(df["Close"].iloc[-60:].mean())
+    ma120 = float(df["Close"].iloc[-120:].mean())
+    ok    = close > ma20 > ma60 > ma120
+    return {"pass": bool(ok), "value": round(close / ma20, 3) if ma20 > 0 else 0,
+            "reason": f"{'정배열✅' if ok else '역배열❌'} — 종가/MA20 {close/ma20:.2f}"}
 
 def filter_earnings_momentum(fund: dict) -> dict:
-    """[7] 실적 모멘텀: 영업이익 YoY > 0 AND EPS YoY > 0"""
     op_cur   = fund.get("op_profit_cur")
     op_prev  = fund.get("op_profit_prev")
     eps_cur  = fund.get("eps_cur")
     eps_prev = fund.get("eps_prev")
 
     if op_cur is None and eps_cur is None:
-        return {"pass": True, "value": None, "op_yoy": None, "eps_yoy": None,
-                "reason": "펀더멘털 미수집 — 중립 통과"}
+        return {"pass": True, "value": None, "op_yoy": None, "eps_yoy": None, "reason": "펀더멘털 미수집"}
 
     op_yoy, eps_yoy = None, None
     op_pass, eps_pass = True, True
@@ -454,33 +515,42 @@ def filter_earnings_momentum(fund: dict) -> dict:
     parts = []
     if op_yoy  is not None: parts.append(f"영업이익YoY {op_yoy:+.1f}%")
     if eps_yoy is not None: parts.append(f"EPS YoY {eps_yoy:+.1f}%")
-
     return {
-        "pass":    op_pass and eps_pass,
+        "pass":    bool(op_pass and eps_pass),
         "value":   round(float(op_yoy), 2) if op_yoy is not None else None,
         "op_yoy":  round(float(op_yoy),  2) if op_yoy  is not None else None,
         "eps_yoy": round(float(eps_yoy), 2) if eps_yoy is not None else None,
-        "reason":  (" | ".join(parts) if parts else "데이터 없음") + " (기준: 둘 다 >0)",
+        "reason":  " | ".join(parts) if parts else "데이터 없음",
     }
 
 def filter_financial_health(fund: dict) -> dict:
-    """[8] 재무 건전성: ROE ≥ 5%, 부채비율 ≤ 200%"""
     roe        = fund.get("roe")
     debt_ratio = fund.get("debt_ratio")
 
     if roe is None and debt_ratio is None:
-        return {"pass": True, "value": None, "reason": "재무 미수집 — 중립 통과"}
+        return {"pass": True, "value": None, "reason": "재무 미수집"}
 
     roe_pass  = roe        >= 5.0   if roe        is not None else True
     debt_pass = debt_ratio <= 200.0 if debt_ratio is not None else True
 
     parts = []
-    if roe        is not None: parts.append(f"ROE {roe:.1f}% (기준 ≥5%)")
-    if debt_ratio is not None: parts.append(f"부채비율 {debt_ratio:.0f}% (기준 ≤200%)")
-
-    return {"pass": roe_pass and debt_pass,
+    if roe        is not None: parts.append(f"ROE {roe:.1f}%")
+    if debt_ratio is not None: parts.append(f"부채비율 {debt_ratio:.0f}%")
+    return {"pass": bool(roe_pass and debt_pass),
             "value": round(float(roe), 2) if roe is not None else None,
             "reason": " | ".join(parts)}
+
+def filter_per_value(fund: dict) -> dict:
+    per = fund.get("per")
+    if per is None: return {"pass": True, "value": None, "reason": "PER 미수집"}
+    per = float(per)
+    return {"pass": bool(0 < per <= 20), "value": round(per, 2), "reason": f"PER {per:.1f}"}
+
+def filter_pbr_value(fund: dict) -> dict:
+    pbr = fund.get("pbr")
+    if pbr is None: return {"pass": True, "value": None, "reason": "PBR 미수집"}
+    pbr = float(pbr)
+    return {"pass": bool(0 < pbr <= 3.0), "value": round(pbr, 2), "reason": f"PBR {pbr:.2f}"}
 
 
 TECH_FILTERS = [
@@ -490,9 +560,11 @@ TECH_FILTERS = [
     ("유동성",       filter_liquidity),
     ("거래량모멘텀", filter_volume_momentum),
     ("추세강도",     filter_trend_strength),
+    ("이평정배열",   filter_ma_alignment),
 ]
-FUNDA_FILTERS    = ["실적모멘텀", "재무건전성"]
+FUNDA_FILTERS    = ["실적모멘텀", "재무건전성", "PER밸류", "PBR밸류"]
 ALL_FILTER_NAMES = [n for n, _ in TECH_FILTERS] + FUNDA_FILTERS
+TOTAL_FILTERS    = len(ALL_FILTER_NAMES)
 
 
 # ══════════════════════════════════════════
@@ -500,24 +572,37 @@ ALL_FILTER_NAMES = [n for n, _ in TECH_FILTERS] + FUNDA_FILTERS
 # ══════════════════════════════════════════
 def compute_factor_score(tech_results: dict, fund: dict) -> float:
     score = 0.0
-    # 모멘텀 30점
     mom = tech_results.get("모멘텀", {}).get("value") or 0
-    score += min(30.0, max(0.0, mom / 10.0))
-    # 실적모멘텀 25점
-    if (fund.get("op_profit_cur") or 0) > (fund.get("op_profit_prev") or 0): score += 12.5
-    if (fund.get("eps_cur") or 0)       > (fund.get("eps_prev") or 0):       score += 12.5
-    # 추세강도 15점
+    score += min(25.0, max(0.0, mom / 10.0))
+
+    if (fund.get("op_profit_cur") or 0) > (fund.get("op_profit_prev") or 0): score += 10.0
+    if (fund.get("eps_cur") or 0)       > (fund.get("eps_prev") or 0):       score += 10.0
+
     slope = tech_results.get("추세강도", {}).get("value") or 0
-    if slope > 0: score += min(15.0, abs(slope) * 5.0)
-    # 거래량모멘텀 10점
+    if slope > 0: score += min(12.0, abs(slope) * 4.0)
+
     vr = tech_results.get("거래량모멘텀", {}).get("value") or 0
-    score += min(10.0, max(0.0, (vr - 1.3) / 0.7 * 10.0))
-    # 저변동성 10점
+    score += min(8.0, max(0.0, (vr - 1.3) / 0.7 * 8.0))
+
     vol = tech_results.get("저변동성", {}).get("value") or 60
     score += max(0.0, (60.0 - vol) / 60.0 * 10.0)
-    # ROE 10점
+
     roe = fund.get("roe") or 0
-    score += min(10.0, max(0.0, roe / 3.0))
+    score += min(10.0, max(0.0, float(roe) / 3.0))
+
+    per = fund.get("per")
+    if per is not None:
+        per = float(per)
+        if 0 < per <= 20: score += max(0.0, (20.0 - per) / 20.0 * 8.0)
+
+    pbr = fund.get("pbr")
+    if pbr is not None:
+        pbr = float(pbr)
+        if 0 < pbr <= 3.0: score += max(0.0, (3.0 - pbr) / 3.0 * 4.0)
+
+    if tech_results.get("이평정배열", {}).get("pass"):
+        score += 3.0
+
     return round(score, 2)
 
 
@@ -528,11 +613,6 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame,
                           top_n: int = 10, log_fn=print,
                           dart_api_key: str = "",
                           dart_corp_map: dict = None) -> tuple:
-    """
-    (confirmed, watchlist) 반환
-    confirmed : 8/8 ALL-PASS → 팩터점수 top_n
-    watchlist : 6~7개 통과  → 최대 top_n*3
-    """
     confirmed, watchlist = [], []
     total = len(universe_df)
 
@@ -544,7 +624,6 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame,
         if df.empty or len(df) < 60:
             continue
 
-        # 기술적 6필터 (전부 계산)
         tech_results    = {}
         tech_pass_count = 0
         for fname, ffn in TECH_FILTERS:
@@ -553,11 +632,13 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame,
             if res["pass"]:
                 tech_pass_count += 1
 
-        # 펀더멘털 2필터 (DB 캐시만)
         fund       = load_fundamental_from_db(supabase, symbol) or {}
         em_result  = filter_earnings_momentum(fund)
         fh_result  = filter_financial_health(fund)
-        funda_pass = int(em_result["pass"]) + int(fh_result["pass"])
+        per_result = filter_per_value(fund)
+        pbr_result = filter_pbr_value(fund)
+        funda_pass = (int(em_result["pass"]) + int(fh_result["pass"])
+                      + int(per_result["pass"]) + int(pbr_result["pass"]))
 
         total_pass = tech_pass_count + funda_pass
         if total_pass < WATCHLIST_MIN_PASS:
@@ -584,24 +665,29 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame,
             "avg_trading_value_억": tech_results["유동성"]["value"],
             "vol_ratio":            tech_results["거래량모멘텀"]["value"],
             "trend_slope":          tech_results["추세강도"]["value"],
+            "ma_aligned":           bool(tech_results["이평정배열"]["pass"]),
             "op_profit_yoy":        em_result.get("op_yoy"),
             "eps_yoy":              em_result.get("eps_yoy"),
             "roe":                  fund.get("roe"),
             "debt_ratio":           fund.get("debt_ratio"),
+            "per":                  fund.get("per"),
+            "pbr":                  fund.get("pbr"),
             "filter_details": {
                 **tech_results,
                 "실적모멘텀": em_result,
                 "재무건전성": fh_result,
+                "PER밸류":    per_result,
+                "PBR밸류":    pbr_result,
             },
             "screened_at": now_kst_str(),
         }
 
-        if total_pass == 8:
+        if total_pass == TOTAL_FILTERS:
             confirmed.append(record)
             log_fn(f"  ✅ ALL-PASS [{i+1}/{total}] {name} | 팩터점수: {factor_score}")
         else:
             watchlist.append(record)
-            log_fn(f"  👀 WATCH {total_pass}/8 [{i+1}/{total}] {name} | 팩터점수: {factor_score}")
+            log_fn(f"  👀 WATCH {total_pass}/{TOTAL_FILTERS} [{i+1}/{total}] {name} | 팩터점수: {factor_score}")
 
     confirmed.sort(key=lambda x: x["factor_score"], reverse=True)
     watchlist.sort(key=lambda x: x["factor_score"], reverse=True)
@@ -614,15 +700,13 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame,
 def save_screening_result(supabase, confirmed: list, watchlist: list):
     ts = now_kst_str()
     supabase.table(TBL_SCREEN).upsert(
-        {"id": 1, "results": json.dumps(confirmed, ensure_ascii=False), "updated_at": ts}
+        {"id": 1, "results": json.dumps(confirmed, ensure_ascii=False, cls=NumpyEncoder), "updated_at": ts}
     ).execute()
     supabase.table(TBL_WATCH).upsert(
-        {"id": 1, "results": json.dumps(watchlist, ensure_ascii=False), "updated_at": ts}
+        {"id": 1, "results": json.dumps(watchlist, ensure_ascii=False, cls=NumpyEncoder), "updated_at": ts}
     ).execute()
 
-
 def load_screening_result(supabase) -> tuple:
-    """(confirmed, watchlist, updated_at) 반환"""
     confirmed, watchlist, updated_at = [], [], ""
     try:
         r1 = supabase.table(TBL_SCREEN).select("*").eq("id", 1).execute()
