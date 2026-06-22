@@ -130,6 +130,34 @@ def _is_common_stock(symbol: str, name: str) -> bool:
         return False
     return True
 
+def load_screening_result(supabase) -> tuple:
+    """
+    Supabase에서 캐시된 스크리닝 결과(확정 리스트, 워치리스트)와 
+    마지막으로 갱신된 시간을 읽어와 파싱합니다.
+    """
+    confirmed, watchlist, last_updated = [], [], None
+    try:
+        # 1. 확정 선별 캐시(quant_screening_cache) 로드
+        res_screen = supabase.table(TBL_SCREEN).select("results, updated_at").eq("id", 1).execute()
+        if res_screen.data:
+            raw_screen = res_screen.data[0].get("results")
+            if raw_screen:
+                # json 문자열을 다시 파이썬 list[dict] 구조로 변환
+                confirmed = json.loads(raw_screen) if isinstance(raw_screen, str) else raw_screen
+            last_updated = res_screen.data[0].get("updated_at")
+
+        # 2. 관심종목 캐시(quant_watchlist_cache) 로드
+        res_watch = supabase.table(TBL_WATCH).select("results").eq("id", 1).execute()
+        if res_watch.data:
+            raw_watch = res_watch.data[0].get("results")
+            if raw_watch:
+                watchlist = json.loads(raw_watch) if isinstance(raw_watch, str) else raw_watch
+                
+    except Exception as e:
+        print(f"[오류] Supabase에서 스크리닝 데이터 로드 실패: {e}")
+        
+    return confirmed, watchlist, last_updated
+  
 def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
     col = raw.columns.tolist()
     sym = next((c for c in ["Symbol", "Code", "Ticker"] if c in col), None)
