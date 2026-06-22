@@ -1,6 +1,6 @@
 """
-quant_screener_ui.py — Streamlit UI (결과만 표시)
-quant_cron.py 가 매일 14:30 DB 갱신 → 여기서 읽기만 함
+quant_screener_ui.py — Streamlit UI
+quant_cron.py 가 매일 14:30 갱신 → 읽기만 함
 """
 import streamlit as st
 import pandas as pd
@@ -8,12 +8,10 @@ from quant_core import (
     load_price_from_db, load_screening_result,
     ALL_FILTER_NAMES, TECH_FILTERS, FUNDA_FILTERS,
     now_kst,
+    PREFILTER_MARCAP_억, PREFILTER_TVOL_억,
 )
 
 
-# ──────────────────────────────────────────
-# 공통 컴포넌트
-# ──────────────────────────────────────────
 def _render_filter_badges(filter_details: dict):
     cols = st.columns(4)
     for i, fname in enumerate(ALL_FILTER_NAMES):
@@ -72,14 +70,14 @@ def _render_detail(sel: dict, supabase):
             st.line_chart(df_price[["Close"]].tail(252).rename(columns={"Close": "종가"}))
             s1, s2, s3, s4 = st.columns(4)
             close_1y = df_price["Close"].tail(252)
-            s1.metric("52주 최고", f"₩{int(close_1y.max()):,}")
-            s2.metric("52주 최저", f"₩{int(close_1y.min()):,}")
-            s3.metric("현재가",    f"₩{int(df_price['Close'].iloc[-1]):,}")
+            s1.metric("52주 최고",   f"₩{int(close_1y.max()):,}")
+            s2.metric("52주 최저",   f"₩{int(close_1y.min()):,}")
+            s3.metric("현재가",      f"₩{int(df_price['Close'].iloc[-1]):,}")
             chg = (df_price["Close"].iloc[-1] - df_price["Close"].iloc[-252]) \
                   / df_price["Close"].iloc[-252] * 100 if len(df_price) >= 252 else 0
             s4.metric("52주 수익률", f"{chg:+.1f}%")
         else:
-            st.info("가격 데이터 없음 (DB 미적재)")
+            st.info("가격 데이터 없음")
 
 
 def _build_table(results: list, show_pass_count: bool = False) -> pd.DataFrame:
@@ -90,6 +88,7 @@ def _build_table(results: list, show_pass_count: bool = False) -> pd.DataFrame:
             "종목명":       r["name"],
             "코드":         r["symbol"],
             "시장":         r.get("market", "-"),
+            "시가총액(억)": f"{r.get('marcap_억', 0):,.0f}",
             "팩터점수":     f"{r.get('factor_score', 0):.1f}",
             "현재가":       f"₩{r['current_price']:,}",
             "1M수익률":     f"{r['ret_1m']:+.1f}%",
@@ -110,15 +109,16 @@ def _build_table(results: list, show_pass_count: bool = False) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ──────────────────────────────────────────
-# 메인 페이지 (기존 run_stock_quant_page 함수명 유지)
-# ──────────────────────────────────────────
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트 추격매수 스크리너")
     st.caption("기술적 6필터 + 펀더멘털 2필터 · 팩터점수 랭킹 · 매일 14:30 KST 자동 갱신")
 
-    with st.expander("📚 8대 필터 설계", expanded=False):
-        st.markdown("""
+    with st.expander("📚 전략 설계 상세", expanded=False):
+        st.markdown(f"""
+**사전 필터링 (속도 최적화)**
+
+전종목 2700개 → 시가총액 ≥ {PREFILTER_MARCAP_억}억 + 거래대금 ≥ {PREFILTER_TVOL_억}억 → **300~400개** 대상으로 축소
+
 **기술적 필터 (가격·거래량)**
 
 | # | 필터 | 논문 | 기준 |
@@ -126,7 +126,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 | 1 | 12-1 모멘텀 | Jegadeesh & Titman (1993) | 수익률 > 0% |
 | 2 | 저변동성 | Ang et al. (2006) | 연환산 ≤ 60% |
 | 3 | MDD | 실무 표준 | 1년 ≥ -25% |
-| 4 | 유동성 | Amihud (2002) | 일평균 거래대금 ≥ 50억 |
+| 4 | 유동성 | Amihud (2002) | 20일 거래대금 ≥ 30억 |
 | 5 | 거래량 모멘텀 | Lee & Swaminathan (2000) | 5일/60일 ≥ 1.3x |
 | 6 | 추세 강도 | Novy-Marx (2013) 변형 | 기울기>0, R²≥0.5 |
 
@@ -137,15 +137,14 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 | 7 | 실적 모멘텀 | 영업이익·EPS YoY > 0 |
 | 8 | 재무 건전성 | ROE ≥ 5%, 부채비율 ≤ 200% |
 
-**팩터 점수 가중치:** 모멘텀 30% · 실적모멘텀 25% · 추세강도 15% · 거래량 10% · 변동성 10% · ROE 10%
+**팩터 점수:** 모멘텀 30% · 실적모멘텀 25% · 추세강도 15% · 거래량 10% · 변동성 10% · ROE 10%
 
-**WatchList:** 8개 중 6개 이상 통과 — ALL-PASS 미달 관심 후보군
+**WatchList:** 8개 중 6개 이상 통과 — 다음 배치에서 편입 가능 후보
         """)
 
-    # ── 데이터 로드 ──
     confirmed, watchlist, last_updated = load_screening_result(supabase)
 
-    # ── 상태 바 ──
+    # 상태 바
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("마지막 스크리닝", last_updated or "미실행")
     c2.metric("확정 선별",  f"{len(confirmed)}개 (ALL-PASS)")
@@ -159,13 +158,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.info("스크리닝 결과 없음 — 로컬에서 `python quant_cron.py` 실행하세요.")
         return
 
-    # ── 탭 ──
     tab_conf, tab_watch = st.tabs([
         f"🏆 확정 선별  ({len(confirmed)}개)",
         f"👀 WatchList  ({len(watchlist)}개)",
     ])
 
-    # ══ 확정 탭 ══
+    # ── 확정 탭 ──
     with tab_conf:
         if not confirmed:
             st.info("현재 8필터 ALL-PASS 종목이 없습니다. WatchList를 확인하세요.")
@@ -192,11 +190,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     "12-1모멘텀":  r["momentum_score"],
                     "영업이익YoY": r.get("op_profit_yoy") or 0,
                     "ROE":         r.get("roe") or 0,
+                    "시가총액(억)": r.get("marcap_억", 0),
                 } for r in confirmed])
                 st.dataframe(stat_df, use_container_width=True, hide_index=True)
                 st.bar_chart(stat_df.set_index("종목")["팩터점수"])
 
-    # ══ WatchList 탭 ══
+    # ── WatchList 탭 ──
     with tab_watch:
         st.caption("8필터 중 6개 이상 통과 — 조건 충족 시 다음 배치에서 확정 편입 가능")
         if not watchlist:
@@ -215,8 +214,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 st.subheader(f"🔬 [{sel_w['name']} ({sel_w['symbol']})]")
                 _render_detail(sel_w, supabase)
 
-            # 어떤 필터에서 탈락했는지 집계
-            with st.expander("📋 필터별 탈락 현황 (어떤 조건이 부족한지)"):
+            with st.expander("📋 필터별 탈락 현황"):
                 fail_cnt: dict = {}
                 for r in watchlist:
                     fd = r.get("filter_details", {})
