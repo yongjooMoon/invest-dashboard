@@ -115,32 +115,9 @@ def load_krx_trading_volume() -> dict:
     return {}
 
 def load_krx_net_buy(start_date: str, end_date: str) -> tuple:
-    """외국인, 기관합계 순매수대금(억원) 맵 반환"""
-    url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "http://data.krx.co.kr/"}
-    
-    def fetch_investor(invst_cd, name):
-        res_map = {}
-        try:
-            data = {
-                "bld": "dbms/MDC/STAT/standard/MDCSTAT02401", "mktId": "ALL",
-                "invstTpCd": invst_cd, "strtDd": start_date, "endDd": end_date,
-                "share": "1", "money": "1", "csvxls_isNo": "false"
-            }
-            res = requests.post(url, data=data, headers=headers, timeout=15)
-            rows = res.json().get("OutBlock_1", [])
-            for r in rows:
-                code = str(r.get("ISU_SRT_CD", "")).strip().zfill(6)
-                net_buy = float(str(r.get("NETBID_TRDVAL", "0")).replace(",", "") or 0) / 1e8
-                if code: res_map[code] = net_buy
-            print(f"[KRX] {name} 수급 로드: {len(res_map)}개")
-        except Exception as e:
-            print(f"[KRX] {name} 수급 실패: {e}")
-        return res_map
-        
-    f_map = fetch_investor("9000", "외국인")
-    i_map = fetch_investor("7050", "기관")
-    return f_map, i_map
+    """KRX 사이트 차단으로 인해 수급 데이터를 임시 비활성화합니다."""
+    # 향후 KIS API나 pykrx 업데이트 시 복구 예정
+    return {}, {}
 
 def _is_common_stock(symbol: str, name: str) -> bool:
     """보통주 여부 엄격 판별"""
