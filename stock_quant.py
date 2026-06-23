@@ -4,7 +4,7 @@ quant_screener_ui.py — Streamlit UI
 import streamlit as st
 import pandas as pd
 import FinanceDataReader as fdr
-from datetime import datetime
+from datetime import datetime, timedelta
 from quant_core import (
     load_price_from_db, load_screening_result,
     ALL_FILTER_NAMES, HARD_GATES, SOFT_GATES,
@@ -149,15 +149,20 @@ def _build_table(results: list, show_hard: bool = False) -> pd.DataFrame:
 def render_dashboard(supabase):
     st.markdown("### 📈 Portfolio Performance")
 
-    # 1. 지표 초기값 셋팅 (데이터가 없을 때 기본 0% 출력)
+    # 1. 지표 초기값 셋팅
     cum_return = 0.0
     day_return = 0.0
     kospi_cum = 0.0
+    kospi_day = 0.0
     alpha = 0.0
-    chart_df = pd.DataFrame()
     has_history = False
 
-    # 2. DB에서 포트폴리오 히스토리 데이터 로드
+    # 2. 기본적으로 조회할 최근 1개월(30일) 기간 설정
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=30)
+
+    # 3. DB에서 포트폴리오 히스토리 데이터 로드
+    df_hist = pd.DataFrame()
     try:
         res = supabase.table("portfolio_history").select("*").order("date").execute()
         if res.data:
@@ -165,47 +170,50 @@ def render_dashboard(supabase):
             df_hist = pd.DataFrame(res.data)
             df_hist['date'] = pd.to_datetime(df_hist['date'])
             df_hist = df_hist.set_index('date')
+
+            # 포트폴리오 기록이 1개월보다 길면 KOSPI 조회 시작일을 더 과거로 당김
+            if df_hist.index.min() < start_date:
+                start_date = df_hist.index.min()
     except Exception as e:
         st.warning(f"히스토리 데이터를 불러오는 중 오류가 발생했습니다: {e}")
 
-    # 3. 데이터가 있을 경우에만 KOSPI 로드 및 계산 진행
-    if has_history and not df_hist.empty:
-        start_date = df_hist.index.min().strftime('%Y-%m-%d')
-        df_kospi = fdr.DataReader('KS11', start_date)
+    # 4. KOSPI 데이터 무조건 로드 (히스토리가 없어도 1개월 치는 로드함)
+    df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
 
-        # 일간 수익률 누적합 계산
+    if not df_kospi.empty:
+        # 코스피 누적 수익률 및 일간 수익률 계산
         df_kospi['kospi_cum_return'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
+        kospi_cum = df_kospi['kospi_cum_return'].iloc[-1]
+        kospi_day = df_kospi['Close'].pct_change().iloc[-1] * 100
+
+    # 5. 포트폴리오 지표 계산 및 차트 데이터 결합
+    if has_history and not df_hist.empty:
         df_hist['port_cum_return'] = df_hist['daily_return'].cumsum()
 
-        # 핵심 지표 업데이트
         cum_return = df_hist['port_cum_return'].iloc[-1]
         day_return = df_hist['daily_return'].iloc[-1]
-        if not df_kospi.empty:
-            kospi_cum = df_kospi['kospi_cum_return'].iloc[-1]
 
-        # 알파(Alpha) 계산
-        alpha = cum_return - kospi_cum
-
-        # 차트 데이터 결합
         chart_df = pd.DataFrame({
             'Portfolio': df_hist['port_cum_return'],
             'KOSPI': df_kospi['kospi_cum_return']
-        }).dropna()
+        }).fillna(method='ffill').fillna(0)  # 주말/휴일 빈칸 채우기
     else:
-        # 데이터가 없을 경우 오늘 날짜 기준으로 0% 더미 데이터 생성 (빈 차트 방지)
-        today = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
+        # 포트폴리오 데이터가 없을 경우 KOSPI 날짜에 맞춰 0% 포트폴리오 라인 생성
         chart_df = pd.DataFrame({
-            'Portfolio': [0.0],
-            'KOSPI': [0.0]
-        }, index=[today])
+            'Portfolio': 0.0,
+            'KOSPI': df_kospi['kospi_cum_return'] if not df_kospi.empty else 0.0
+        }, index=df_kospi.index)
 
-    # 4. 상단 핵심 지표 (Metrics) 영역 UI 렌더링
+    # 알파(Alpha) 계산
+    alpha = cum_return - kospi_cum
+
+    # 6. 상단 핵심 지표 (Metrics) 영역 UI - **높이 균형 완벽 조정**
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
         with st.container(border=True):
             st.markdown("##### CUMULATIVE RETURN")
-            color = "#F04452" if cum_return >= 0 else "#4488F0"  # 양수 빨강, 음수 파랑
+            color = "#F04452" if cum_return >= 0 else "#4488F0"
             st.markdown(f"<h1 style='color:{color}; margin: 0;'>{cum_return:+.2f}%</h1>", unsafe_allow_html=True)
             st.caption(f"Day <span style='color:{color};'>{day_return:+.2f}%</span>", unsafe_allow_html=True)
 
@@ -214,21 +222,27 @@ def render_dashboard(supabase):
             st.markdown("##### KOSPI RETURN")
             k_color = "#E6A23C" if kospi_cum >= 0 else "#4488F0"
             st.markdown(f"<h2 style='color:{k_color}; margin: 0;'>{kospi_cum:+.2f}%</h2>", unsafe_allow_html=True)
+            # 캡션을 넣어 박스 세로 길이를 CUMULATIVE RETURN과 맞춤
+            k_day_color = "#E6A23C" if kospi_day >= 0 else "#4488F0"
+            st.caption(f"Day <span style='color:{k_day_color};'>{kospi_day:+.2f}%</span>", unsafe_allow_html=True)
 
     with col3:
         with st.container(border=True):
             st.markdown("##### ALPHA")
             a_color = "#00B464" if alpha >= 0 else "#F04452"
             st.markdown(f"<h2 style='color:{a_color}; margin: 0;'>{alpha:+.2f}%</h2>", unsafe_allow_html=True)
+            # 투명한 빈칸(&nbsp;)을 넣어 박스 세로 길이를 똑같이 맞춤
+            st.caption("&nbsp;", unsafe_allow_html=True)
 
-    # 5. KOSPI 대비 누적 수익률 차트 (Line Chart)
+    # 7. KOSPI 대비 누적 수익률 차트 (Line Chart)
     st.markdown("**Cumulative Return** vs KOSPI")
 
-    st.line_chart(chart_df, color=["#F04452", "#888888"])
+    if not chart_df.empty:
+        st.line_chart(chart_df, color=["#F04452", "#888888"])
 
-    # 6. 안내 메시지 (데이터가 없을 때만 하단에 슬쩍 표시)
+    # 8. 안내 메시지
     if not has_history:
-        st.info("💡 아직 누적된 포트폴리오 히스토리가 없습니다. 오늘 배치가 실행되면 내일부터 데이터가 차트에 반영됩니다.")
+        st.info("💡 아직 누적된 포트폴리오 히스토리가 없습니다. (현재 KOSPI 최근 1개월 추이만 표시 중)")
 
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트 추격매수 스크리너")
