@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 import FinanceDataReader as fdr
 from datetime import datetime, timedelta
+import plotly.graph_objects as go
 from quant_core import (
     load_price_from_db, load_screening_result,
     ALL_FILTER_NAMES, HARD_GATES, SOFT_GATES,
@@ -171,17 +172,15 @@ def render_dashboard(supabase):
             df_hist['date'] = pd.to_datetime(df_hist['date'])
             df_hist = df_hist.set_index('date')
 
-            # 포트폴리오 기록이 1개월보다 길면 KOSPI 조회 시작일을 더 과거로 당김
             if df_hist.index.min() < start_date:
                 start_date = df_hist.index.min()
     except Exception as e:
         st.warning(f"히스토리 데이터를 불러오는 중 오류가 발생했습니다: {e}")
 
-    # 4. KOSPI 데이터 무조건 로드 (히스토리가 없어도 1개월 치는 로드함)
+    # 4. KOSPI 데이터 무조건 로드
     df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
 
     if not df_kospi.empty:
-        # 코스피 누적 수익률 및 일간 수익률 계산
         df_kospi['kospi_cum_return'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
         kospi_cum = df_kospi['kospi_cum_return'].iloc[-1]
         kospi_day = df_kospi['Close'].pct_change().iloc[-1] * 100
@@ -196,34 +195,31 @@ def render_dashboard(supabase):
         chart_df = pd.DataFrame({
             'Portfolio': df_hist['port_cum_return'],
             'KOSPI': df_kospi['kospi_cum_return']
-        }).fillna(method='ffill').fillna(0)  # 주말/휴일 빈칸 채우기
+        }).fillna(method='ffill').fillna(0)
     else:
-        # 포트폴리오 데이터가 없을 경우 KOSPI 날짜에 맞춰 0% 포트폴리오 라인 생성
         chart_df = pd.DataFrame({
             'Portfolio': 0.0,
             'KOSPI': df_kospi['kospi_cum_return'] if not df_kospi.empty else 0.0
         }, index=df_kospi.index)
 
-    # 알파(Alpha) 계산
     alpha = cum_return - kospi_cum
 
-    # 6. 상단 핵심 지표 (Metrics) 영역 UI - **높이 균형 완벽 조정**
+    # 6. 상단 핵심 지표 영역 UI
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
         with st.container(border=True):
             st.markdown("##### CUMULATIVE RETURN")
-            color = "#F04452" if cum_return >= 0 else "#4488F0"
+            color = "#F04452" if cum_return >= 0 else "#3182F6"  # 토스 블루 느낌 추가
             st.markdown(f"<h1 style='color:{color}; margin: 0;'>{cum_return:+.2f}%</h1>", unsafe_allow_html=True)
             st.caption(f"Day <span style='color:{color};'>{day_return:+.2f}%</span>", unsafe_allow_html=True)
 
     with col2:
         with st.container(border=True):
             st.markdown("##### KOSPI RETURN")
-            k_color = "#E6A23C" if kospi_cum >= 0 else "#4488F0"
+            k_color = "#E6A23C" if kospi_cum >= 0 else "#3182F6"
             st.markdown(f"<h2 style='color:{k_color}; margin: 0;'>{kospi_cum:+.2f}%</h2>", unsafe_allow_html=True)
-            # 캡션을 넣어 박스 세로 길이를 CUMULATIVE RETURN과 맞춤
-            k_day_color = "#E6A23C" if kospi_day >= 0 else "#4488F0"
+            k_day_color = "#E6A23C" if kospi_day >= 0 else "#3182F6"
             st.caption(f"Day <span style='color:{k_day_color};'>{kospi_day:+.2f}%</span>", unsafe_allow_html=True)
 
     with col3:
@@ -231,14 +227,60 @@ def render_dashboard(supabase):
             st.markdown("##### ALPHA")
             a_color = "#00B464" if alpha >= 0 else "#F04452"
             st.markdown(f"<h2 style='color:{a_color}; margin: 0;'>{alpha:+.2f}%</h2>", unsafe_allow_html=True)
-            # 투명한 빈칸(&nbsp;)을 넣어 박스 세로 길이를 똑같이 맞춤
             st.caption("&nbsp;", unsafe_allow_html=True)
 
-    # 7. KOSPI 대비 누적 수익률 차트 (Line Chart)
+    # 7. KOSPI 대비 누적 수익률 차트 (Plotly 적용 - Toss 스타일)
     st.markdown("**Cumulative Return** vs KOSPI")
 
     if not chart_df.empty:
-        st.line_chart(chart_df, color=["#F04452", "#888888"])
+        fig = go.Figure()
+
+        # Portfolio 라인 (강조)
+        fig.add_trace(go.Scatter(
+            x=chart_df.index,
+            y=chart_df['Portfolio'],
+            mode='lines',
+            name='Portfolio',
+            line=dict(color='#F04452', width=3),
+            hovertemplate='%{y:.2f}%<extra></extra>'  # 소수점 2자리 + %
+        ))
+
+        # KOSPI 라인 (서브)
+        fig.add_trace(go.Scatter(
+            x=chart_df.index,
+            y=chart_df['KOSPI'],
+            mode='lines',
+            name='KOSPI',
+            line=dict(color='#B0B8C1', width=2, dash='dot'),  # 덜 눈에 띄는 회색 점선
+            hovertemplate='%{y:.2f}%<extra></extra>'
+        ))
+
+        # 차트 레이아웃 및 툴팁 스타일 커스텀
+        fig.update_layout(
+            hovermode='x unified',  # 세로선 기준으로 두 지표 동시 표시
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=15,
+                font_family="Pretendard, sans-serif",
+                font_color="#191F28",  # 진한 검정 (가독성 향상)
+                bordercolor="#E5E8EB",
+            ),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor='#F3F4F6',
+                zeroline=True,
+                zerolinecolor='#E5E8EB',
+                ticksuffix="%"  # y축 라벨에도 % 추가
+            ),
+            margin=dict(l=0, r=0, t=10, b=0),
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1)
+        )
+
+        # Plotly 차트 렌더링 (잡다한 옵션 버튼 숨김)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # 8. 안내 메시지
     if not has_history:
