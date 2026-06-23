@@ -353,12 +353,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
     confirmed, watchlist, last_updated = load_screening_result(supabase)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("마지막 스크리닝", last_updated or "미실행")
-    c2.metric("확정 선별",  f"{len(confirmed)}개 (하드4 ALL-PASS)")
-    c3.metric("관심종목",   f"{len(watchlist)}개 (하드3 통과)")
-    now = now_kst()
-    c4.metric("다음 갱신", ("오늘" if now.hour < 14 else "내일") + " 14:30 KST")
+    # c1, c2, c3, c4 = st.columns(4)
+    # c1.metric("마지막 스크리닝", last_updated or "미실행")
+    # c2.metric("확정 선별",  f"{len(confirmed)}개 (하드4 ALL-PASS)")
+    # c3.metric("관심종목",   f"{len(watchlist)}개 (하드3 통과)")
+    # now = now_kst()
+    # c4.metric("다음 갱신", ("오늘" if now.hour < 14 else "내일") + " 14:30 KST")
 
     st.divider()
 
