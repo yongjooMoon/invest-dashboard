@@ -204,13 +204,13 @@ def render_dashboard(supabase):
 
     alpha = cum_return - kospi_cum
 
-    # 6. 상단 핵심 지표 영역 UI
+    # 6. 상단 핵심 지표 영역 UI (기존 다크/레드 톤 유지)
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
         with st.container(border=True):
             st.markdown("##### CUMULATIVE RETURN")
-            color = "#F04452" if cum_return >= 0 else "#3182F6"  # 토스 블루 느낌 추가
+            color = "#F04452" if cum_return >= 0 else "#3182F6"
             st.markdown(f"<h1 style='color:{color}; margin: 0;'>{cum_return:+.2f}%</h1>", unsafe_allow_html=True)
             st.caption(f"Day <span style='color:{color};'>{day_return:+.2f}%</span>", unsafe_allow_html=True)
 
@@ -229,57 +229,85 @@ def render_dashboard(supabase):
             st.markdown(f"<h2 style='color:{a_color}; margin: 0;'>{alpha:+.2f}%</h2>", unsafe_allow_html=True)
             st.caption("&nbsp;", unsafe_allow_html=True)
 
-    # 7. KOSPI 대비 누적 수익률 차트 (Plotly 적용 - Toss 스타일)
+    # ─────────────────────────────────────────────────────────
+    # 7. 완벽하게 커스텀된 다크 테마 차트 (이미지 100% 반영)
+    # ─────────────────────────────────────────────────────────
     st.markdown("**Cumulative Return** vs KOSPI")
 
     if not chart_df.empty:
+        # 매 일자별 알파 계산 (포트폴리오 - 코스피)
+        chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
+        # 알파 값에 따른 색상 (양수면 초록, 음수면 빨강)
+        chart_df['Alpha_Color'] = chart_df['Alpha'].apply(lambda x: '#00B464' if x >= 0 else '#F04452')
+
         fig = go.Figure()
 
-        # Portfolio 라인 (강조)
+        # [메인] Portfolio (Helix) 라인 - 그라데이션 영역 칠하기 포함
+        custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
+
         fig.add_trace(go.Scatter(
             x=chart_df.index,
             y=chart_df['Portfolio'],
             mode='lines',
-            name='Portfolio',
-            line=dict(color='#F04452', width=3),
-            hovertemplate='%{y:.2f}%<extra></extra>'  # 소수점 2자리 + %
+            name='Helix',
+            line=dict(color='#F04452', width=2.5),
+            fill='tozeroy',  # 선 아래 영역 칠하기 (이미지 느낌)
+            fillcolor='rgba(240, 68, 82, 0.05)',
+            customdata=custom_data,
+            # <extra></extra>가 옆에 붙는 지저분한 '선/이름' 꼬리표를 완전히 삭제합니다.
+            hovertemplate=(
+                "<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br>"
+                "<span style='color:#3182F6;'>●</span> Helix &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br>"
+                "<span style='color:#8B95A1;'>●</span> KOSPI &nbsp;&nbsp;&nbsp;<b>%{customdata[0]:.2f}%</b><br>"
+                "─────────────────<br>"
+                "<span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b>"
+                "<extra></extra>"
+            )
         ))
 
-        # KOSPI 라인 (서브)
+        # [서브] KOSPI 라인 (점선 처리 & 개별 툴팁 스킵)
         fig.add_trace(go.Scatter(
             x=chart_df.index,
             y=chart_df['KOSPI'],
             mode='lines',
             name='KOSPI',
-            line=dict(color='#B0B8C1', width=2, dash='dot'),  # 덜 눈에 띄는 회색 점선
-            hovertemplate='%{y:.2f}%<extra></extra>'
+            line=dict(color='#8B95A1', width=1.5, dash='dot'),
+            hoverinfo='skip'  # 코스피 선에 마우스를 올려도 따로 툴팁이 뜨지 않게 방지
         ))
 
-        # 차트 레이아웃 및 툴팁 스타일 커스텀
         fig.update_layout(
-            hovermode='x unified',  # 세로선 기준으로 두 지표 동시 표시
-            hoverlabel=dict(
-                bgcolor="white",
-                font_size=15,
-                font_family="Pretendard, sans-serif",
-                font_color="#191F28",  # 진한 검정 (가독성 향상)
-                bordercolor="#E5E8EB",
+            hovermode='x',  # 세로축 기준 매칭
+            xaxis=dict(
+                showgrid=False,
+                zeroline=False,
+                showticklabels=True,
+                showspikes=True,  # 마우스 올렸을 때 수직 점선(Spike line) 표시
+                spikemode='across',
+                spikedash='dot',
+                spikecolor='#555555',
+                spikethickness=1
             ),
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
             yaxis=dict(
                 showgrid=True,
-                gridcolor='#F3F4F6',
+                gridcolor='rgba(255, 255, 255, 0.05)',  # 아주 옅은 가로선
                 zeroline=True,
-                zerolinecolor='#E5E8EB',
-                ticksuffix="%"  # y축 라벨에도 % 추가
+                zerolinecolor='rgba(255, 255, 255, 0.1)',
+                ticksuffix="%"
+            ),
+            # 툴팁 배경을 다크 톤으로 변경
+            hoverlabel=dict(
+                bgcolor="#191F28",
+                font_size=14,
+                font_family="Pretendard, sans-serif",
+                font_color="white",
+                bordercolor="#333333",
             ),
             margin=dict(l=0, r=0, t=10, b=0),
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1)
+            showlegend=False  # 깔끔함을 위해 범례 숨김 (이미 툴팁에 다 나옴)
         )
 
-        # Plotly 차트 렌더링 (잡다한 옵션 버튼 숨김)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # 8. 안내 메시지
