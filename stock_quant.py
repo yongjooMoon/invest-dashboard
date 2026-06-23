@@ -6,6 +6,7 @@ import pandas as pd
 import FinanceDataReader as fdr
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
+import numpy as np
 from quant_core import (
     load_price_from_db, load_screening_result,
     ALL_FILTER_NAMES, HARD_GATES, SOFT_GATES,
