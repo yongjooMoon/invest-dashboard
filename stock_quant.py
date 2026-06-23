@@ -149,7 +149,7 @@ def _build_table(results: list, show_hard: bool = False) -> pd.DataFrame:
 # [신규 추가] 대시보드 렌더링 함수
 # ──────────────────────────────────────────
 def render_dashboard(supabase):
-    st.markdown("### 📈 Portfolio Performance")
+    st.markdown("### 📈 Sanbon")
 
     # 1. 지표 초기값 셋팅
     cum_return = 0.0
