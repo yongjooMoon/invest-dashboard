@@ -5,8 +5,8 @@ import streamlit as st
 import pandas as pd
 import FinanceDataReader as fdr
 from datetime import datetime, timedelta
-import plotly.graph_objects as go
 import numpy as np
+import plotly.graph_objects as go
 from quant_core import (
     load_price_from_db, load_screening_result,
     ALL_FILTER_NAMES, HARD_GATES, SOFT_GATES,
@@ -243,14 +243,14 @@ def render_dashboard(supabase):
 
         fig = go.Figure()
 
-        # [메인] Portfolio (Helix) 라인 - 그라데이션 영역 칠하기 포함
+        # [메인] Portfolio (Sanbon) 라인 - 그라데이션 영역 칠하기 포함
         custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
 
         fig.add_trace(go.Scatter(
             x=chart_df.index,
             y=chart_df['Portfolio'],
             mode='lines',
-            name='Helix',
+            name='Sanbon',
             line=dict(color='#F04452', width=2.5),
             fill='tozeroy',  # 선 아래 영역 칠하기 (이미지 느낌)
             fillcolor='rgba(240, 68, 82, 0.05)',
@@ -258,7 +258,7 @@ def render_dashboard(supabase):
             # <extra></extra>가 옆에 붙는 지저분한 '선/이름' 꼬리표를 완전히 삭제합니다.
             hovertemplate=(
                 "<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br>"
-                "<span style='color:#3182F6;'>●</span> Helix &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br>"
+                "<span style='color:#3182F6;'>●</span> Sanbon &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br>"
                 "<span style='color:#8B95A1;'>●</span> KOSPI &nbsp;&nbsp;&nbsp;<b>%{customdata[0]:.2f}%</b><br>"
                 "─────────────────<br>"
                 "<span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b>"
