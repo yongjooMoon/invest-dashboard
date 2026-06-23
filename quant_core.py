@@ -73,22 +73,33 @@ WATCHLIST_HARD_MIN  = 3     # 워치리스트 하드게이트 최소 통과 수
 # [A] 유니버스 사전 필터링
 # ══════════════════════════════════════════
 def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
-    col  = raw.columns.tolist()
-    sym  = next((c for c in ["Symbol","Code","Ticker"]       if c in col), None)
-    name = next((c for c in ["Name","종목명"]                 if c in col), None)
-    sec  = next((c for c in ["Sector","Industry","업종"]      if c in col), None)
-    cap  = next((c for c in ["Marcap","시가총액"]              if c in col), None)
-    cat  = next((c for c in ["Category","Kind","MarketId"]   if c in col), None)
-    if not sym or not name:
-        raise ValueError(f"필수 컬럼 없음: {col}")
+    col = raw.columns.tolist()
+    sym = next((c for c in ["Symbol", "Code", "Ticker"] if c in col), None)
+    name = next((c for c in ["Name", "종목명"] if c in col), None)
+    cap = next((c for c in ["Marcap", "시가총액"] if c in col), None)
+    close_col = next((c for c in ["Close", "종가"] if c in col), None)
+    # 거래량과 거래대금 컬럼 찾기 추가
+    vol_col = next((c for c in ["Volume", "거래량"] if c in col), None)
+    amt_col = next((c for c in ["Amount", "거래대금"] if c in col), None)
+
     df = pd.DataFrame({
         "Symbol": raw[sym].astype(str).str.zfill(6),
-        "Name":   raw[name].astype(str),
+        "Name": raw[name].astype(str),
         "Market": market,
-        "Sector": raw[sec].astype(str) if sec else "-",
-        "Marcap": pd.to_numeric(raw[cap], errors="coerce").fillna(0) if cap else 0,
-        "Kind":   raw[cat].astype(str) if cat else "보통주",
+        "Marcap": pd.to_numeric(raw[cap], errors="coerce") if cap else 0,
+        "Close": pd.to_numeric(raw[close_col], errors="coerce") if close_col else 0,
     })
+
+    # [핵심] 거래대금(Amount) 저장 로직
+    if amt_col:
+        df["Amount"] = pd.to_numeric(raw[amt_col], errors="coerce").fillna(0)
+    elif vol_col and close_col:
+        v = pd.to_numeric(raw[vol_col], errors="coerce").fillna(0)
+        c = pd.to_numeric(raw[close_col], errors="coerce").fillna(0)
+        df["Amount"] = v * c
+    else:
+        df["Amount"] = 0
+
     return df
 
 
@@ -158,14 +169,15 @@ def load_filtered_universe(
     cap_filtered = common[common["Marcap"] >= marcap_원].copy()
     print(f" → 시총≥{marcap_min_억}억 {len(cap_filtered)}개", end="")
 
-    # 3. 거래대금 필터
-    tvol_map = load_krx_trading_volume()
-    if tvol_map:
-        cap_filtered["TradingVol억"] = cap_filtered["Symbol"].map(tvol_map).fillna(0)
-        final = cap_filtered[cap_filtered["TradingVol억"] >= tvol_min_억].copy()
+    # 3. 거래대금 필터 (KRX API 우회 -> FDR 자체 데이터 사용)
+    # Amount(원 단위)를 1억으로 나누어 거래대금(억) 계산
+    if "Amount" in cap_filtered.columns:
+        cap_filtered["TradingVol억"] = cap_filtered["Amount"] / 1e8
     else:
-        final = cap_filtered.copy()
-        final["TradingVol억"] = 0
+        cap_filtered["TradingVol억"] = 0
+
+    # 50억 이상 종목만 필터링
+    final = cap_filtered[cap_filtered["TradingVol억"] >= tvol_min_억].copy()
 
     final = final.reset_index(drop=True)
     print(f" → 거래대금≥{tvol_min_억}억 최종 {len(final)}개 (사전필터 완료)")
