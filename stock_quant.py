@@ -3,6 +3,7 @@ quant_screener_ui.py — Streamlit UI
 """
 import streamlit as st
 import pandas as pd
+import FinanceDataReader as fdr
 from quant_core import (
     load_price_from_db, load_screening_result,
     ALL_FILTER_NAMES, HARD_GATES, SOFT_GATES,
@@ -140,10 +141,82 @@ def _build_table(results: list, show_hard: bool = False) -> pd.DataFrame:
         rows.append(row)
     return pd.DataFrame(rows)
 
+
+# ──────────────────────────────────────────
+# [신규 추가] 대시보드 렌더링 함수
+# ──────────────────────────────────────────
+def render_dashboard(supabase):
+    st.markdown("### 📈 Portfolio Performance")
+
+    # 1. DB에서 포트폴리오 히스토리 데이터 로드
+    try:
+        res = supabase.table("portfolio_history").select("*").order("date").execute()
+        if not res.data:
+            st.info("아직 누적된 포트폴리오 히스토리 데이터가 없습니다. (배치 실행 후 데이터가 쌓입니다)")
+            return
+
+        df_hist = pd.DataFrame(res.data)
+        df_hist['date'] = pd.to_datetime(df_hist['date'])
+        df_hist = df_hist.set_index('date')
+    except Exception as e:
+        st.error(f"히스토리 데이터를 불러오는 중 오류가 발생했습니다: {e}")
+        return
+
+    # 2. KOSPI 벤치마크 데이터 로드 (최근 한 달치 등 필요 기간만큼 동적 로드)
+    start_date = df_hist.index.min().strftime('%Y-%m-%d')
+    df_kospi = fdr.DataReader('KS11', start_date)
+
+    # 일간 수익률(pct_change) 누적합 또는 누적곱으로 변환 (간단히 누적합 % 사용 예시)
+    df_kospi['kospi_cum_return'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
+    df_hist['port_cum_return'] = df_hist['daily_return'].cumsum()
+
+    # 3. 핵심 지표 계산 (마지막 날짜 기준)
+    cum_return = df_hist['port_cum_return'].iloc[-1] if not df_hist.empty else 0
+    day_return = df_hist['daily_return'].iloc[-1] if not df_hist.empty else 0
+    kospi_cum = df_kospi['kospi_cum_return'].iloc[-1] if not df_kospi.empty else 0
+
+    # 알파(Alpha) 계산: 내 누적 수익률 - 코스피 누적 수익률
+    alpha = cum_return - kospi_cum
+
+    # 4. 상단 핵심 지표 (Metrics) 영역 UI
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        with st.container(border=True):
+            st.markdown("##### CUMULATIVE RETURN")
+            color = "#F04452" if cum_return >= 0 else "#4488F0"  # 양수 빨강, 음수 파랑
+            st.markdown(f"<h1 style='color:{color}; margin: 0;'>{cum_return:+.2f}%</h1>", unsafe_allow_html=True)
+            st.caption(f"Day {day_return:+.2f}%")
+
+    with col2:
+        with st.container(border=True):
+            st.markdown("##### KOSPI RETURN")
+            st.markdown(f"<h2 style='color:#E6A23C; margin: 0;'>{kospi_cum:+.2f}%</h2>", unsafe_allow_html=True)
+
+    with col3:
+        with st.container(border=True):
+            st.markdown("##### ALPHA")
+            a_color = "#00B464" if alpha >= 0 else "#F04452"
+            st.markdown(f"<h2 style='color:{a_color}; margin: 0;'>{alpha:+.2f}%</h2>", unsafe_allow_html=True)
+
+    # 5. KOSPI 대비 누적 수익률 차트 (Line Chart)
+    st.markdown("**Cumulative Return** vs KOSPI")
+
+    # 두 지표를 하나의 데이터프레임으로 결합하여 차트 생성
+    chart_df = pd.DataFrame({
+        'Portfolio': df_hist['port_cum_return'],
+        'KOSPI': df_kospi['kospi_cum_return']
+    }).dropna()
+
+    if not chart_df.empty:
+        st.line_chart(chart_df, color=["#F04452", "#888888"])
+
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트 추격매수 스크리너")
     st.caption("하드게이트 4개 + 소프트게이트 7개 · 팩터점수 랭킹 · 매일 14:30 KST 자동 갱신")
 
+    render_dashboard(supabase)
+    
     with st.expander("📚 전략 설계", expanded=False):
         st.markdown(f"""
 **사전 필터링** — 시가총액 ≥ {PREFILTER_MARCAP_억}억 + 거래대금 ≥ {PREFILTER_TVOL_억}억 + 보통주 → **~400개** 대상
