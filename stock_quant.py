@@ -19,7 +19,7 @@ def _badge(passed: bool) -> str:
 def _render_filter_badges(fr: dict):
     st.markdown("**🛡️ 추격매수 6대 절대 조건 (모두 통과시 확정 편입)**")
     hcols = st.columns(3)
-    
+
     gates_ko = {
         "Growth Composite": "성장성 통합 (Growth)",
         "Dynamic MDD": "동적 방어선 (ATR MDD)",
@@ -100,15 +100,16 @@ def load_portfolio_data(supabase):
         pass
     return holdings, trades, history
 
+
 def render_portfolio_and_alpha(supabase):
     st.markdown("### 💼 퀀트 포트폴리오 & Alpha")
-    
+
     holdings, trades, history = load_portfolio_data(supabase)
-    
+
     # 1. 무조건 최근 30일치 KOSPI 데이터를 베이스로 가져옵니다.
     end_date = now_kst()
     start_date = end_date - timedelta(days=30)
-    
+
     df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
     if not df_kospi.empty:
         df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
@@ -124,11 +125,13 @@ def render_portfolio_and_alpha(supabase):
         df_hist['date'] = pd.to_datetime(df_hist['date'])
         df_hist = df_hist.set_index('date')
         df_hist['port_cum'] = df_hist['portfolio_return'].cumsum()
-        
+
         # KOSPI 인덱스에 포트폴리오 수익률 결합 (ffill로 빈 날짜 채움)
         chart_df = chart_df.join(df_hist['port_cum'], how='left')
-        chart_df['Portfolio'] = chart_df['port_cum'].fillna(method='ffill').fillna(0)
-        
+
+        # pandas 최신 버전 에러 수정: fillna(method='ffill') -> ffill()
+        chart_df['Portfolio'] = chart_df['port_cum'].ffill().fillna(0)
+
         cum_ret = chart_df['Portfolio'].iloc[-1]
         day_ret = df_hist['portfolio_return'].iloc[-1]
     else:
@@ -138,7 +141,7 @@ def render_portfolio_and_alpha(supabase):
 
     k_cum_ret = chart_df['KOSPI'].iloc[-1] if not chart_df['KOSPI'].empty else 0.0
     k_day_ret = df_kospi['Close'].pct_change().iloc[-1] * 100 if not df_kospi.empty else 0.0
-    
+
     # 3. Alpha (초과 수익) 계산
     alpha = cum_ret - k_cum_ret
     chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
@@ -157,11 +160,12 @@ def render_portfolio_and_alpha(supabase):
     if not chart_df.empty:
         fig = go.Figure()
         custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
-        
+
         # Portfolio 선 (점 포함)
         fig.add_trace(go.Scatter(
             x=chart_df.index, y=chart_df['Portfolio'], mode='lines+markers', name='Portfolio',
-            line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)', customdata=custom_data,
+            line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)',
+            customdata=custom_data,
             hovertemplate=(
                 "<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br>"
                 "<span style='color:#3182F6;'>●</span> Portfolio &nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br>"
@@ -170,19 +174,20 @@ def render_portfolio_and_alpha(supabase):
                 "<span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b><extra></extra>"
             )
         ))
-        
+
         # KOSPI 선 (점선, 툴팁 스킵)
         fig.add_trace(go.Scatter(
-            x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', 
+            x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI',
             line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'
         ))
-        
+
         fig.update_layout(
-            hovermode='x', 
-            xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), 
-            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), 
-            hoverlabel=dict(bgcolor="#191F28", font_color="white"), 
-            margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False
+            hovermode='x',
+            xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"),
+            hoverlabel=dict(bgcolor="#191F28", font_color="white"),
+            margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            showlegend=False
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
@@ -193,9 +198,9 @@ def render_portfolio_and_alpha(supabase):
         if holdings:
             h_df = pd.DataFrame(holdings)[["name", "symbol", "entry_price", "current_price", "return_rate"]]
             h_df.columns = ["종목명", "코드", "매수가", "현재가", "수익률(%)"]
-            
+
             styled_h = h_df.style.map(
-                lambda x: "color: #F04452" if x > 0 else "color: #3182F6" if x < 0 else "", 
+                lambda x: "color: #F04452" if x > 0 else "color: #3182F6" if x < 0 else "",
                 subset=["수익률(%)"]
             ).format({
                 "매수가": "{:,.0f}",
@@ -210,9 +215,9 @@ def render_portfolio_and_alpha(supabase):
         if trades:
             t_df = pd.DataFrame(trades[::-1])[["trade_date", "type", "name", "trade_price", "return_rate", "reason"]]
             t_df.columns = ["일자", "구분", "종목명", "체결가", "손익(%)", "사유"]
-            
+
             styled_t = t_df.style.map(
-                lambda x: 'color: #F04452' if x == 'BUY' else 'color: #3182F6', 
+                lambda x: 'color: #F04452' if x == 'BUY' else 'color: #3182F6',
                 subset=['구분']
             ).format({
                 "체결가": "{:,.0f}",
@@ -240,8 +245,8 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
     # 1. 탭 구성 (WatchList 옆에 포트폴리오 히스토리 탭 추가)
     tab_conf, tab_watch, tab_port = st.tabs([
-        f"🏆 확정 선별 ({len(confirmed)}개)", 
-        f"👀 WatchList ({len(watchlist)}개)", 
+        f"🏆 확정 선별 ({len(confirmed)}개)",
+        f"👀 WatchList ({len(watchlist)}개)",
         "💼 포트폴리오 & 히스토리"
     ])
 
