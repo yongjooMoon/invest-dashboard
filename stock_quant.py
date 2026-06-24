@@ -35,7 +35,6 @@ def load_portfolio_data(supabase):
 
 @st.cache_data(ttl=86400)
 def load_krx_list():
-    """KRX 전종목 리스트 로드 (검색 콤보박스용)"""
     try:
         krx = fdr.StockListing("KRX")
         if "Code" in krx.columns: krx = krx.rename(columns={"Code": "Symbol"})
@@ -77,13 +76,12 @@ def format_marcap(marcap_100m):
         return "N/A"
 
 def get_naver_financials_fallback(symbol):
-    """네이버 펀더멘털 누락 방지 및 상세 지표(PER, PBR 등) 전면 스크래핑"""
+    fund = {}
     try:
         url = f"https://finance.naver.com/item/main.naver?code={symbol}"
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        fund = {}
         table = soup.select_one("div.cop_analysis table")
         if table:
             for tr in table.select("tbody tr"):
@@ -119,22 +117,31 @@ def get_naver_financials_fallback(symbol):
                 elif "PER" in label: fund['per'] = recent_val
                 elif "PBR" in label: fund['pbr'] = recent_val
                 elif "배당수익률" in label or "시가배당률" in label: fund['dividend_yield'] = recent_val
+                
+        marcap_elem = soup.select_one("#_market_sum")
+        if marcap_elem:
+            txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
+            if '조' in txt:
+                parts = txt.split('조')
+                jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
+                eok_str = re.sub(r'\D', '', parts[1]) if len(parts)>1 else ''
+                eok = int(eok_str) if eok_str else 0
+                fund['marcap_억'] = jo * 10000 + eok
+            else:
+                eok_str = re.sub(r'\D', '', txt)
+                fund['marcap_억'] = int(eok_str) if eok_str else 0
+                
         return fund
     except:
-        return {}
+        return fund
 
-# ══════════════════════════════════════════
-# [Helper] 실시간 평가 (Stock Search 및 팝업 보완용)
-# ══════════════════════════════════════════
 def live_evaluate_stock(symbol):
-    """캐시에 없는 정보 실시간 수집 및 단일 퀀트 스코어 계산"""
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
     if df.empty: return None, {}, 0, {}
     
     fund = fetch_naver_fundamental(symbol)
     if not fund: fund = {}
     
-    # 펀더멘털 누락 방지 및 밸류에이션(PER/PBR 등) 추가 수집
     fallback = get_naver_financials_fallback(symbol)
     for k, v in fallback.items():
         if v is not None:
@@ -152,7 +159,6 @@ def live_evaluate_stock(symbol):
     c_rev = fund.get('revenue_cur')
     p_rev = fund.get('revenue_prev')
     
-    # 성장률 안전 계산
     net_yoy = ((c_net - p_net)/abs(p_net)*100) if c_net is not None and p_net is not None and p_net != 0 else 0.0
     rev_yoy = ((c_rev - p_rev)/abs(p_rev)*100) if c_rev is not None and p_rev is not None and p_rev != 0 else 0.0
     
@@ -161,7 +167,7 @@ def live_evaluate_stock(symbol):
 
     krx_df = load_krx_list()
     matched = krx_df[krx_df['Symbol'] == symbol]
-    if not matched.empty and 'Marcap' in matched.columns:
+    if not matched.empty and 'Marcap' in matched.columns and fund.get('marcap_억', 0) == 0:
         fund['marcap_억'] = matched.iloc[0]['Marcap'] / 1e8 if pd.notnull(matched.iloc[0]['Marcap']) else 0
 
     gates = {
@@ -176,49 +182,83 @@ def live_evaluate_stock(symbol):
     pass_count = sum([1 for g in gates.values() if g['pass']])
     mom = ((curr-ma60)/ma60*100) if ma60 > 0 else 0
     
-    factor_score = min(100, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
+    factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
     
     return df, fund, factor_score, gates
 
 # ══════════════════════════════════════════
-# [Component] Dialog Popups & Shared Renderers
+# [Component] Popover & Shared Renderers
 # ══════════════════════════════════════════
-@st.dialog("🚨 Exit Risk 상세 진단")
-def show_exit_risk_dialog(h):
+def render_exit_risk_content(h, supabase):
+    """(다이얼로그 아님) st.popover 내부에 그려지는 세련된 좌표 기준 팝업"""
     curr = h.get("current_price", 0)
     entry = h.get("entry_price", curr)
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
-    
+
+    df = load_price_from_db(supabase, h['symbol'])
+    ts_risk = 0.0
+    ma_risk = 0.0
+
+    if not df.empty and len(df) >= 20:
+        high = df.get('High', df['Close'])
+        low = df.get('Low', df['Close'])
+        prev_close = df['Close'].shift(1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        atr20 = tr.rolling(20).mean().iloc[-1]
+        ma20 = df['Close'].iloc[-20:].mean()
+
+        entry_date = pd.to_datetime(h.get('entry_date', now_kst().strftime("%Y-%m-%d")))
+        df_held = df[df.index >= entry_date]
+        highest_close = df_held['Close'].max() if not df_held.empty else curr
+
+        trailing_stop = highest_close - (2.5 * atr20)
+        if curr > 0 and trailing_stop > 0:
+            ts_dist = curr - trailing_stop
+            ts_risk = max(0, min(100, 100 - (ts_dist / (curr * 0.15) * 100)))
+
+        if curr > 0 and ma20 > 0:
+            ma_dist = curr - ma20
+            ma_risk = max(0, min(100, 100 - (ma_dist / (curr * 0.10) * 100)))
+
     exit_risk = calculate_exit_risk(curr, entry, stop)
     risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
-    pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#fff")
-    
+    badge_text = f"High {exit_risk}%" if exit_risk >= 70 else f"Mid {exit_risk}%" if exit_risk >= 40 else f"Low {exit_risk}%"
+    pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
+
     html = f"""
-    <div style="background-color:#191F28; border:1px solid #333; border-radius:12px; padding:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
-        <h3 style="margin:0; color:#fff; font-size:18px;">{h['name']} 
-            <span style="float:right; font-size:12px; background-color:{risk_color}; color:#000; padding:4px 8px; border-radius:4px; font-weight:bold;">Risk {exit_risk}%</span>
-        </h3>
-        <div style="font-size:13px; color:#8B95A1; margin-top:5px; margin-bottom:20px;">
-            Current <b>₩{curr:,.0f}</b> &nbsp;·&nbsp; Stop <b>₩{stop:,.0f}</b>
+    <div style="background-color:#191F28; padding:5px; border-radius:8px; min-width: 250px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+            <div>
+                <div style="color:#fff; font-size:16px; font-weight:bold;">{h['name']}</div>
+                <div style="font-size:11px; color:#8B95A1;">Current <b>₩{curr:,.0f}</b> &nbsp;·&nbsp; Stop <b>₩{stop:,.0f}</b></div>
+            </div>
+            <div style="background-color:#333; color:{risk_color}; padding:4px 8px; border-radius:4px; font-weight:bold; font-size:11px;">{badge_text}</div>
         </div>
-        
-        <div style="font-size:11px; color:#8B95A1; margin-bottom:8px; font-weight:bold;">OVERALL EXIT PROXIMITY</div>
-        <div style="background-color:#333; border-radius:6px; height:16px; margin-bottom:20px; position:relative;">
-            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:6px;"></div>
-            <div style="position:absolute; top:0; left:0; width:100%; text-align:right; padding-right:8px; font-size:11px; line-height:16px; color:#fff; font-weight:bold;">{exit_risk}%</div>
+
+        <div style="font-size:10px; color:#8B95A1; margin-bottom:5px; font-weight:bold;">OVERALL EXIT PROXIMITY</div>
+        <div style="background-color:#333; border-radius:4px; height:12px; margin-bottom:15px; position:relative;">
+            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:4px;"></div>
+            <div style="position:absolute; top:0; left:0; width:100%; text-align:center; font-size:10px; line-height:12px; color:#fff; font-weight:bold;">{exit_risk}%</div>
         </div>
-        
-        <div style="display:flex; justify-content:space-between; font-size:13px; color:#AEC1D4; margin-bottom:8px;">
-            <span>Trailing Stop (ATR)</span><span style="color:#00B464;">Active</span>
+
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:#AEC1D4; margin-bottom:5px;">
+            <span>Trailing Stop</span><span style="font-weight:bold;">{ts_risk:.1f}%</span>
         </div>
-        <div style="display:flex; justify-content:space-between; font-size:13px; color:#AEC1D4; margin-bottom:20px;">
-            <span>Trend Break (MA20)</span><span style="color:#00B464;">Safe</span>
+        <div style="background-color:#333; border-radius:4px; height:6px; margin-bottom:12px;">
+            <div style="background-color:#AEC1D4; width:{ts_risk}%; height:100%; border-radius:4px;"></div>
         </div>
-        
-        <div style="display:flex; justify-content:space-between; font-size:13px; color:#8B95A1; border-top:1px solid #333; padding-top:15px;">
-            <span>Entry <b style="color:#fff; font-size:14px;">₩{entry:,.0f}</b></span>
-            <span>P&L <b style="color:{pnl_color}; font-size:14px;">{ret:+.2f}%</b></span>
+
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:#AEC1D4; margin-bottom:5px;">
+            <span>Trend Break</span><span style="font-weight:bold;">{ma_risk:.1f}%</span>
+        </div>
+        <div style="background-color:#333; border-radius:4px; height:6px; margin-bottom:20px;">
+            <div style="background-color:#AEC1D4; width:{ma_risk}%; height:100%; border-radius:4px;"></div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:#8B95A1; border-top:1px solid #333; padding-top:12px;">
+            <span>Entry &nbsp;&nbsp;<b style="color:#fff; font-size:13px;">₩{entry:,.0f}</b></span>
+            <span>P&L &nbsp;&nbsp;<b style="color:{pnl_color}; font-size:13px;">{ret:+.2f}%</b></span>
         </div>
     </div>
     """
@@ -236,7 +276,6 @@ def render_single_gauge(score):
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=None, gates=None):
-    """상세 리포트 화면을 그리는 핵심 렌더러 (Financials 확장)"""
     curr = sel.get('current_price', 0)
     ret_1m = sel.get('ret_1m', 0)
     
@@ -295,9 +334,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
             </div>
             """, unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════
-    # [추가] Financials & Valuation (이미지 스타일 구현)
-    # ══════════════════════════════════════════════
     st.markdown("<br>### 📊 Financials & Valuation", unsafe_allow_html=True)
     if fund is None: fund = sel
 
@@ -344,7 +380,8 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 def show_detail_dialog(sel, supabase):
     with st.spinner("실시간 최신 데이터를 동기화 중입니다..."):
         original_score = sel.get('factor_score', 0)
-        if original_score == 0:
+        
+        if original_score == 0 or original_score == 100:
             c_list, w_list, _ = load_screening_result(supabase)
             for item in c_list + w_list:
                 if item['symbol'] == sel['symbol']:
@@ -364,7 +401,7 @@ def show_detail_dialog(sel, supabase):
         if 'filter_details' not in sel and gates:
             sel['total_pass'] = sum([1 for g in gates.values() if g['pass']])
             
-        if original_score == 0 and live_score > 0:
+        if (original_score == 0 or original_score == 100) and live_score > 0:
             sel['factor_score'] = live_score
             
         if 'ret_1m' not in sel or sel['ret_1m'] == 0:
@@ -407,7 +444,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with tab_port:
         total_capital = sum([h.get("current_price", 0) for h in holdings])
         with st.container(border=True):
-            st.caption("현재 포트폴리오 보유종목 1주 기준 평가 합산액")
+            st.caption("현재 포트폴리오 평가 총액 (보유종목 1주 기준 합산액)")
             st.markdown(f"## {total_capital:,.0f} 원")
 
         st.markdown(f"#### Holdings ({len(holdings)})")
@@ -426,7 +463,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 entry = h.get("entry_price", curr)
                 stop = h.get("stop_price", entry * 0.85)
                 ret = h.get("return_rate", 0.0)
-                
                 exit_risk = calculate_exit_risk(curr, entry, stop)
                 
                 c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
@@ -442,10 +478,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 
                 with c6:
                     bc1, bc2 = st.columns(2)
-                    if bc1.button("🚨 Risk", key=f"risk_{h['symbol']}", use_container_width=True):
-                        show_exit_risk_dialog(h)
-                    if bc2.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                        show_detail_dialog(h, supabase)
+                    with bc1:
+                        with st.popover("🚨 Risk", use_container_width=True):
+                            render_exit_risk_content(h, supabase)
+                    with bc2:
+                        if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
+                            show_detail_dialog(h, supabase)
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
 
