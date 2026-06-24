@@ -28,55 +28,35 @@ def load_portfolio_data(supabase):
         pass
     return holdings, trades, history
 
-def _build_table(results: list, is_watchlist: bool = False) -> pd.DataFrame:
-    rows = []
-    for idx, r in enumerate(results):
-        row = {
-            "순위": idx + 1,
-            "종목명": r["name"],
-            "절대필터": f"{r.get('total_pass',0)}/6",
-            "랭킹점수": f"{r.get('factor_score',0):.2f}",
-            "현재가": f"₩{r['current_price']:,}",
-        }
-        if not is_watchlist:
-            row["💡진입제안"] = f"₩{r.get('entry_price', r['current_price']):,}"
-        row["모멘텀"] = f"{r.get('momentum_score', 0):+.2f}%"
-        rows.append(row)
-    return pd.DataFrame(rows)
-
 # ══════════════════════════════════════════
-# [View 1] 인라인 요약 카드 (팝업 대체)
+# [View 1] 클릭형 인라인 요약 리스트 (체크박스 완전 대체)
 # ══════════════════════════════════════════
 def render_inline_summary(sel: dict):
-    """데이터프레임 클릭 시 나타나는 미니 요약 팝업 (다크 톤)"""
-    st.markdown("""
-    <style>
-    .summary-card {
-        background-color: #1E2329;
-        border-radius: 8px;
-        padding: 20px;
-        margin-top: 10px;
-        margin-bottom: 20px;
-        border: 1px solid #333;
-    }
-    .summary-title { color: white; margin-top: 0; margin-bottom: 15px; }
-    .summary-text { color: #AEC1D4; font-size: 14px; }
-    </style>
-    """, unsafe_allow_html=True)
+    """드롭다운 확장 시 나타나는 미니 요약"""
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        st.markdown(f"**시장:** {sel.get('market', 'KOSPI')}")
+        st.markdown(f"**모멘텀 강도:** <span style='color:#F04452'>{sel.get('momentum_score', 0):+.2f}%</span>", unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"**권장 진입가:** {sel.get('entry_price', sel['current_price']):,} 원")
+        st.caption(f"절대 생존 조건 {sel.get('total_pass', 0)}/6 통과")
+    with col3:
+        if st.button("상세 리포트 ➔", key=f"btn_detail_{sel['symbol']}", use_container_width=True, type="primary"):
+            st.session_state.current_view = "detail"
+            st.session_state.selected_stock = sel
+            st.rerun()
 
-    with st.container(border=True):
-        col1, col2, col3 = st.columns([2, 2, 1])
-        with col1:
-            st.markdown(f"### {sel['name']} <span style='font-size:14px; color:#AEC1D4;'>{sel.get('market', '')}</span>", unsafe_allow_html=True)
-            st.markdown(f"**현재가:** {sel['current_price']:,}원 &nbsp;&nbsp;|&nbsp;&nbsp; **모멘텀:** <span style='color:#F04452'>{sel.get('momentum_score', 0):+.2f}%</span>", unsafe_allow_html=True)
-        with col2:
-            st.markdown(f"<div style='margin-top: 10px;'><b>랭킹 스코어:</b> <span style='color:#00B464; font-size:20px;'>{sel.get('factor_score', 0):.2f}</span> / 100</div>", unsafe_allow_html=True)
-            st.caption(f"절대 생존 조건 {sel.get('total_pass', 0)}/6 통과")
-        with col3:
-            if st.button("상세 리포트 ➔", key=f"btn_detail_{sel['symbol']}", use_container_width=True, type="primary"):
-                st.session_state.current_view = "detail"
-                st.session_state.selected_stock = sel
-                st.rerun()
+def render_custom_list(results, is_watchlist=False):
+    if not results:
+        st.info("조건에 부합하는 종목이 없습니다.")
+        return
+
+    for idx, r in enumerate(results):
+        # 마우스 호버 및 클릭 가능한 드롭다운 바 (체크박스 제거)
+        title = f"🏆 {idx+1}위. {r['name']} &nbsp;|&nbsp; 랭킹점수: {r.get('factor_score', 0):.2f}점 &nbsp;|&nbsp; 통과: {r.get('total_pass', 0)}/6 &nbsp;|&nbsp; ₩{r['current_price']:,}"
+
+        with st.expander(title):
+            render_inline_summary(r)
 
 # ══════════════════════════════════════════
 # [View 2] 전체 화면 상세 리포트 (Stock Search 뷰)
@@ -94,7 +74,7 @@ def render_detailed_report_screen(supabase):
 
     st.divider()
 
-    # 1. 퀀트 스코어 (Apex / Helix 대체)
+    # 1. 퀀트 스코어
     st.markdown("### ⚡ Quant Scores")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -108,7 +88,7 @@ def render_detailed_report_screen(supabase):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 2. Entry Gates 시각화 (A ~ F 블록)
+    # 2. Entry Gates 시각화
     st.markdown("### 🛡️ Entry Gates (Survival Conditions)")
     gates_list = [
         ("Growth Composite", "성장성 통합"), ("Dynamic MDD", "동적 방어선"),
@@ -136,27 +116,16 @@ def render_detailed_report_screen(supabase):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 3. Fundamental & Financials (표 형태)
+    # 3. 불필요 수급 제거 및 핵심 펀더멘털만 노출
     st.markdown("### 📊 Fundamental & Financials")
-    f_net = sel.get("foreign_net_buy") or 0
-    i_net = sel.get("institute_net_buy") or 0
-
     with st.container(border=True):
-        st.markdown("**재무 실적 및 지표 (Financials & Valuation)**")
+        st.markdown("**재무 실적 및 핵심 지표**")
         st.divider()
         r1, r2, r3, r4 = st.columns(4)
         r1.caption("순이익 YoY"); r1.markdown(f"**{sel.get('net_income_yoy') or 0:+.2f}%**")
         r2.caption("ROE (수익성)"); r2.markdown(f"**{sel.get('roe') or 0:.2f}%**")
         r3.caption("부채비율 (건전성)"); r3.markdown(f"**{sel.get('debt_ratio') or 0:.1f}%**")
         r4.caption("시가총액"); r4.markdown(f"**{sel.get('marcap_억', 0):,.0f} 억**")
-
-        st.divider()
-        st.markdown("**수급 동향 (최근 20일 누적)**")
-        r5, r6, r7, r8 = st.columns(4)
-        r5.caption("외국인 순매수"); r5.markdown(f"**{f_net:+,.0f} 주**")
-        r6.caption("기관 순매수"); r6.markdown(f"**{i_net:+,.0f} 주**")
-        r7.caption("합산 수급"); r7.markdown(f"**{f_net+i_net:+,.0f} 주**")
-        r8.caption("수급 상태"); r8.markdown("**🟢 양호**" if (f_net+i_net)>0 else "**🔴 부진**")
 
     st.markdown("### 📈 가격 차트 (Price History)")
     df_price = load_price_from_db(supabase, sel["symbol"])
@@ -172,6 +141,7 @@ def render_main_dashboard(supabase):
     confirmed, watchlist, last_updated = load_screening_result(supabase)
     holdings, trades, history = load_portfolio_data(supabase)
 
+    # 탭 완벽 분리
     tab_port, tab_watch, tab_hist = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(watchlist)})",
@@ -179,7 +149,7 @@ def render_main_dashboard(supabase):
     ])
 
     # ────────────────────────────────────────────────────────
-    # 탭 1: 포트폴리오 (Holdings & Alpha)
+    # 탭 1: 포트폴리오 (Holdings & Alpha) - 마스크 포맷 및 툴팁 팝업 추가
     # ────────────────────────────────────────────────────────
     with tab_port:
         total_capital = sum([h.get("current_price", 0) for h in holdings])
@@ -196,7 +166,11 @@ def render_main_dashboard(supabase):
                 stop = h.get("stop_price", entry * 0.85)
                 ret = h.get("return_rate", 0.0)
 
-                recent = h.get("recent_30d", [curr]*30)
+                recent = h.get("recent_30d", [])
+                # 30일 데이터가 없거나 평탄한 경우, 스파크라인 표출을 위한 보정 (진입가~현재가 선)
+                if len(recent) < 2:
+                    recent = [entry, curr]
+
                 day_pct = ((recent[-1] - recent[-2]) / recent[-2] * 100) if len(recent) > 1 else 0.0
 
                 try:
@@ -206,37 +180,40 @@ def render_main_dashboard(supabase):
                     entry_date = now_kst()
                     days_held = 0
 
-                exit_risk = min(100, max(0, int((stop / curr) * 100))) if curr > 0 else 0
+                # Exit Risk의 정확한 논리: 현재가가 지지선(Stop)에 얼마나 근접했는가?
+                # 거리가 15% 이상 떨어져있으면 위험 0%, 거리가 0%면 위험 100%
+                distance_pct = (curr - stop) / curr * 100 if curr > 0 else 0
+                exit_risk = max(0, min(100, int(100 - (distance_pct / 15 * 100))))
+
+                # 툴팁용 팝업 정보
+                risk_info = f"현재가({curr:,}원)가 손절/익절 지지선({stop:,.0f}원) 대비 {distance_pct:.1f}% 여유가 있습니다. (위험도: {exit_risk}%)"
 
                 h_data.append({
-                    "Sector": f"🔴 {h.get('market', 'KOSPI')}",
                     "Stock": f"{h['name']}",
                     "Entry Price": entry,
                     "Current": curr,
-                    "Entry Date": entry_date.strftime("%m/%d"),
-                    "Days": f"D+{days_held}",
                     "P&L": ret,
                     "Stop": stop,
-                    "Day %": day_pct,
                     "Recent 30d": recent,
-                    "Fin": "🟢 양호",
-                    "Exit Risk": exit_risk
+                    "Exit Risk": exit_risk,
+                    "Risk Info": risk_info
                 })
 
             df_h = pd.DataFrame(h_data)
+
+            # Mask 포맷팅 완벽 적용 (%,d 및 %.2f)
             st.dataframe(
                 df_h,
                 column_config={
-                    "Sector": st.column_config.TextColumn("Sector"),
                     "Stock": st.column_config.TextColumn("Stock"),
-                    "Entry Price": st.column_config.NumberColumn("Entry Price", format="%d"),
-                    "Current": st.column_config.NumberColumn("Current", format="%d"),
+                    "Entry Price": st.column_config.NumberColumn("Entry Price", format="%,d"),
+                    "Current": st.column_config.NumberColumn("Current", format="%,d"),
                     "P&L": st.column_config.NumberColumn("P&L", format="%.2f%%"),
-                    "Stop": st.column_config.NumberColumn("Stop", format="%d"),
-                    "Day %": st.column_config.NumberColumn("Day %", format="%.2f%%"),
+                    "Stop": st.column_config.NumberColumn("Stop", format="%,d"),
                     "Recent 30d": st.column_config.LineChartColumn("Recent 30d", y_min=0, y_max=None),
-                    "Exit Risk": st.column_config.ProgressColumn("Exit Risk", min_value=0, max_value=100, format="%d%%"),
-                    "Fin": st.column_config.TextColumn("Fin")
+                    "Exit Risk": st.column_config.ProgressColumn("Exit Risk (%)", min_value=0, max_value=100, format="%d%%"),
+                    # 툴팁 형태의 인포메이션 (마우스 호버 시 상세 내용 노출)
+                    "Risk Info": st.column_config.TextColumn("🔍 위험도 상세 (Hover)", help="셀에 마우스를 올리시면 왜 위험도가 산정되었는지 표시됩니다.")
                 },
                 hide_index=True,
                 use_container_width=True
@@ -301,58 +278,57 @@ def render_main_dashboard(supabase):
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
-    # 탭 2: Watchlist & Confirmed
+    # 탭 2: Watchlist & Confirmed (체크박스 완전 제거)
     # ────────────────────────────────────────────────────────
     with tab_watch:
         st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
 
         if confirmed:
             st.success(f"🏆 신규 추격매수 확정 ({len(confirmed)}개)")
-            df_c = _build_table(confirmed, is_watchlist=False)
-            sel_c = st.dataframe(df_c, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True, key="conf_table")
-            if sel_c and hasattr(sel_c, "selection") and sel_c.selection.rows:
-                # 선택 시 바로 아래에 팝업형 카드 노출
-                render_inline_summary(confirmed[sel_c.selection.rows[0]])
+            render_custom_list(confirmed, is_watchlist=False)
             st.divider()
 
-        st.caption(f"👀 추격매수 예비 돌파 종목 ({len(watchlist)}개) - 금액정보 제외")
+        st.caption(f"👀 추격매수 예비 돌파 종목 ({len(watchlist)}개)")
         if watchlist:
-            df_w = _build_table(watchlist, is_watchlist=True)
-            sel_w = st.dataframe(df_w, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True, key="watch_table")
-            if sel_w and hasattr(sel_w, "selection") and sel_w.selection.rows:
-                render_inline_summary(watchlist[sel_w.selection.rows[0]])
+            render_custom_list(watchlist, is_watchlist=True)
         else:
             st.info("WatchList 종목이 없습니다.")
 
     # ────────────────────────────────────────────────────────
-    # 탭 3: 매도 히스토리 (History)
+    # 탭 3: 매도 히스토리 (History) - 실제 손익금액(원) 추가
     # ────────────────────────────────────────────────────────
     with tab_hist:
-        st.markdown("#### 자동 매도 (이탈) 히스토리")
+        st.markdown("#### 자동 매도 (이탈) 완료 히스토리")
 
-        # BUY를 제외하고 SELL 데이터만 필터링
+        # BUY를 제외하고 SELL(매도) 데이터만 필터링
         sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
 
         if sell_trades:
-            # 진입가 역산 (Entry Price = 매도가 / (1 + 수익률/100))
+            # 진입가 기준 정확한 손익금(원) 산출
             for t in sell_trades:
                 trade_p = t.get('trade_price', 0)
                 ret_pct = t.get('return_rate', 0.0)
-                if ret_pct != -100:
-                    t['entry_price'] = trade_p / (1 + (ret_pct / 100))
-                else:
-                    t['entry_price'] = 0
 
-            t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "reason"]]
-            t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "매도 사유"]
+                # 역산하여 Entry Price 도출
+                if ret_pct != -100:
+                    entry = trade_p / (1 + (ret_pct / 100))
+                else:
+                    entry = 0
+
+                t['entry_price'] = entry
+                t['profit_amount'] = trade_p - entry # 실제 손익금(원)
+
+            t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
+            t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
 
             styled_t = t_df.style.map(
                 lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6',
-                subset=['실현손익(%)']
+                subset=['실현손익(%)', '손익금(원)']
             ).format({
                 "진입가": "{:,.0f}",
                 "매도가": "{:,.0f}",
-                "실현손익(%)": "{:,.2f}"
+                "실현손익(%)": "{:,.2f}",
+                "손익금(원)": "{:,.0f}" # 마스크(콤마) 포맷 반영
             })
             st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
@@ -362,7 +338,7 @@ def render_main_dashboard(supabase):
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    # Session State 초기화 (화면 라우팅용)
+    # Session State 초기화 (상세 화면 라우팅용)
     if "current_view" not in st.session_state:
         st.session_state.current_view = "main"
     if "selected_stock" not in st.session_state:
