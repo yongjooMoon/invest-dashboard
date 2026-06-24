@@ -1,16 +1,12 @@
 """
 quant_core.py
 ─────────────────────────────────────────────
-정통 퀀트 아키텍처 재설계 (필터 ↔ 스코어 분리)
+정통 퀀트 추격매수(Chase Momentum) 아키텍처
 
 [핵심 변경]
-1. Survival Filter (생존): 6개 절대 조건으로 필터링
-   - Growth Composite (매출/영업익/순이익 통합) > 0
-   - Volatility Adaptive MDD (ATR 기반 동적 한계선 방어)
-   - Liquidity, Momentum, Volatility, Trend Strength
-2. Ranking Score (상대평가): 살아남은 종목 대상 Cross-Sectional 백분위(Percentile) 점수화
-3. Confirmed: 생존 필터 6개 ALL-PASS 종목 중 랭킹 상위
-   Watchlist: 생존 필터 4개 이상 통과 종목
+1. 억지로 10개 채우기 완전 폐지: 절대 조건 미달 시 0개 반환
+2. 진짜 추격매수 조건 도입 (Trend, Breakout, Volume Surge)
+3. 스코어(Ranking)는 생존 종목들의 상대평가용으로만 사용
 """
 
 import json, re, time
@@ -31,8 +27,7 @@ def now_kst_str() -> str:
     return now_kst().strftime("%Y-%m-%d %H:%M:%S")
 
 def is_expired(ts_str: str, threshold_sec: int) -> bool:
-    if not ts_str:
-        return True
+    if not ts_str: return True
     try:
         clean = ts_str.replace("T", " ").split(".")[0].split("+")[0]
         dt = datetime.strptime(clean, "%Y-%m-%d %H:%M:%S")
@@ -40,33 +35,29 @@ def is_expired(ts_str: str, threshold_sec: int) -> bool:
     except:
         return True
 
-# ──────────────────────────────────────────
 # 테이블 상수
-# ──────────────────────────────────────────
 TBL_DAILY   = "stock_daily"
 TBL_FUNDA   = "stock_fundamental"
 TBL_SCREEN  = "quant_screening_cache"
 TBL_WATCH   = "quant_watchlist_cache"
 
 ROLLING_DAYS   = 756
-MIN_DAYS       = 120
 FUNDA_TTL_SEC  = 86400 * 90
-
 PREFILTER_MARCAP_억 = 1500
 PREFILTER_TVOL_억   = 50
 
-# 확정/워치리스트 필터 기준 (Survival Filters)
-CONFIRM_FILTER_MIN  = 5     # 완화: 생존 필터 6개 중 5개 이상 통과
-WATCHLIST_FILTER_MIN= 3     # 완화: 생존 필터 6개 중 3개 이상 통과
+# 확정/워치리스트 필터 기준 (절대 기준)
+CONFIRM_FILTER_MIN  = 6     # 6개 강력한 추격매수 조건 ALL PASS
+WATCHLIST_FILTER_MIN= 4     # 최소 4개 이상 통과시 관심종목
 
-# UI 호환용 Gate 정의
+# UI 표시용 Gate 정의
 HARD_GATES = [
     ("Growth Composite", None), ("Dynamic MDD", None), ("Liquidity", None),
-    ("Momentum", None), ("Volatility", None), ("Trend Strength", None)
+    ("Trend Alignment", None), ("Price Breakout", None), ("Volume Surge", None)
 ]
 SOFT_GATES = [
-    ("Growth Rank", None), ("Momentum Rank", None), ("Trend Rank", None),
-    ("Volume Mom Rank", None), ("Supply Rank", None)
+    ("Growth Rank", None), ("Momentum Rank", None), ("Breakout Rank", None),
+    ("Volume Rank", None), ("Supply Rank", None)
 ]
 
 # ══════════════════════════════════════════
@@ -93,7 +84,6 @@ def _normalize_listing(raw: pd.DataFrame, market: str) -> pd.DataFrame:
     return df
 
 def load_filtered_universe(marcap_min_억: int = PREFILTER_MARCAP_억, tvol_min_억: int = PREFILTER_TVOL_억) -> pd.DataFrame:
-    print("[유니버스] KRX 전종목 로드 중...")
     kospi = _normalize_listing(fdr.StockListing("KOSPI"), "KOSPI")
     kosdaq = _normalize_listing(fdr.StockListing("KOSDAQ"), "KOSDAQ")
     raw_df = pd.concat([kospi, kosdaq], ignore_index=True)
@@ -104,11 +94,9 @@ def load_filtered_universe(marcap_min_억: int = PREFILTER_MARCAP_억, tvol_min_
     mask_code = raw_df["Symbol"].str[-1] != "0"
     common = raw_df[~mask_name & ~mask_code].copy()
 
-    marcap_원 = marcap_min_억 * 1e8
-    cap_filtered = common[common["Marcap"] >= marcap_원].copy()
+    cap_filtered = common[common["Marcap"] >= (marcap_min_억 * 1e8)].copy()
     cap_filtered["TradingVol억"] = cap_filtered["Amount"] / 1e8 if "Amount" in cap_filtered.columns else 0
     final = cap_filtered[cap_filtered["TradingVol억"] >= tvol_min_억].copy().reset_index(drop=True)
-    print(f"[유니버스] 최종 대상 {len(final)}개 (사전필터 완료)")
     return final
 
 def load_price_from_db(supabase, symbol: str) -> pd.DataFrame:
@@ -134,7 +122,7 @@ def trim_old_rows(supabase, symbol: str):
     except: pass
 
 # ══════════════════════════════════════════
-# [C] 펀더멘털 (유지)
+# [C] 펀더멘털
 # ══════════════════════════════════════════
 def _parse_num(txt) -> float | None:
     if not txt: return None
@@ -226,70 +214,48 @@ def get_fundamental(supabase, symbol: str, name: str, dart_api_key: str = "", da
     return data
 
 # ══════════════════════════════════════════
-# [D] 퀀트 지표 통합 계산 (Metrics)
+# [D] 퀀트 지표 (Strict Chase Momentum)
 # ══════════════════════════════════════════
 def calc_quant_metrics(df: pd.DataFrame, fund: dict) -> dict:
-    """종목별 로우 데이터 기반 퀀트 지표 산출"""
+    """엄격한 돌파/추격매수(Chase Momentum) 지표 산출"""
     metrics = {}
     close = df["Close"]
+    vol = df["Volume"]
 
-    # 1. Growth Composite (매출 20%, 영업익 30%, 순이익 50% 통합 가중치)
+    # 1. Growth Composite
     def safe_yoy(c, p):
         if c is None or p is None or p == 0: return 0.0
         return (c - p) / abs(p) * 100
-
-    net_yoy = safe_yoy(fund.get("net_income_cur"), fund.get("net_income_prev"))
+    metrics["net_yoy"] = safe_yoy(fund.get("net_income_cur"), fund.get("net_income_prev"))
     op_yoy = safe_yoy(fund.get("op_profit_cur"), fund.get("op_profit_prev"))
     rev_yoy = safe_yoy(fund.get("revenue_cur"), fund.get("revenue_prev"))
+    metrics["growth_composite"] = (metrics["net_yoy"] * 0.5) + (op_yoy * 0.3) + (rev_yoy * 0.2)
 
-    metrics["net_yoy"] = net_yoy
-    metrics["growth_composite"] = (net_yoy * 0.5) + (op_yoy * 0.3) + (rev_yoy * 0.2)
+    if len(df) < 60:
+        return {k: 0 for k in ["growth_composite","mdd","dynamic_mdd_limit","liquidity_20d","ma20","ma60","high_60d","vol_5d","vol_60d","supply_demand"]}
 
-    # 2. Volatility Adaptive MDD (ATR 기반)
-    if len(df) >= 60:
-        # 단기/중기 생존 방어선: 52주 고점 대신 최근 60일 고점을 기준으로 변경하여 억울한 탈락 방지
-        roll_max = close.tail(60).cummax()
-        metrics["mdd"] = ((close.tail(60) - roll_max) / roll_max * 100).min()
+    # 2. Dynamic MDD (ATR 기반 생존 방어선)
+    roll_max = close.tail(60).cummax()
+    metrics["mdd"] = ((close.tail(60) - roll_max) / roll_max * 100).min()
 
-        # Calculate ATR (Average True Range)
-        high, low, prev_close = df.get("High", close), df.get("Low", close), close.shift(1)
-        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-        atr20 = tr.rolling(20).mean().iloc[-1]
-        atr_pct = (atr20 / close.iloc[-1]) * 100
+    high, low, prev_close = df.get("High", close), df.get("Low", close), close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr20 = tr.rolling(20).mean().iloc[-1]
+    metrics["dynamic_mdd_limit"] = max(-40.0, min(-15.0, -((atr20 / close.iloc[-1]) * 300))) # ATR의 3배수
 
-        # 동적 MDD 제한: ATR의 3배수를 한계로 잡되, 기본 -15% 보장, 최대 -40%까지만 허용
-        metrics["dynamic_mdd_limit"] = max(-40.0, min(-15.0, -(atr_pct * 3.0)))
-        metrics["volatility"] = close.pct_change().dropna().iloc[-60:].std() * np.sqrt(252) * 100
-    else:
-        metrics["mdd"], metrics["dynamic_mdd_limit"], metrics["volatility"] = -99.9, -15.0, 999.0
+    # 3. Liquidity
+    metrics["liquidity_20d"] = (close * vol).iloc[-20:].mean() / 1e8
 
-    # 3. Liquidity (20일 평균 거래대금)
-    metrics["liquidity_20d"] = (close * df.get("Volume", 0)).iloc[-20:].mean() / 1e8 if len(df) >= 20 else 0
+    # 4. Trend Alignment (정배열 추세)
+    metrics["ma20"] = close.iloc[-20:].mean()
+    metrics["ma60"] = close.iloc[-60:].mean()
 
-    # 4. Momentum (12-1 모멘텀)
-    if len(df) >= 252: metrics["momentum"] = (close.iloc[-21] - close.iloc[-252]) / close.iloc[-252] * 100
-    elif len(df) >= 60: metrics["momentum"] = (close.iloc[-1] - close.iloc[-60]) / close.iloc[-60] * 100
-    else: metrics["momentum"] = -999.0
+    # 5. Price Breakout (60일 신고가 근접성 - 돌파 매매 핵심)
+    metrics["high_60d"] = close.iloc[-60:].max()
 
-    # 5. Trend Strength
-    if len(df) >= 60:
-        c60 = close.iloc[-60:].values
-        x = np.arange(len(c60))
-        p = np.polyfit(x, c60, 1)
-        y_hat = np.polyval(p, x)
-        ss_res = np.sum((c60 - y_hat) ** 2)
-        ss_tot = np.sum((c60 - c60.mean()) ** 2)
-        metrics["trend_slope"] = p[0]
-        metrics["trend_r2"] = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-    else:
-        metrics["trend_slope"], metrics["trend_r2"] = -1.0, 0.0
-
-    # 6. Volume Momentum
-    if len(df) >= 60:
-        v60 = df["Volume"].iloc[-60:].mean()
-        metrics["volume_momentum"] = df["Volume"].iloc[-10:].mean() / v60 if v60 > 0 else 0
-    else:
-        metrics["volume_momentum"] = 0.0
+    # 6. Volume Surge (거래량 급증)
+    metrics["vol_5d"] = vol.iloc[-5:].mean()
+    metrics["vol_60d"] = vol.iloc[-60:].mean()
 
     # 7. Supply / Demand
     metrics["supply_demand"] = (fund.get("foreign_net_buy") or 0) + (fund.get("institute_net_buy") or 0)
@@ -299,10 +265,10 @@ def calc_quant_metrics(df: pd.DataFrame, fund: dict) -> dict:
 # ══════════════════════════════════════════
 # [E] 분리된 스크리닝 엔진 (Survival Filter -> Score Ranking)
 # ══════════════════════════════════════════
-def run_screening_from_db(supabase, universe_df: pd.DataFrame, top_n: int = 10, log_fn=print, dart_api_key: str = "", dart_corp_map: dict = None) -> tuple:
+def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> tuple:
     candidates = []
 
-    # ── Phase 1. Survival Filters (생존 필터링) ──
+    # ── Phase 1. Strict Survival & Chase Filters ──
     for _, row in universe_df.iterrows():
         symbol, name = row["Symbol"], row.get("Name", row["Symbol"])
         df = load_price_from_db(supabase, symbol)
@@ -310,24 +276,26 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, top_n: int = 10, 
 
         fund = load_fundamental_from_db(supabase, symbol) or {}
         metrics = calc_quant_metrics(df, fund)
+        if "ma20" not in metrics or metrics["ma20"] == 0: continue
 
-        # 절대 방어선 (6 Filters) - 현실적인 장세에 맞춰 기준 완화
-        f_growth = metrics["growth_composite"] >= 0 # 0 포함 (데이터 부족으로 인한 탈락 방지)
-        f_mdd = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
-        f_liq = metrics["liquidity_20d"] >= 30
-        f_mom = metrics["momentum"] > 0
-        f_vol = metrics["volatility"] <= 70.0
-        f_trend = metrics["trend_slope"] > 0 # R2 조건 제거 (상승 추세면 일단 통과)
+        curr_price = int(df["Close"].iloc[-1])
 
-        pass_count = sum([f_growth, f_mdd, f_liq, f_mom, f_vol, f_trend])
+        # 절대 조건 6가지 (강력한 추격매수 로직)
+        f_growth = metrics["growth_composite"] >= 0 # 적자지속 등 불량기업 제외
+        f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"] # 폭락주 잡기 방지
+        f_liq    = metrics["liquidity_20d"] >= 50 # 유동성 50억 이상 (강화)
 
-        # 생존 기준 미달 즉시 폐기 (Watchlist 최소 조건 3개로 완화)
+        # 💡 추격매수 핵심 로직
+        f_trend  = (curr_price > metrics["ma20"]) and (metrics["ma20"] > metrics["ma60"]) # 완전 정배열
+        f_break  = curr_price >= (metrics["high_60d"] * 0.90) # 최근 두달 고점의 90% 이상 위치 (강한 놈만 잡는다)
+        f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5) # 단기 거래량이 장기 평균 대비 50% 이상 폭증
+
+        pass_count = sum([f_growth, f_mdd, f_liq, f_trend, f_break, f_vol])
+
         if pass_count < WATCHLIST_FILTER_MIN:
             continue
 
-        curr_price = int(df["Close"].iloc[-1])
-        ma5 = int(df["Close"].iloc[-5:].mean())
-        entry_price = min(curr_price, ma5) # 지지선 매수 제안
+        entry_price = min(curr_price, int(df["Close"].iloc[-5:].mean())) if len(df)>=5 else curr_price
 
         candidates.append({
             "symbol": symbol, "name": name, "market": row.get("Market", "-"),
@@ -335,51 +303,47 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, top_n: int = 10, 
             "current_price": curr_price, "entry_price": entry_price,
             "ret_1m": round(float((curr_price - df["Close"].iloc[-21]) / df["Close"].iloc[-21] * 100) if len(df) >= 21 else 0.0, 2),
             "metrics": metrics, "pass_count": pass_count,
-            "roe": fund.get("roe"), "debt_ratio": fund.get("debt_ratio"),
+            "roe": fund.get("roe"),
             "filter_details": {
                 "Growth Composite": {"pass": f_growth, "reason": f"Comp {metrics['growth_composite']:+.1f}%"},
                 "Dynamic MDD": {"pass": f_mdd, "reason": f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
                 "Liquidity": {"pass": f_liq, "reason": f"{metrics['liquidity_20d']:.0f}억"},
-                "Momentum": {"pass": f_mom, "reason": f"Mom {metrics['momentum']:+.1f}%"},
-                "Volatility": {"pass": f_vol, "reason": f"Vol {metrics['volatility']:.1f}%"},
-                "Trend Strength": {"pass": f_trend, "reason": f"R² {metrics['trend_r2']:.2f}"}
+                "Trend Alignment": {"pass": f_trend, "reason": f"Price > 20MA > 60MA"},
+                "Price Breakout": {"pass": f_break, "reason": f"고점대비 {(curr_price/metrics['high_60d'])*100:.1f}%"},
+                "Volume Surge": {"pass": f_vol, "reason": f"Vol {(metrics['vol_5d']/metrics['vol_60d']):.1f}x 급증"}
             }
         })
 
-    # ── Phase 2. Scoring & Ranking (크로스섹셔널 백분위 평가) ──
+    # ── Phase 2. Scoring & Ranking ──
     if not candidates:
         return [], []
 
     c_df = pd.DataFrame([c["metrics"] for c in candidates])
 
-    # 살아남은 종목들끼리의 상대 랭킹(Percentile, 상위일수록 1.0)
-    s_growth = c_df["growth_composite"].rank(pct=True, na_option='bottom') * 30
-    s_mom    = c_df["momentum"].rank(pct=True, na_option='bottom') * 30
-    s_trend  = c_df["trend_r2"].rank(pct=True, na_option='bottom') * 20
-    s_volmom = c_df["volume_momentum"].rank(pct=True, na_option='bottom') * 10
-    s_sd     = c_df["supply_demand"].rank(pct=True, na_option='bottom') * 10
+    s_growth = c_df["growth_composite"].rank(pct=True, na_option='bottom') * 20
+    # 가격이 고가에 얼마나 근접했는지 랭킹
+    s_break  = (c_df["high_60d"] / c_df["ma20"]).rank(pct=True, ascending=False, na_option='bottom') * 30
+    s_vol    = (c_df["vol_5d"] / c_df["vol_60d"]).rank(pct=True, na_option='bottom') * 30
+    s_sd     = c_df["supply_demand"].rank(pct=True, na_option='bottom') * 20
 
-    factor_score = s_growth + s_mom + s_trend + s_volmom + s_sd
+    factor_score = s_growth + s_break + s_vol + s_sd
 
     confirmed, watchlist = [], []
     for i, c in enumerate(candidates):
         c["factor_score"] = round(factor_score.iloc[i], 2)
         c["net_income_yoy"] = round(c["metrics"]["net_yoy"], 2)
-        c["momentum_score"] = round(c["metrics"]["momentum"], 2)
+        c["momentum_score"] = round(((c["current_price"] - c["metrics"]["ma60"]) / c["metrics"]["ma60"]) * 100, 2)
         c["screened_at"] = now_kst_str()
 
-        # UI 호환을 위해 값 셋팅
         c["total_pass"] = c["pass_count"]
-        c["hard_pass"]  = c["pass_count"]
-        c["soft_pass"]  = len(SOFT_GATES)
 
-        # Ranking 결과를 Filter Details에 주입 (UI 표시용)
-        c["filter_details"]["Growth Rank"] = {"pass": True, "reason": f"상위 {100 - (s_growth.iloc[i]/30*100):.1f}%"}
-        c["filter_details"]["Momentum Rank"] = {"pass": True, "reason": f"상위 {100 - (s_mom.iloc[i]/30*100):.1f}%"}
-        c["filter_details"]["Trend Rank"] = {"pass": True, "reason": f"상위 {100 - (s_trend.iloc[i]/20*100):.1f}%"}
-        c["filter_details"]["Volume Mom Rank"] = {"pass": True, "reason": f"상위 {100 - (s_volmom.iloc[i]/10*100):.1f}%"}
-        c["filter_details"]["Supply Rank"] = {"pass": True, "reason": f"상위 {100 - (s_sd.iloc[i]/10*100):.1f}%"}
+        c["filter_details"]["Growth Rank"] = {"pass": True, "reason": f"상위 {100 - (s_growth.iloc[i]/20*100):.1f}%"}
+        c["filter_details"]["Momentum Rank"] = {"pass": True, "reason": f"-"}
+        c["filter_details"]["Breakout Rank"] = {"pass": True, "reason": f"상위 {100 - (s_break.iloc[i]/30*100):.1f}%"}
+        c["filter_details"]["Volume Rank"] = {"pass": True, "reason": f"상위 {100 - (s_vol.iloc[i]/30*100):.1f}%"}
+        c["filter_details"]["Supply Rank"] = {"pass": True, "reason": f"상위 {100 - (s_sd.iloc[i]/20*100):.1f}%"}
 
+        # 절대 조건: 10개 강제 추출 폐지. 조건 충족하는 종목만 편입
         if c["pass_count"] >= CONFIRM_FILTER_MIN:
             confirmed.append(c)
             log_fn(f"  ✅ [Confirm] {c['name']} | Score: {c['factor_score']} | 진입가: {c['entry_price']:,}")
@@ -389,7 +353,7 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, top_n: int = 10, 
     confirmed.sort(key=lambda x: x["factor_score"], reverse=True)
     watchlist.sort(key=lambda x: x["factor_score"], reverse=True)
 
-    return confirmed[:top_n], watchlist[:top_n * 3]
+    return confirmed, watchlist # 슬라이싱([:10]) 완전 제거
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -401,15 +365,17 @@ class NumpyEncoder(json.JSONEncoder):
 
 def save_screening_result(supabase, confirmed: list, watchlist: list):
     ts = now_kst_str()
-    supabase.table(TBL_SCREEN).upsert({"id": 1, "results": json.dumps(confirmed, ensure_ascii=False, cls=NumpyEncoder), "updated_at": ts}).execute()
-    supabase.table(TBL_WATCH).upsert({"id": 1, "results": json.dumps(watchlist, ensure_ascii=False, cls=NumpyEncoder), "updated_at": ts}).execute()
+    supabase.table(TBL_SCREEN).upsert([
+        {"id": 1, "results": json.dumps(confirmed, ensure_ascii=False, cls=NumpyEncoder), "updated_at": ts},
+        {"id": 2, "results": json.dumps(watchlist, ensure_ascii=False, cls=NumpyEncoder), "updated_at": ts}
+    ]).execute()
 
 def load_screening_result(supabase) -> tuple:
     c, w, ts = [], [], ""
     try:
         r1 = supabase.table(TBL_SCREEN).select("*").eq("id",1).execute()
         if r1.data: c, ts = json.loads(r1.data[0]["results"]), r1.data[0].get("updated_at","")
-        r2 = supabase.table(TBL_WATCH).select("*").eq("id",1).execute()
+        r2 = supabase.table(TBL_SCREEN).select("*").eq("id",2).execute()
         if r2.data: w = json.loads(r2.data[0]["results"])
     except: pass
     return c, w, ts
