@@ -57,13 +57,30 @@ def calculate_exit_risk(curr, entry, stop):
     risk = 100 - (distance / buffer * 100)
     return max(0, min(100, int(risk)))
 
+def format_marcap(marcap_100m):
+    """시가총액을 1000억 이상일 경우 조/억 단위로 변환"""
+    if marcap_100m is None or pd.isna(marcap_100m) or marcap_100m == 0: 
+        return "0억"
+    try:
+        marcap_100m = float(marcap_100m)
+        if marcap_100m >= 10000:
+            jo = int(marcap_100m // 10000)
+            eok = int(marcap_100m % 10000)
+            if eok > 0:
+                return f"{jo}조 {eok:,}억"
+            return f"{jo}조"
+        else:
+            return f"{int(marcap_100m):,}억"
+    except:
+        return "0억"
+
 # ══════════════════════════════════════════
 # [Helper] 실시간 평가 (Stock Search 및 팝업 보완용)
 # ══════════════════════════════════════════
 def live_evaluate_stock(symbol):
-    """캐시에 없는 정보(Marcap, YoY 등) 실시간 수집 및 스코어 계산"""
+    """캐시에 없는 정보 실시간 수집 및 단일 퀀트 스코어 계산"""
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-    if df.empty: return None, {}, 0, 0, None
+    if df.empty: return None, {}, 0, {}
     
     fund = fetch_naver_fundamental(symbol)
     curr = df['Close'].iloc[-1]
@@ -76,22 +93,17 @@ def live_evaluate_stock(symbol):
     c_net = fund.get('net_income_cur')
     p_net = fund.get('net_income_prev')
     
-    # 1. 누락된 YoY 재계산
     if c_net is not None and p_net is not None and p_net != 0:
         net_yoy = ((c_net - p_net)/abs(p_net)*100)
     else:
         net_yoy = 0.0
     fund['net_income_yoy'] = net_yoy
 
-    # 2. 누락된 시가총액(Marcap) 보충
     krx_df = load_krx_list()
     matched = krx_df[krx_df['Symbol'] == symbol]
     if not matched.empty and 'Marcap' in matched.columns:
         fund['marcap_억'] = matched.iloc[0]['Marcap'] / 1e8 if pd.notnull(matched.iloc[0]['Marcap']) else 0
 
-    apex = min(100, max(0, 40 + (net_yoy/3) + ((curr-ma60)/ma60*50)))
-    helix = min(100, max(0, 50 + ((curr-ma20)/ma20*200)))
-    
     gates = {
         'A': {'name': 'Growth (YoY)', 'pass': net_yoy > 0, 'reason': f"{net_yoy:+.1f}%"},
         'B': {'name': 'Trend (MA)', 'pass': curr > ma20 > ma60, 'reason': "정배열" if curr>ma20>ma60 else "역배열"},
@@ -100,7 +112,14 @@ def live_evaluate_stock(symbol):
         'E': {'name': 'Liquidity', 'pass': (curr*vol5)/1e8 > 50, 'reason': f"{(curr*vol5)/1e8:,.0f}억"},
         'F': {'name': 'Profitability', 'pass': c_net is not None and c_net > 0, 'reason': f"{c_net or 0:,.0f}억"}
     }
-    return df, fund, apex, helix, gates
+    
+    pass_count = sum([1 for g in gates.values() if g['pass']])
+    mom = ((curr-ma60)/ma60*100) if ma60 > 0 else 0
+    
+    # 내 전략 단일 팩터 스코어 근사치 계산 (0~100점)
+    factor_score = min(100, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
+    
+    return df, fund, factor_score, gates
 
 # ══════════════════════════════════════════
 # [Component] Dialog Popups & Shared Renderers
@@ -144,7 +163,19 @@ def show_exit_risk_dialog(h):
     """
     st.markdown(html, unsafe_allow_html=True)
 
-def render_detailed_report_content(sel, df_price=None, fund=None, apex=None, helix=None, gates=None):
+def render_single_gauge(score):
+    """내 전략용 단일 팩터 스코어 게이지"""
+    fig = go.Figure()
+    fig.add_trace(go.Indicator(
+        mode = "gauge+number", value = score,
+        number = {'font': {'color': '#00B464', 'size': 45}, 'valueformat': '.1f'},
+        title = {'text': "퀀트 랭킹 스코어", 'font': {'color': '#AEC1D4', 'size': 14}},
+        gauge = {'axis': {'range': [None, 100], 'visible': False}, 'bar': {'color': "#00B464", 'thickness': 0.8}, 'bgcolor': "rgba(255,255,255,0.05)", 'shape': "angular"}
+    ))
+    fig.update_layout(height=220, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=None, gates=None):
     """상세 리포트 화면을 그리는 핵심 렌더러"""
     curr = sel.get('current_price', 0)
     ret_1m = sel.get('ret_1m', 0)
@@ -153,24 +184,20 @@ def render_detailed_report_content(sel, df_price=None, fund=None, apex=None, hel
     st.markdown(f"<h1>{curr:,.0f} 원 <span style='font-size:20px; color:{'#F04452' if ret_1m>0 else '#3182F6'};'>{ret_1m:+.2f}% (1M)</span></h1>", unsafe_allow_html=True)
     st.divider()
 
-    if apex is None: apex = min(100, max(0, 40 + sel.get('factor_score', 50)*0.6))
-    if helix is None: helix = min(100, max(0, 50 + sel.get('momentum_score', 0)*2))
+    if factor_score is None: factor_score = sel.get('factor_score', 0)
+    total_pass = sel.get('total_pass', sum([1 for g in gates.values() if g['pass']]) if gates else 0)
     
     c_header, c_gauge = st.columns([3, 2])
     with c_header:
         st.markdown("### ⚡ Quant Scores")
         c1, c2 = st.columns(2)
-        c1.metric("종합 랭킹 스코어", f"{sel.get('factor_score', 0):.2f}점")
-        c2.metric("생존 필터 통과", f"{sel.get('total_pass', 0)} / 6")
+        c1.metric("종합 랭킹 스코어", f"{factor_score:.2f}점")
+        c2.metric("생존 필터 통과", f"{total_pass} / 6")
         
         st.info("💡 실시간 퀀트 데이터에 기반하여 생성된 리포트입니다.")
             
     with c_gauge:
-        fig = go.Figure()
-        fig.add_trace(go.Indicator(mode="gauge+number", value=apex, number={'font': {'color': '#FF8A65', 'size': 40}}, title={'text': "Apex", 'font': {'color': '#AEC1D4', 'size': 12}}, gauge={'axis': {'range': [None, 100], 'visible': False}, 'bar': {'color': "#FF8A65"}, 'bgcolor': "rgba(255,255,255,0.05)"}, domain={'x': [0, 0.45], 'y': [0, 1]}))
-        fig.add_trace(go.Indicator(mode="gauge+number", value=helix, number={'font': {'color': '#4FC3F7', 'size': 40}}, title={'text': "Helix", 'font': {'color': '#AEC1D4', 'size': 12}}, gauge={'axis': {'range': [None, 100], 'visible': False}, 'bar': {'color': "#4FC3F7"}, 'bgcolor': "rgba(255,255,255,0.05)"}, domain={'x': [0.55, 1], 'y': [0, 1]}))
-        fig.update_layout(height=180, margin=dict(l=10, r=10, t=20, b=10), paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        render_single_gauge(factor_score)
 
     st.markdown("##### Entry Gates (6 conditions)")
     if gates is None:
@@ -213,10 +240,23 @@ def render_detailed_report_content(sel, df_price=None, fund=None, apex=None, hel
     if fund is None: fund = sel
     with st.container(border=True):
         r1, r2, r3, r4 = st.columns(4)
-        r1.caption("순이익 YoY"); r1.markdown(f"**{fund.get('net_income_yoy', 0):+.2f}%**")
-        r2.caption("ROE (수익성)"); r2.markdown(f"**{fund.get('roe') or 0:.2f}%**")
-        r3.caption("부채비율 (건전성)"); r3.markdown(f"**{fund.get('debt_ratio') or 0:.1f}%**")
-        r4.caption("시가총액"); r4.markdown(f"**{fund.get('marcap_억', 0):,.0f} 억**")
+        r1.caption("순이익 YoY")
+        net_yoy = fund.get('net_income_yoy')
+        if pd.notna(net_yoy) and net_yoy is not None: r1.markdown(f"**{net_yoy:+.2f}%**")
+        else: r1.markdown("**N/A**")
+        
+        r2.caption("ROE (수익성)")
+        roe = fund.get('roe')
+        if pd.notna(roe) and roe is not None: r2.markdown(f"**{roe:.2f}%**")
+        else: r2.markdown("**N/A**")
+        
+        r3.caption("부채비율 (건전성)")
+        debt = fund.get('debt_ratio')
+        if pd.notna(debt) and debt is not None: r3.markdown(f"**{debt:.1f}%**")
+        else: r3.markdown("**N/A**")
+        
+        r4.caption("시가총액")
+        r4.markdown(f"**{format_marcap(fund.get('marcap_억', 0))}**")
 
     st.markdown("### 📈 가격 차트 (Price History)")
     if df_price is not None and not df_price.empty:
@@ -227,20 +267,22 @@ def render_detailed_report_content(sel, df_price=None, fund=None, apex=None, hel
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner("실시간 최신 데이터를 동기화 중입니다..."):
-        # 캐시에 없는 0.00 방지를 위해 실시간 재수집
-        df_price, fund, apex, helix, gates = live_evaluate_stock(sel['symbol'])
+        df_price, fund, factor_score, gates = live_evaluate_stock(sel['symbol'])
         
         if fund:
             sel.update(fund)
         if gates:
             sel['total_pass'] = sum([1 for g in gates.values() if g['pass']])
-            if sel.get('factor_score', 0) == 0: sel['factor_score'] = apex
+            
+        # 기존 평가 점수가 없을 경우에만 새로 평가한 점수로 반영 (내 전략 기준 단일 스코어 유지)
+        if sel.get('factor_score', 0) == 0 and factor_score > 0:
+            sel['factor_score'] = factor_score
             
         if 'ret_1m' not in sel or sel['ret_1m'] == 0:
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    render_detailed_report_content(sel, df_price=df_price, fund=fund, apex=apex, helix=helix, gates=gates)
+    render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=sel.get('factor_score', 0), gates=gates)
 
 
 # ══════════════════════════════════════════
@@ -251,16 +293,24 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
     confirmed, watchlist, last_updated = load_screening_result(supabase)
     holdings, trades, history = load_portfolio_data(supabase)
+    
+    # Watchlist 탭에서 포트폴리오(holdings)에 편입된 종목을 배제하는 강력한 필터링 적용
+    holding_syms = set([h['symbol'] for h in holdings])
+    filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
+    filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
+
+    dialog_trigger = None
+    dialog_payload = None
 
     tab_port, tab_watch, tab_hist, tab_search = st.tabs([
         f"Portfolio ({len(holdings)})", 
-        f"Watchlist ({len(confirmed) + len(watchlist)})", 
+        f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})", 
         "매도 히스토리 (History)",
         "🔍 Stock Search"
     ])
 
     # ────────────────────────────────────────────────────────
-    # 탭 1: 포트폴리오 (커스텀 표 + 버튼 인라인)
+    # 탭 1: 포트폴리오
     # ────────────────────────────────────────────────────────
     with tab_port:
         total_capital = sum([h.get("current_price", 0) for h in holdings])
@@ -269,49 +319,60 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.markdown(f"## {total_capital:,.0f} 원")
 
         st.markdown(f"#### Holdings ({len(holdings)})")
+        st.caption("💡 표에서 **'종목명'**을 클릭하시면 상세 리포트가, **'Exit Risk'**를 클릭하시면 위험도 팝업이 나타납니다.")
         
         if holdings:
-            st.markdown("""
-            <style>
-            .grid-header { font-size: 13px; font-weight: bold; color: #8B95A1; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 8px; }
-            .grid-row { padding-top: 10px; padding-bottom: 10px; font-size: 14px; border-bottom: 1px solid #1E2329; display: flex; align-items: center;}
-            </style>
-            """, unsafe_allow_html=True)
-            
-            # 커스텀 표 헤더
-            c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2])
-            c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-            c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
-            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-            c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
-            c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
-            
-            # 커스텀 표 행 및 버튼 배치 (체크박스 문제 완전 해결)
+            h_data = []
             for h in holdings:
                 curr = h.get("current_price", 0)
                 entry = h.get("entry_price", curr)
                 stop = h.get("stop_price", entry * 0.85)
                 ret = h.get("return_rate", 0.0)
+                recent = h.get("recent_30d", [entry, curr])
+                if len(recent) < 2: recent = [entry, curr]
+                
                 exit_risk = calculate_exit_risk(curr, entry, stop)
                 
-                c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2])
-                c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
-                c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
-                c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
+                h_data.append({
+                    "Stock": h['name'],
+                    "Entry Price": entry,
+                    "Current": curr,
+                    "P&L": ret,
+                    "Stop": stop,
+                    "Recent 30d": recent,
+                    "Exit Risk": exit_risk,
+                    "RawData": h
+                })
                 
-                pnl_color = "#F04452" if ret > 0 else "#3182F6"
-                c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
+            df_h = pd.DataFrame(h_data)
+            
+            styled_df_h = df_h[["Stock", "Entry Price", "Current", "P&L", "Stop", "Recent 30d", "Exit Risk"]].style.map(
+                lambda x: "color: #F04452" if x > 0 else "color: #3182F6" if x < 0 else "", subset=["P&L"]
+            ).map(
+                lambda x: 'color: #4FC3F7; text-decoration: underline; cursor: pointer;', subset=["Stock"]
+            ).format({"Entry Price": "{:,.0f}", "Current": "{:,.0f}", "P&L": "{:+.2f}%", "Stop": "{:,.0f}"})
+            
+            sel_h = st.dataframe(
+                styled_df_h,
+                column_config={
+                    "Recent 30d": st.column_config.LineChartColumn("Recent 30d", y_min=0, y_max=None),
+                    "Exit Risk": st.column_config.ProgressColumn("Exit Risk (%)", min_value=0, max_value=100, format="%d%%")
+                },
+                hide_index=True, use_container_width=True, on_select="rerun", 
+                selection_mode=["single-row", "single-column"], key="port_table"
+            )
+            
+            if sel_h and hasattr(sel_h, "selection") and sel_h.selection.rows:
+                row_idx = sel_h.selection.rows[0]
+                col_name = sel_h.selection.columns[0] if sel_h.selection.columns else ""
                 
-                risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
-                c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
-                
-                with c6:
-                    bc1, bc2 = st.columns(2)
-                    if bc1.button("🚨 Risk", key=f"risk_{h['symbol']}", use_container_width=True):
-                        show_exit_risk_dialog(h)
-                    if bc2.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                        show_detail_dialog(h, supabase)
+                if col_name == "Exit Risk":
+                    dialog_trigger = "exit_risk"
+                    dialog_payload = h_data[row_idx]["RawData"]
+                else:
+                    dialog_trigger = "detail"
+                    dialog_payload = h_data[row_idx]["RawData"]
+                    
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
 
@@ -365,7 +426,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
-    # 탭 2: Watchlist & Confirmed (진입가/포폴 배제, 커스텀 표 UI 적용)
+    # 탭 2: Watchlist & Confirmed (진입가/포폴 완전 배제)
     # ────────────────────────────────────────────────────────
     with tab_watch:
         st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
@@ -391,15 +452,15 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
                         show_detail_dialog(w, supabase)
         
-        if confirmed:
-            render_watchlist_grid(confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#FF8A65")
+        if filtered_confirmed:
+            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
             st.divider()
 
-        if watchlist:
-            render_watchlist_grid(watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#00B464")
-            if len(watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
+        if filtered_watchlist:
+            render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4")
+            if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
         else:
-            if not confirmed: st.info("WatchList 종목이 없습니다.")
+            if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
 
     # ────────────────────────────────────────────────────────
     # 탭 3: 매도 히스토리
@@ -456,23 +517,28 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 st.divider()
                 st.success("✅ 캐시된 분석 데이터를 로드했습니다.")
                 
-                # 팝업과 동일한 모듈 재활용 (UI 통일)
-                render_detailed_report_content(sel, df_price=df_price)
+                # 단일 스코어 기반 리포트 공통 렌더링 호출
+                render_detailed_report_content(sel, df_price=df_price, factor_score=sel.get('factor_score', 0))
             else:
                 with st.spinner(f"'{selected_stock_str}' 실시간 퀀트 데이터 스크래핑 중..."):
-                    df_price, fund, apex, helix, gates = live_evaluate_stock(search_query)
+                    df_price, fund, factor_score, gates = live_evaluate_stock(search_query)
                     
                 if df_price is None or df_price.empty:
                     st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
-                elif not fund or fund.get('net_income_cur') is None:
-                    st.warning("⚠️ 펀더멘털(실적) 데이터가 부족하여 퀀트 상세 분석을 제공하지 않습니다. (단순 가격 차트만 제공)")
-                    st.line_chart(df_price[["Close"]].tail(120).rename(columns={"Close": "종가"}))
                 else:
                     sel = {
                         'symbol': search_query, 'name': selected_stock_str.split(" (")[0], 
                         'current_price': df_price['Close'].iloc[-1],
                         'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
                     }
-                    sel.update(fund)
+                    if fund: sel.update(fund)
                     st.divider()
-                    render_detailed_report_content(sel, df_price=df_price, fund=fund, apex=apex, helix=helix, gates=gates)
+                    render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=factor_score, gates=gates)
+
+    # ══════════════════════════════════════════
+    # [Dialog Execution Layer] 에러 방지를 위해 탭 외부에서 팝업 렌더링
+    # ══════════════════════════════════════════
+    if dialog_trigger == "exit_risk" and dialog_payload:
+        show_exit_risk_dialog(dialog_payload)
+    elif dialog_trigger == "detail" and dialog_payload:
+        show_detail_dialog(dialog_payload, supabase)
