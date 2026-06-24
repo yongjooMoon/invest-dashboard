@@ -190,7 +190,7 @@ def live_evaluate_stock(symbol):
 # [Component] Popovers & Shared Renderers
 # ══════════════════════════════════════════
 def render_exit_risk_content(h, supabase):
-    """HTML 문법 충돌을 원천 차단한 네이티브 스트림릿 팝업 렌더러"""
+    """HTML 문법 충돌을 원천 차단한 네이티브 스트림릿 팝업 렌더러 - 사이즈 확대 반영"""
     curr = h.get("current_price", 0)
     entry = h.get("entry_price", curr)
     stop = h.get("stop_price", entry * 0.85)
@@ -229,25 +229,48 @@ def render_exit_risk_content(h, supabase):
             ma_risk = max(0, min(100, 100 - (ma_dist / (curr * 0.10) * 100)))
 
     exit_risk = calculate_exit_risk(curr, entry, stop)
+    risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
+    badge_text = f"High {exit_risk}%" if exit_risk >= 70 else f"Mid {exit_risk}%" if exit_risk >= 40 else f"Low {exit_risk}%"
+    pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
 
-    # 안전하고 직관적인 Streamlit Native UI로 팝업 렌더링
-    st.markdown(f"#### 🚨 {h['name']} Risk 분석")
-    st.caption(f"**현재가:** ₩{curr:,.0f} &nbsp;&nbsp;|&nbsp;&nbsp; **손절가:** ₩{stop:,.0f}")
-    
-    st.markdown(f"**OVERALL EXIT PROXIMITY : {exit_risk}%**")
-    st.progress(exit_risk / 100.0)
-    
-    st.markdown(f"**Trailing Stop (ATR) : {ts_risk:.1f}%**")
-    st.progress(ts_risk / 100.0)
-    
-    st.markdown(f"**Trend Break (MA20) : {ma_risk:.1f}%**")
-    st.progress(ma_risk / 100.0)
-    
-    st.divider()
-    c1, c2 = st.columns(2)
-    c1.metric("진입가 (Entry)", f"₩{entry:,.0f}")
-    c2.metric("보유 수익률 (P&L)", f"{ret:+.2f}%")
+    # 사이즈 확장을 위해 min-width 340px 및 여백(padding) 조정 적용
+    html = f"""
+    <div style="background-color:#191F28; padding:15px 20px; border-radius:10px; min-width: 340px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+            <div>
+                <div style="color:#fff; font-size:18px; font-weight:bold; letter-spacing:0.5px;">{h['name']}</div>
+                <div style="font-size:12px; color:#8B95A1; margin-top:4px;">Current <b style="color:#fff;">₩{curr:,.0f}</b> &nbsp;|&nbsp; Stop <b>₩{stop:,.0f}</b></div>
+            </div>
+            <div style="background-color:#333; color:{risk_color}; padding:6px 12px; border-radius:6px; font-weight:bold; font-size:12px;">{badge_text}</div>
+        </div>
 
+        <div style="font-size:11px; color:#8B95A1; margin-bottom:6px; font-weight:bold;">OVERALL EXIT PROXIMITY</div>
+        <div style="background-color:#333; border-radius:4px; height:14px; margin-bottom:18px; position:relative;">
+            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:4px;"></div>
+            <div style="position:absolute; top:0; left:0; width:100%; text-align:center; font-size:11px; line-height:14px; color:#fff; font-weight:bold;">{exit_risk}%</div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:#AEC1D4; margin-bottom:6px;">
+            <span>Trailing Stop</span><span style="font-weight:bold;">{ts_risk:.1f}%</span>
+        </div>
+        <div style="background-color:#333; border-radius:4px; height:6px; margin-bottom:14px;">
+            <div style="background-color:#AEC1D4; width:{ts_risk}%; height:100%; border-radius:4px;"></div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:#AEC1D4; margin-bottom:6px;">
+            <span>Trend Break</span><span style="font-weight:bold;">{ma_risk:.1f}%</span>
+        </div>
+        <div style="background-color:#333; border-radius:4px; height:6px; margin-bottom:20px;">
+            <div style="background-color:#AEC1D4; width:{ma_risk}%; height:100%; border-radius:4px;"></div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; font-size:13px; color:#8B95A1; border-top:1px solid #333; padding-top:15px;">
+            <span>Entry<br><b style="color:#fff; font-size:15px;">₩{entry:,.0f}</b></span>
+            <span style="text-align:right;">P&L<br><b style="color:{pnl_color}; font-size:16px;">{ret:+.2f}%</b></span>
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 def render_single_gauge(score):
     fig = go.Figure()
@@ -409,10 +432,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
     filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
-    # 트리거 변수 초기화
-    dialog_trigger = None
-    dialog_payload = None
-
     tab_port, tab_watch, tab_hist, tab_search = st.tabs([
         f"Portfolio ({len(holdings)})", 
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})", 
@@ -447,6 +466,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
             c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
             
+            dialog_trigger = None
+            dialog_payload = None
+
             for h in holdings:
                 curr = h.get("current_price", 0)
                 entry = h.get("entry_price", curr)
@@ -468,19 +490,19 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 with c6:
                     bc1, bc2 = st.columns(2)
                     with bc1:
-                        # 모달 다이얼로그 대신 버튼 위치에 즉각 열리는 팝오버를 적용하여 충돌 방지 및 편의성 극대화
                         with st.popover("🚨 Risk", use_container_width=True):
                             render_exit_risk_content(h, supabase)
                     with bc2:
                         if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
                             dialog_trigger = "detail"
                             dialog_payload = h
+                            
+            if dialog_trigger == "detail" and dialog_payload:
+                show_detail_dialog(dialog_payload, supabase)
+                
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
 
-        # ────────────────────────────────────────────────────────
-        # KOSPI 대비 포트폴리오 성과 (Alpha) - 매도 완료 기준
-        # ────────────────────────────────────────────────────────
         st.divider()
         st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha - 실현수익 기준)")
         st.caption("※ 보유 중인 종목의 미실현 수익은 제외되며, 매도(Exit)가 완료된 종목의 수익률만 반영됩니다.")
@@ -497,7 +519,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         chart_df = pd.DataFrame(index=df_kospi.index)
         chart_df['KOSPI'] = df_kospi['kospi_cum']
 
-        # 매도(SELL) 이력만 가져와 실현 수익(Realized P&L) 계산
         sell_trades = [t for t in trades if t.get('type') == 'SELL']
         if sell_trades:
             t_df = pd.DataFrame(sell_trades)
@@ -564,7 +585,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
                 with c6:
                     if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                        # 탭 외부의 Dialog 트리거
                         st.session_state['w_dialog_payload'] = w
 
         if filtered_confirmed:
@@ -576,6 +596,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
         else:
             if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
+            
+        if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
+            payload = st.session_state['w_dialog_payload']
+            st.session_state['w_dialog_payload'] = None
+            show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
     # 탭 3: 매도 히스토리
@@ -583,6 +608,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with tab_hist:
         st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리")
         
+        sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
         if sell_trades:
             for t in sell_trades:
                 trade_p = t.get('trade_price', 0)
@@ -647,14 +673,3 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     if fund: sel.update(fund)
                     st.divider()
                     render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=factor_score, gates=gates)
-
-    # ══════════════════════════════════════════
-    # [Dialog Execution Layer] 에러 방지를 위해 탭 외부에서 팝업 렌더링
-    # ══════════════════════════════════════════
-    if dialog_trigger == "detail" and dialog_payload:
-        show_detail_dialog(dialog_payload, supabase)
-        
-    if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
-        payload = st.session_state['w_dialog_payload']
-        st.session_state['w_dialog_payload'] = None # Clear immediately
-        show_detail_dialog(payload, supabase)
