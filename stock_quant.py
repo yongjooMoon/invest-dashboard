@@ -3,6 +3,7 @@ quant_screener_ui.py — Streamlit UI
 """
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 import requests
 import re
@@ -52,7 +53,6 @@ def load_krx_list():
         return pd.DataFrame(columns=["Symbol", "Name", "SearchStr", "Marcap"])
 
 def calculate_exit_risk(curr, entry, stop):
-    """현재가, 진입가, 지지선을 바탕으로 손절 위험도(0~100%) 정확히 산출"""
     if curr <= 0 or entry <= 0 or stop <= 0: return 0
     buffer = entry - stop if entry > stop else curr * 0.15
     if buffer <= 0: buffer = 1
@@ -61,7 +61,6 @@ def calculate_exit_risk(curr, entry, stop):
     return max(0, min(100, int(risk)))
 
 def format_marcap(marcap_100m):
-    """시가총액을 1000억 이상일 경우 조/억 단위로 변환"""
     if marcap_100m is None or pd.isna(marcap_100m) or marcap_100m == 0: 
         return "N/A"
     try:
@@ -78,14 +77,14 @@ def format_marcap(marcap_100m):
         return "N/A"
 
 def get_naver_financials_fallback(symbol):
-    """네이버 펀더멘털 누락 방지를 위한 비상용 직접 스크래핑"""
+    """네이버 펀더멘털 누락 방지 및 상세 지표(PER, PBR 등) 전면 스크래핑"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={symbol}"
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
+        fund = {}
         table = soup.select_one("div.cop_analysis table")
-        roe, debt_ratio = None, None
         if table:
             for tr in table.select("tbody tr"):
                 th = tr.select_one("th")
@@ -94,17 +93,33 @@ def get_naver_financials_fallback(symbol):
                 tds = tr.select("td")
                 
                 vals = []
-                for td in tds[:4]:
+                for td in tds:
                     clean = re.sub(r"[^\d.\-]", "", td.text)
                     if clean and clean != '-': vals.append(float(clean))
                     else: vals.append(None)
                 
                 valid_vals = [v for v in vals if v is not None]
-                if "ROE" in label and valid_vals:
-                    roe = valid_vals[-1]
-                if "부채비율" in label and valid_vals:
-                    debt_ratio = valid_vals[-1]
-        return {"roe": roe, "debt_ratio": debt_ratio}
+                recent_val = valid_vals[-1] if valid_vals else None
+                prev_val = valid_vals[-2] if len(valid_vals) > 1 else None
+
+                if "매출액" in label:
+                    fund['revenue_cur'] = recent_val
+                    fund['revenue_prev'] = prev_val
+                elif "영업이익" in label and "영업이익률" not in label:
+                    fund['op_profit_cur'] = recent_val
+                    fund['op_profit_prev'] = prev_val
+                elif "당기순이익" in label or ("순이익" in label and "순이익률" not in label):
+                    fund['net_income_cur'] = recent_val
+                    fund['net_income_prev'] = prev_val
+                elif "영업이익률" in label: fund['op_margin'] = recent_val
+                elif "순이익률" in label: fund['net_margin'] = recent_val
+                elif "ROE" in label: fund['roe'] = recent_val
+                elif "ROA" in label: fund['roa'] = recent_val
+                elif "부채비율" in label: fund['debt_ratio'] = recent_val
+                elif "PER" in label: fund['per'] = recent_val
+                elif "PBR" in label: fund['pbr'] = recent_val
+                elif "배당수익률" in label or "시가배당률" in label: fund['dividend_yield'] = recent_val
+        return fund
     except:
         return {}
 
@@ -119,11 +134,11 @@ def live_evaluate_stock(symbol):
     fund = fetch_naver_fundamental(symbol)
     if not fund: fund = {}
     
+    # 펀더멘털 누락 방지 및 밸류에이션(PER/PBR 등) 추가 수집
     fallback = get_naver_financials_fallback(symbol)
-    if fund.get('roe') is None and fallback.get('roe') is not None:
-        fund['roe'] = fallback['roe']
-    if fund.get('debt_ratio') is None and fallback.get('debt_ratio') is not None:
-        fund['debt_ratio'] = fallback['debt_ratio']
+    for k, v in fallback.items():
+        if v is not None:
+            fund[k] = v
         
     curr = df['Close'].iloc[-1]
     ma20 = df['Close'].iloc[-20:].mean() if len(df)>=20 else curr
@@ -134,12 +149,15 @@ def live_evaluate_stock(symbol):
     
     c_net = fund.get('net_income_cur')
     p_net = fund.get('net_income_prev')
+    c_rev = fund.get('revenue_cur')
+    p_rev = fund.get('revenue_prev')
     
-    if c_net is not None and p_net is not None and p_net != 0:
-        net_yoy = ((c_net - p_net)/abs(p_net)*100)
-    else:
-        net_yoy = 0.0
+    # 성장률 안전 계산
+    net_yoy = ((c_net - p_net)/abs(p_net)*100) if c_net is not None and p_net is not None and p_net != 0 else 0.0
+    rev_yoy = ((c_rev - p_rev)/abs(p_rev)*100) if c_rev is not None and p_rev is not None and p_rev != 0 else 0.0
+    
     fund['net_income_yoy'] = net_yoy
+    fund['revenue_yoy'] = rev_yoy
 
     krx_df = load_krx_list()
     matched = krx_df[krx_df['Symbol'] == symbol]
@@ -158,7 +176,6 @@ def live_evaluate_stock(symbol):
     pass_count = sum([1 for g in gates.values() if g['pass']])
     mom = ((curr-ma60)/ma60*100) if ma60 > 0 else 0
     
-    # 팩터 스코어 근사치 계산
     factor_score = min(100, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
     
     return df, fund, factor_score, gates
@@ -206,7 +223,6 @@ def show_exit_risk_dialog(h):
     st.markdown(html, unsafe_allow_html=True)
 
 def render_single_gauge(score):
-    """단일 팩터 스코어 게이지"""
     fig = go.Figure()
     fig.add_trace(go.Indicator(
         mode = "gauge+number", value = score,
@@ -218,7 +234,7 @@ def render_single_gauge(score):
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=None, gates=None):
-    """상세 리포트 화면을 그리는 핵심 렌더러"""
+    """상세 리포트 화면을 그리는 핵심 렌더러 (Financials 확장)"""
     curr = sel.get('current_price', 0)
     ret_1m = sel.get('ret_1m', 0)
     
@@ -277,30 +293,44 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
             </div>
             """, unsafe_allow_html=True)
 
-    st.markdown("<br>### 📊 Fundamental Hard Gate", unsafe_allow_html=True)
+    # ══════════════════════════════════════════════
+    # [추가] Financials & Valuation (이미지 스타일 구현)
+    # ══════════════════════════════════════════════
+    st.markdown("<br>### 📊 Financials & Valuation", unsafe_allow_html=True)
     if fund is None: fund = sel
+
+    def safe_fmt(val, is_pct=False, is_eok=False):
+        if val is None or pd.isna(val): return "N/A"
+        try:
+            val = float(val)
+            if is_pct: return f"{val:+.2f}%" if val < 0 else f"{val:.2f}%"
+            if is_eok: return f"{val:,.0f}억"
+            return f"{val:,.2f}"
+        except: return "N/A"
+
     with st.container(border=True):
+        st.markdown("**재무 실적**")
         r1, r2, r3, r4 = st.columns(4)
+        r1.caption("매출액"); r1.markdown(f"**{safe_fmt(fund.get('revenue_cur'), is_eok=True)}**")
+        r2.caption("영업이익"); r2.markdown(f"**{safe_fmt(fund.get('op_profit_cur'), is_eok=True)}**")
+        r3.caption("당기순이익"); r3.markdown(f"**{safe_fmt(fund.get('net_income_cur'), is_eok=True)}**")
+        r4.caption("영업이익률"); r4.markdown(f"**{safe_fmt(fund.get('op_margin'), is_pct=True)}**")
         
-        r1.caption("순이익 YoY")
-        net_yoy = fund.get('net_income_yoy')
-        if pd.notna(net_yoy) and net_yoy is not None and net_yoy != 0: r1.markdown(f"**{net_yoy:+.2f}%**")
-        else: r1.markdown("**N/A**")
+        st.divider()
+        st.markdown("**수익성 및 성장성 (YoY)**")
+        r5, r6, r7, r8 = st.columns(4)
+        r5.caption("순이익 성장률"); r5.markdown(f"**{safe_fmt(fund.get('net_income_yoy'), is_pct=True)}**")
+        r6.caption("매출 성장률"); r6.markdown(f"**{safe_fmt(fund.get('revenue_yoy'), is_pct=True)}**")
+        r7.caption("ROE"); r7.markdown(f"**<span style='color:#F04452'>{safe_fmt(fund.get('roe'), is_pct=True)}</span>**", unsafe_allow_html=True)
+        r8.caption("ROA"); r8.markdown(f"**{safe_fmt(fund.get('roa'), is_pct=True)}**")
         
-        r2.caption("ROE (수익성)")
-        roe = fund.get('roe')
-        if pd.notna(roe) and roe is not None and roe != 0: r2.markdown(f"**{roe:.2f}%**")
-        else: r2.markdown("**N/A**")
-        
-        r3.caption("부채비율 (건전성)")
-        debt = fund.get('debt_ratio')
-        if pd.notna(debt) and debt is not None and debt != 0: r3.markdown(f"**{debt:.1f}%**")
-        else: r3.markdown("**N/A**")
-        
-        r4.caption("시가총액")
-        marcap = fund.get('marcap_억')
-        if pd.notna(marcap) and marcap is not None and marcap != 0: r4.markdown(f"**{format_marcap(marcap)}**")
-        else: r4.markdown("**N/A**")
+        st.divider()
+        st.markdown("**밸류에이션 및 건전성**")
+        r9, r10, r11, r12 = st.columns(4)
+        r9.caption("시가총액"); r9.markdown(f"**{format_marcap(fund.get('marcap_억'))}**")
+        r10.caption("PER"); r10.markdown(f"**{safe_fmt(fund.get('per'))} 배**")
+        r11.caption("PBR"); r11.markdown(f"**{safe_fmt(fund.get('pbr'))} 배**")
+        r12.caption("부채비율"); r12.markdown(f"**{safe_fmt(fund.get('debt_ratio'), is_pct=True)}**")
 
     st.markdown("### 📈 가격 차트 (Price History)")
     if df_price is not None and not df_price.empty:
@@ -311,7 +341,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner("실시간 최신 데이터를 동기화 중입니다..."):
-        # 1. 100점 오버라이드 버그 방지 (기존 팩터 스코어를 캐시에서 찾아 복구)
         original_score = sel.get('factor_score', 0)
         if original_score == 0:
             c_list, w_list, _ = load_screening_result(supabase)
@@ -333,7 +362,6 @@ def show_detail_dialog(sel, supabase):
         if 'filter_details' not in sel and gates:
             sel['total_pass'] = sum([1 for g in gates.values() if g['pass']])
             
-        # 기존 스코어가 DB에 아예 없을 때만 라이브 스코어 반영
         if original_score == 0 and live_score > 0:
             sel['factor_score'] = live_score
             
@@ -353,7 +381,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     confirmed, watchlist, last_updated = load_screening_result(supabase)
     holdings, trades, history = load_portfolio_data(supabase)
     
-    # Watchlist 탭에서 포트폴리오(holdings)에 편입된 종목을 철저히 배제
     holding_syms = set([h['symbol'] for h in holdings])
     filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
     filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
@@ -373,7 +400,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     """, unsafe_allow_html=True)
 
     # ────────────────────────────────────────────────────────
-    # 탭 1: 포트폴리오 (커스텀 표 구조 완벽 적용)
+    # 탭 1: 포트폴리오
     # ────────────────────────────────────────────────────────
     with tab_port:
         c_budg, _ = st.columns([1, 2])
