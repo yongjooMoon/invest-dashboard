@@ -192,6 +192,7 @@ def show_exit_risk_dialog(h):
     
     exit_risk = calculate_exit_risk(curr, entry, stop)
     risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
+    pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#fff")
     
     html = f"""
     <div style="background-color:#191F28; border:1px solid #333; border-radius:12px; padding:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
@@ -203,8 +204,9 @@ def show_exit_risk_dialog(h):
         </div>
         
         <div style="font-size:11px; color:#8B95A1; margin-bottom:8px; font-weight:bold;">OVERALL EXIT PROXIMITY</div>
-        <div style="background-color:#333; border-radius:6px; height:16px; margin-bottom:20px;">
-            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:6px; text-align:right; padding-right:8px; font-size:11px; line-height:16px; color:#000; font-weight:bold;">{exit_risk}%</div>
+        <div style="background-color:#333; border-radius:6px; height:16px; margin-bottom:20px; position:relative;">
+            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:6px;"></div>
+            <div style="position:absolute; top:0; left:0; width:100%; text-align:right; padding-right:8px; font-size:11px; line-height:16px; color:#fff; font-weight:bold;">{exit_risk}%</div>
         </div>
         
         <div style="display:flex; justify-content:space-between; font-size:13px; color:#AEC1D4; margin-bottom:8px;">
@@ -216,7 +218,7 @@ def show_exit_risk_dialog(h):
         
         <div style="display:flex; justify-content:space-between; font-size:13px; color:#8B95A1; border-top:1px solid #333; padding-top:15px;">
             <span>Entry <b style="color:#fff; font-size:14px;">₩{entry:,.0f}</b></span>
-            <span>P&L <b style="color:{'#F04452' if ret>0 else '#3182F6'}; font-size:14px;">{ret:+.2f}%</b></span>
+            <span>P&L <b style="color:{pnl_color}; font-size:14px;">{ret:+.2f}%</b></span>
         </div>
     </div>
     """
@@ -403,10 +405,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # 탭 1: 포트폴리오
     # ────────────────────────────────────────────────────────
     with tab_port:
-        c_budg, _ = st.columns([1, 2])
-        with c_budg:
-            total_budget = st.number_input("💰 포트폴리오 운용 예산 (원)", min_value=1000000, value=10000000, step=1000000)
-        
         total_capital = sum([h.get("current_price", 0) for h in holdings])
         with st.container(border=True):
             st.caption("현재 포트폴리오 보유종목 1주 기준 평가 합산액")
@@ -415,17 +413,13 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.markdown(f"#### Holdings ({len(holdings)})")
         
         if holdings:
-            target_weight = 1.0 / len(holdings)
-            target_budget_per_stock = total_budget * target_weight
-            
-            c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 1.2, 1.2, 1.5, 1.2, 1.2, 2.5])
+            c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
             c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
             c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
             c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
             c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
             c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='grid-header'>권장수량</div>", unsafe_allow_html=True)
-            c7.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
+            c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
             
             for h in holdings:
                 curr = h.get("current_price", 0)
@@ -434,22 +428,19 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 ret = h.get("return_rate", 0.0)
                 
                 exit_risk = calculate_exit_risk(curr, entry, stop)
-                target_shares = int(target_budget_per_stock // curr) if curr > 0 else 0
                 
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 1.2, 1.2, 1.5, 1.2, 1.2, 2.5])
+                c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
                 c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
                 c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
                 c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
                 
-                pnl_color = "#F04452" if ret > 0 else "#3182F6"
+                pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
                 c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
                 
                 risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
                 c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
                 
-                c6.markdown(f"<div class='grid-row' style='color:#AEC1D4;'>{target_shares:,}주</div>", unsafe_allow_html=True)
-                
-                with c7:
+                with c6:
                     bc1, bc2 = st.columns(2)
                     if bc1.button("🚨 Risk", key=f"risk_{h['symbol']}", use_container_width=True):
                         show_exit_risk_dialog(h)
@@ -513,58 +504,32 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with tab_watch:
         st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
         
-        def render_watchlist_grid(items, title, color_code, show_target=False, total_budget=10000000):
+        def render_watchlist_grid(items, title, color_code):
             st.markdown(f"#### {title}")
             
-            target_weight = 1.0 / len(items) if items else 0
-            target_budget = total_budget * target_weight
-            
-            if show_target:
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 2, 1.5, 1.5, 1.5, 1.5, 1.5])
-                c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
-                c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-                c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-                c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
-                c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
-                c6.markdown("<div class='grid-header'>권장수량</div>", unsafe_allow_html=True)
-                c7.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
-            else:
-                c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-                c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
-                c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-                c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-                c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
-                c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
-                c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
+            c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
+            c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
+            c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
+            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
+            c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
+            c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
+            c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
             
             for idx, w in enumerate(items):
                 curr = w.get('current_price', 0)
                 
-                if show_target:
-                    target_shares = int(target_budget // curr) if curr > 0 else 0
-                    c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 2, 1.5, 1.5, 1.5, 1.5, 1.5])
-                    c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
-                    c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
-                    c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
-                    c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
-                    c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
-                    c6.markdown(f"<div class='grid-row' style='color:#AEC1D4;'>{target_shares:,}주</div>", unsafe_allow_html=True)
-                    with c7:
-                        if st.button("📊 리포트", key=f"w_det_t_{w['symbol']}", use_container_width=True):
-                            show_detail_dialog(w, supabase)
-                else:
-                    c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-                    c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
-                    c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
-                    c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
-                    c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
-                    c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
-                    with c6:
-                        if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                            show_detail_dialog(w, supabase)
+                c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
+                c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
+                c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
+                c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
+                c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
+                c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
+                with c6:
+                    if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
+                        show_detail_dialog(w, supabase)
         
         if filtered_confirmed:
-            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464", show_target=True, total_budget=st.session_state.get('total_budget', 10000000))
+            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
             st.divider()
 
         if filtered_watchlist:
