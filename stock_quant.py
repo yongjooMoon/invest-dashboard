@@ -187,15 +187,17 @@ def live_evaluate_stock(symbol):
     return df, fund, factor_score, gates
 
 # ══════════════════════════════════════════
-# [Component] Popover & Shared Renderers
+# [Component] Dialog Popups & Shared Renderers
 # ══════════════════════════════════════════
-def render_exit_risk_content(h, supabase):
-    """(다이얼로그 아님) st.popover 내부에 그려지는 세련된 좌표 기준 팝업"""
+@st.dialog("🚨 Exit Risk 상세 진단")
+def show_exit_risk_dialog(h, supabase):
+    """DB에서 가격을 로드하여 실제 ATR 및 MA20 기반의 위험도(Bar)를 동적으로 그려주는 팝업"""
     curr = h.get("current_price", 0)
     entry = h.get("entry_price", curr)
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
 
+    # 1. DB 가격 로드 및 동적 리스크 계산
     df = load_price_from_db(supabase, h['symbol'])
     ts_risk = 0.0
     ma_risk = 0.0
@@ -208,57 +210,71 @@ def render_exit_risk_content(h, supabase):
         atr20 = tr.rolling(20).mean().iloc[-1]
         ma20 = df['Close'].iloc[-20:].mean()
 
-        entry_date = pd.to_datetime(h.get('entry_date', now_kst().strftime("%Y-%m-%d")))
+        try:
+            entry_date_str = h.get('entry_date', now_kst().strftime("%Y-%m-%d"))
+            entry_date = pd.to_datetime(entry_date_str).tz_localize(None)
+        except:
+            entry_date = now_kst().replace(tzinfo=None)
+
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
         df_held = df[df.index >= entry_date]
         highest_close = df_held['Close'].max() if not df_held.empty else curr
 
+        # Trailing Stop Risk 계산
         trailing_stop = highest_close - (2.5 * atr20)
         if curr > 0 and trailing_stop > 0:
             ts_dist = curr - trailing_stop
+            # 15% 하락 여유를 0% risk로 산정
             ts_risk = max(0, min(100, 100 - (ts_dist / (curr * 0.15) * 100)))
 
+        # MA20 Break Risk 계산
         if curr > 0 and ma20 > 0:
             ma_dist = curr - ma20
+            # 10% 하락 여유를 0% risk로 산정
             ma_risk = max(0, min(100, 100 - (ma_dist / (curr * 0.10) * 100)))
 
+    # 2. 종합 리스크 및 색상 판별
     exit_risk = calculate_exit_risk(curr, entry, stop)
     risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
     badge_text = f"High {exit_risk}%" if exit_risk >= 70 else f"Mid {exit_risk}%" if exit_risk >= 40 else f"Low {exit_risk}%"
     pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
 
+    # 3. HTML 렌더링 (동적 Bar 반영)
     html = f"""
-    <div style="background-color:#191F28; padding:5px; border-radius:8px; min-width: 250px;">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+    <div style="background-color:#191F28; padding:20px; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
             <div>
-                <div style="color:#fff; font-size:16px; font-weight:bold;">{h['name']}</div>
-                <div style="font-size:11px; color:#8B95A1;">Current <b>₩{curr:,.0f}</b> &nbsp;·&nbsp; Stop <b>₩{stop:,.0f}</b></div>
+                <div style="color:#fff; font-size:18px; font-weight:bold; margin-bottom:4px;">{h['name']}</div>
+                <div style="font-size:13px; color:#8B95A1;">Current <b>₩{curr:,.0f}</b> &nbsp;·&nbsp; Stop <b>₩{stop:,.0f}</b></div>
             </div>
-            <div style="background-color:#333; color:{risk_color}; padding:4px 8px; border-radius:4px; font-weight:bold; font-size:11px;">{badge_text}</div>
+            <div style="background-color:#333; color:{risk_color}; padding:6px 10px; border-radius:6px; font-weight:bold; font-size:13px;">{badge_text}</div>
         </div>
 
-        <div style="font-size:10px; color:#8B95A1; margin-bottom:5px; font-weight:bold;">OVERALL EXIT PROXIMITY</div>
-        <div style="background-color:#333; border-radius:4px; height:12px; margin-bottom:15px; position:relative;">
-            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:4px;"></div>
-            <div style="position:absolute; top:0; left:0; width:100%; text-align:center; font-size:10px; line-height:12px; color:#fff; font-weight:bold;">{exit_risk}%</div>
+        <div style="font-size:11px; color:#8B95A1; margin-bottom:8px; font-weight:bold;">OVERALL EXIT PROXIMITY</div>
+        <div style="background-color:#333; border-radius:6px; height:16px; margin-bottom:20px; position:relative;">
+            <div style="background-color:{risk_color}; width:{exit_risk}%; height:100%; border-radius:6px;"></div>
+            <div style="position:absolute; top:0; left:0; width:100%; text-align:center; font-size:11px; line-height:16px; color:#fff; font-weight:bold;">{exit_risk}%</div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; font-size:11px; color:#AEC1D4; margin-bottom:5px;">
-            <span>Trailing Stop</span><span style="font-weight:bold;">{ts_risk:.1f}%</span>
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:#AEC1D4; margin-bottom:6px;">
+            <span>Trailing Stop (ATR)</span><span style="font-weight:bold;">{ts_risk:.1f}%</span>
         </div>
-        <div style="background-color:#333; border-radius:4px; height:6px; margin-bottom:12px;">
+        <div style="background-color:#333; border-radius:4px; height:8px; margin-bottom:15px;">
             <div style="background-color:#AEC1D4; width:{ts_risk}%; height:100%; border-radius:4px;"></div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; font-size:11px; color:#AEC1D4; margin-bottom:5px;">
-            <span>Trend Break</span><span style="font-weight:bold;">{ma_risk:.1f}%</span>
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:#AEC1D4; margin-bottom:6px;">
+            <span>Trend Break (MA20)</span><span style="font-weight:bold;">{ma_risk:.1f}%</span>
         </div>
-        <div style="background-color:#333; border-radius:4px; height:6px; margin-bottom:20px;">
+        <div style="background-color:#333; border-radius:4px; height:8px; margin-bottom:25px;">
             <div style="background-color:#AEC1D4; width:{ma_risk}%; height:100%; border-radius:4px;"></div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; font-size:12px; color:#8B95A1; border-top:1px solid #333; padding-top:12px;">
-            <span>Entry &nbsp;&nbsp;<b style="color:#fff; font-size:13px;">₩{entry:,.0f}</b></span>
-            <span>P&L &nbsp;&nbsp;<b style="color:{pnl_color}; font-size:13px;">{ret:+.2f}%</b></span>
+        <div style="display:flex; justify-content:space-between; font-size:13px; color:#8B95A1; border-top:1px solid #333; padding-top:15px;">
+            <span>Entry &nbsp;&nbsp;<b style="color:#fff; font-size:15px;">₩{entry:,.0f}</b></span>
+            <span>P&L &nbsp;&nbsp;<b style="color:{pnl_color}; font-size:15px;">{ret:+.2f}%</b></span>
         </div>
     </div>
     """
@@ -424,6 +440,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
     filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
+    # 트리거 변수 초기화 (탭 내부 버튼 클릭 감지용)
+    dialog_trigger = None
+    dialog_payload = None
+
     tab_port, tab_watch, tab_hist, tab_search = st.tabs([
         f"Portfolio ({len(holdings)})", 
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})", 
@@ -444,7 +464,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with tab_port:
         total_capital = sum([h.get("current_price", 0) for h in holdings])
         with st.container(border=True):
-            st.caption("현재 포트폴리오 평가 총액 (보유종목 1주 기준 합산액)")
+            st.caption("현재 포트폴리오 보유종목 1주 기준 평가 합산액")
             st.markdown(f"## {total_capital:,.0f} 원")
 
         st.markdown(f"#### Holdings ({len(holdings)})")
@@ -478,12 +498,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 
                 with c6:
                     bc1, bc2 = st.columns(2)
-                    with bc1:
-                        with st.popover("🚨 Risk", use_container_width=True):
-                            render_exit_risk_content(h, supabase)
-                    with bc2:
-                        if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                            show_detail_dialog(h, supabase)
+                    if bc1.button("🚨 Risk", key=f"risk_{h['symbol']}", use_container_width=True):
+                        dialog_trigger = "exit_risk"
+                        dialog_payload = h
+                    if bc2.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
+                        dialog_trigger = "detail"
+                        dialog_payload = h
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
 
@@ -564,7 +584,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
                 with c6:
                     if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                        show_detail_dialog(w, supabase)
+                        # 탭 내에서 직접 다이얼로그 함수를 호출하는 대신 트리거로 전달
+                        st.session_state['w_dialog_payload'] = w
+
+            if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
+                # 우회 호출: 버튼 루프에서 설정한 값을 확인 후 분기
+                pass
         
         if filtered_confirmed:
             render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
@@ -647,3 +672,16 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     if fund: sel.update(fund)
                     st.divider()
                     render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=factor_score, gates=gates)
+
+    # ══════════════════════════════════════════
+    # [Dialog Execution Layer] 에러 방지를 위해 탭 외부에서 팝업 렌더링
+    # ══════════════════════════════════════════
+    if dialog_trigger == "exit_risk" and dialog_payload:
+        show_exit_risk_dialog(dialog_payload, supabase)
+    elif dialog_trigger == "detail" and dialog_payload:
+        show_detail_dialog(dialog_payload, supabase)
+        
+    if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
+        payload = st.session_state['w_dialog_payload']
+        st.session_state['w_dialog_payload'] = None # Clear immediately
+        show_detail_dialog(payload, supabase)
