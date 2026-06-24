@@ -111,10 +111,8 @@ def render_detailed_report_content(sel, df_price=None, fund=None, apex=None, hel
         c1.metric("종합 랭킹 스코어", f"{sel.get('factor_score', 0):.2f}점")
         c2.metric("생존 필터 통과", f"{sel.get('total_pass', 0)} / 6")
 
-        if 'entry_price' in sel and sel['entry_price'] > 0:
-            st.info(f"💡 **권장 진입가 (Entry Cost)**: {sel['entry_price']:,.0f}원 (눌림목 지지선)")
-        else:
-            st.info("💡 실시간 퀀트 데이터에 기반하여 생성된 리포트입니다.")
+        # 권장 진입가 표시 제거 요청 반영
+        st.info("💡 실시간 퀀트 데이터에 기반하여 생성된 리포트입니다.")
 
     with c_gauge:
         fig = go.Figure()
