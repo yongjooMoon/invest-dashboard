@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import FinanceDataReader as fdr
-import numpy as np
+
 from quant_core import (
     load_price_from_db, load_screening_result,
     HARD_GATES, SOFT_GATES, now_kst, fetch_naver_fundamental
@@ -41,10 +41,10 @@ def load_krx_list():
         if "종목코드" in krx.columns: krx = krx.rename(columns={"종목코드": "Symbol"})
         if "Name" not in krx.columns and "종목명" in krx.columns: krx = krx.rename(columns={"종목명": "Name"})
         if "Marcap" not in krx.columns and "시가총액" in krx.columns: krx = krx.rename(columns={"시가총액": "Marcap"})
-
+        
         krx = krx.dropna(subset=["Symbol", "Name"])
         krx["SearchStr"] = krx["Name"].astype(str) + " (" + krx["Symbol"].astype(str) + ")"
-
+        
         if "Marcap" in krx.columns:
             return krx[["Symbol", "Name", "SearchStr", "Marcap"]]
         return krx[["Symbol", "Name", "SearchStr"]]
@@ -62,8 +62,8 @@ def calculate_exit_risk(curr, entry, stop):
 
 def format_marcap(marcap_100m):
     """시가총액을 1000억 이상일 경우 조/억 단위로 변환"""
-    if marcap_100m is None or pd.isna(marcap_100m) or marcap_100m == 0:
-        return "0억"
+    if marcap_100m is None or pd.isna(marcap_100m) or marcap_100m == 0: 
+        return "N/A"
     try:
         marcap_100m = float(marcap_100m)
         if marcap_100m >= 10000:
@@ -75,15 +75,15 @@ def format_marcap(marcap_100m):
         else:
             return f"{int(marcap_100m):,}억"
     except:
-        return "0억"
+        return "N/A"
 
 def get_naver_financials_fallback(symbol):
-    """네이버 펀더멘털 누락 방지를 위한 비상용 직접 스크래핑 (ROE, 부채비율 강제 추출)"""
+    """네이버 펀더멘털 누락 방지를 위한 비상용 직접 스크래핑"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={symbol}"
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-
+        
         table = soup.select_one("div.cop_analysis table")
         roe, debt_ratio = None, None
         if table:
@@ -92,13 +92,13 @@ def get_naver_financials_fallback(symbol):
                 if not th: continue
                 label = th.text.strip()
                 tds = tr.select("td")
-
+                
                 vals = []
                 for td in tds[:4]:
                     clean = re.sub(r"[^\d.\-]", "", td.text)
                     if clean and clean != '-': vals.append(float(clean))
                     else: vals.append(None)
-
+                
                 valid_vals = [v for v in vals if v is not None]
                 if "ROE" in label and valid_vals:
                     roe = valid_vals[-1]
@@ -115,27 +115,26 @@ def live_evaluate_stock(symbol):
     """캐시에 없는 정보 실시간 수집 및 단일 퀀트 스코어 계산"""
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
     if df.empty: return None, {}, 0, {}
-
+    
     fund = fetch_naver_fundamental(symbol)
     if not fund: fund = {}
-
-    # 펀더멘털 누락 방지 비상 스크래퍼 가동
+    
     fallback = get_naver_financials_fallback(symbol)
     if fund.get('roe') is None and fallback.get('roe') is not None:
         fund['roe'] = fallback['roe']
     if fund.get('debt_ratio') is None and fallback.get('debt_ratio') is not None:
         fund['debt_ratio'] = fallback['debt_ratio']
-
+        
     curr = df['Close'].iloc[-1]
     ma20 = df['Close'].iloc[-20:].mean() if len(df)>=20 else curr
     ma60 = df['Close'].iloc[-60:].mean() if len(df)>=60 else curr
     high60 = df['Close'].tail(60).max() if len(df)>=60 else curr
     vol5 = df['Volume'].tail(5).mean() if len(df)>=5 else 1
     vol60 = df['Volume'].tail(60).mean() if len(df)>=60 else 1
-
+    
     c_net = fund.get('net_income_cur')
     p_net = fund.get('net_income_prev')
-
+    
     if c_net is not None and p_net is not None and p_net != 0:
         net_yoy = ((c_net - p_net)/abs(p_net)*100)
     else:
@@ -155,13 +154,13 @@ def live_evaluate_stock(symbol):
         'E': {'name': 'Liquidity', 'pass': (curr*vol5)/1e8 > 50, 'reason': f"{(curr*vol5)/1e8:,.0f}억"},
         'F': {'name': 'Profitability', 'pass': c_net is not None and c_net > 0, 'reason': f"{c_net or 0:,.0f}억"}
     }
-
+    
     pass_count = sum([1 for g in gates.values() if g['pass']])
     mom = ((curr-ma60)/ma60*100) if ma60 > 0 else 0
-
-    # 내 전략 단일 팩터 스코어 근사치 계산 (0~100점)
+    
+    # 팩터 스코어 근사치 계산
     factor_score = min(100, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
-
+    
     return df, fund, factor_score, gates
 
 # ══════════════════════════════════════════
@@ -173,10 +172,10 @@ def show_exit_risk_dialog(h):
     entry = h.get("entry_price", curr)
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
-
+    
     exit_risk = calculate_exit_risk(curr, entry, stop)
     risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
-
+    
     html = f"""
     <div style="background-color:#191F28; border:1px solid #333; border-radius:12px; padding:20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
         <h3 style="margin:0; color:#fff; font-size:18px;">{h['name']} 
@@ -207,7 +206,7 @@ def show_exit_risk_dialog(h):
     st.markdown(html, unsafe_allow_html=True)
 
 def render_single_gauge(score):
-    """내 전략용 단일 팩터 스코어 게이지"""
+    """단일 팩터 스코어 게이지"""
     fig = go.Figure()
     fig.add_trace(go.Indicator(
         mode = "gauge+number", value = score,
@@ -222,23 +221,22 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     """상세 리포트 화면을 그리는 핵심 렌더러"""
     curr = sel.get('current_price', 0)
     ret_1m = sel.get('ret_1m', 0)
-
+    
     st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('market', 'KOSPI')}</span>", unsafe_allow_html=True)
     st.markdown(f"<h1>{curr:,.0f} 원 <span style='font-size:20px; color:{'#F04452' if ret_1m>0 else '#3182F6'};'>{ret_1m:+.2f}% (1M)</span></h1>", unsafe_allow_html=True)
     st.divider()
 
     if factor_score is None: factor_score = sel.get('factor_score', 0)
     total_pass = sel.get('total_pass', sum([1 for g in gates.values() if g['pass']]) if gates else 0)
-
+    
     c_header, c_gauge = st.columns([3, 2])
     with c_header:
         st.markdown("### ⚡ Quant Scores")
         c1, c2 = st.columns(2)
         c1.metric("종합 랭킹 스코어", f"{factor_score:.2f}점")
         c2.metric("생존 필터 통과", f"{total_pass} / 6")
-
         st.info("💡 실시간 퀀트 데이터에 기반하여 생성된 리포트입니다.")
-
+            
     with c_gauge:
         render_single_gauge(factor_score)
 
@@ -260,7 +258,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
                 'E': {'name': 'Liquidity', 'pass': gates_data.get("Liquidity", {}).get("pass", False), 'reason': gates_data.get("Liquidity", {}).get("reason", "-")},
                 'F': {'name': 'Dynamic MDD', 'pass': gates_data.get("Dynamic MDD", {}).get("pass", False), 'reason': gates_data.get("Dynamic MDD", {}).get("reason", "-")}
             }
-
+            
     cols = st.columns(6)
     labels = ['A', 'B', 'C', 'D', 'E', 'F']
     for idx, (col, key) in enumerate(zip(cols, gates.keys())):
@@ -283,23 +281,26 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     if fund is None: fund = sel
     with st.container(border=True):
         r1, r2, r3, r4 = st.columns(4)
+        
         r1.caption("순이익 YoY")
         net_yoy = fund.get('net_income_yoy')
-        if pd.notna(net_yoy) and net_yoy is not None: r1.markdown(f"**{net_yoy:+.2f}%**")
+        if pd.notna(net_yoy) and net_yoy is not None and net_yoy != 0: r1.markdown(f"**{net_yoy:+.2f}%**")
         else: r1.markdown("**N/A**")
-
+        
         r2.caption("ROE (수익성)")
         roe = fund.get('roe')
-        if pd.notna(roe) and roe is not None: r2.markdown(f"**{roe:.2f}%**")
+        if pd.notna(roe) and roe is not None and roe != 0: r2.markdown(f"**{roe:.2f}%**")
         else: r2.markdown("**N/A**")
-
+        
         r3.caption("부채비율 (건전성)")
         debt = fund.get('debt_ratio')
-        if pd.notna(debt) and debt is not None: r3.markdown(f"**{debt:.1f}%**")
+        if pd.notna(debt) and debt is not None and debt != 0: r3.markdown(f"**{debt:.1f}%**")
         else: r3.markdown("**N/A**")
-
+        
         r4.caption("시가총액")
-        r4.markdown(f"**{format_marcap(fund.get('marcap_억', 0))}**")
+        marcap = fund.get('marcap_억')
+        if pd.notna(marcap) and marcap is not None and marcap != 0: r4.markdown(f"**{format_marcap(marcap)}**")
+        else: r4.markdown("**N/A**")
 
     st.markdown("### 📈 가격 차트 (Price History)")
     if df_price is not None and not df_price.empty:
@@ -310,22 +311,37 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner("실시간 최신 데이터를 동기화 중입니다..."):
-        df_price, fund, factor_score, gates = live_evaluate_stock(sel['symbol'])
+        # 1. 100점 오버라이드 버그 방지 (기존 팩터 스코어를 캐시에서 찾아 복구)
+        original_score = sel.get('factor_score', 0)
+        if original_score == 0:
+            c_list, w_list, _ = load_screening_result(supabase)
+            for item in c_list + w_list:
+                if item['symbol'] == sel['symbol']:
+                    original_score = item.get('factor_score', 0)
+                    sel['factor_score'] = original_score
+                    if 'filter_details' in item:
+                        sel['filter_details'] = item['filter_details']
+                    break
 
-        if fund:
-            sel.update(fund)
-        if gates:
+        df_price, live_fund, live_score, gates = live_evaluate_stock(sel['symbol'])
+        
+        if live_fund:
+            for k, v in live_fund.items():
+                if pd.notna(v) and v is not None and v != 0:
+                    sel[k] = v
+                    
+        if 'filter_details' not in sel and gates:
             sel['total_pass'] = sum([1 for g in gates.values() if g['pass']])
-
-        # 100점 미스매치 방지: 무조건 실시간 평가된 점수로 덮어쓰기
-        if factor_score > 0:
-            sel['factor_score'] = factor_score
-
+            
+        # 기존 스코어가 DB에 아예 없을 때만 라이브 스코어 반영
+        if original_score == 0 and live_score > 0:
+            sel['factor_score'] = live_score
+            
         if 'ret_1m' not in sel or sel['ret_1m'] == 0:
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=sel['factor_score'], gates=gates)
+    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel['factor_score'], gates=gates)
 
 
 # ══════════════════════════════════════════
@@ -336,15 +352,15 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
     confirmed, watchlist, last_updated = load_screening_result(supabase)
     holdings, trades, history = load_portfolio_data(supabase)
-
-    # Watchlist 탭에서 포트폴리오(holdings)에 편입된 종목을 배제
+    
+    # Watchlist 탭에서 포트폴리오(holdings)에 편입된 종목을 철저히 배제
     holding_syms = set([h['symbol'] for h in holdings])
     filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
     filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
     tab_port, tab_watch, tab_hist, tab_search = st.tabs([
-        f"Portfolio ({len(holdings)})",
-        f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
+        f"Portfolio ({len(holdings)})", 
+        f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})", 
         "매도 히스토리 (History)",
         "🔍 Stock Search"
     ])
@@ -357,24 +373,24 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     """, unsafe_allow_html=True)
 
     # ────────────────────────────────────────────────────────
-    # 탭 1: 포트폴리오
+    # 탭 1: 포트폴리오 (커스텀 표 구조 완벽 적용)
     # ────────────────────────────────────────────────────────
     with tab_port:
         c_budg, _ = st.columns([1, 2])
         with c_budg:
             total_budget = st.number_input("💰 포트폴리오 운용 예산 (원)", min_value=1000000, value=10000000, step=1000000)
-
+        
         total_capital = sum([h.get("current_price", 0) for h in holdings])
         with st.container(border=True):
             st.caption("현재 포트폴리오 보유종목 1주 기준 평가 합산액")
             st.markdown(f"## {total_capital:,.0f} 원")
 
         st.markdown(f"#### Holdings ({len(holdings)})")
-
+        
         if holdings:
             target_weight = 1.0 / len(holdings)
             target_budget_per_stock = total_budget * target_weight
-
+            
             c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 1.2, 1.2, 1.5, 1.2, 1.2, 2.5])
             c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
             c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
@@ -383,29 +399,29 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
             c6.markdown("<div class='grid-header'>권장수량</div>", unsafe_allow_html=True)
             c7.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
-
+            
             for h in holdings:
                 curr = h.get("current_price", 0)
                 entry = h.get("entry_price", curr)
                 stop = h.get("stop_price", entry * 0.85)
                 ret = h.get("return_rate", 0.0)
-
+                
                 exit_risk = calculate_exit_risk(curr, entry, stop)
                 target_shares = int(target_budget_per_stock // curr) if curr > 0 else 0
-
+                
                 c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 1.2, 1.2, 1.5, 1.2, 1.2, 2.5])
                 c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
                 c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
                 c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
-
+                
                 pnl_color = "#F04452" if ret > 0 else "#3182F6"
                 c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
-
+                
                 risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
                 c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
-
+                
                 c6.markdown(f"<div class='grid-row' style='color:#AEC1D4;'>{target_shares:,}주</div>", unsafe_allow_html=True)
-
+                
                 with c7:
                     bc1, bc2 = st.columns(2)
                     if bc1.button("🚨 Risk", key=f"risk_{h['symbol']}", use_container_width=True):
@@ -419,7 +435,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha)")
         end_date = now_kst()
         start_date = end_date - timedelta(days=30)
-
+        
         df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
         if not df_kospi.empty:
             df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
@@ -432,7 +448,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         df_hist = pd.DataFrame(history)
         if not df_hist.empty:
             df_hist['date'] = pd.to_datetime(df_hist['date'])
-            df_hist['date'] = df_hist['date'].dt.tz_localize(None)
+            df_hist['date'] = df_hist['date'].dt.tz_localize(None) 
             df_hist = df_hist.set_index('date')
             df_hist['port_cum'] = df_hist['portfolio_return'].cumsum()
             chart_df = chart_df.join(df_hist['port_cum'], how='left')
@@ -447,7 +463,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         k_cum_ret = chart_df['KOSPI'].iloc[-1] if not chart_df['KOSPI'].empty else 0.0
         k_day_ret = df_kospi['Close'].pct_change().iloc[-1] * 100 if not df_kospi.empty else 0.0
         alpha = cum_ret - k_cum_ret
-
+        
         col1, col2, col3 = st.columns(3)
         col1.metric("Portfolio 누적", f"{cum_ret:+.2f}%", f"Day {day_ret:+.2f}%")
         col2.metric("KOSPI 누적", f"{k_cum_ret:+.2f}%", f"Day {k_day_ret:+.2f}%")
@@ -465,17 +481,17 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
-    # 탭 2: Watchlist & Confirmed (진입가/포폴 배제, 커스텀 표 UI 적용)
+    # 탭 2: Watchlist & Confirmed
     # ────────────────────────────────────────────────────────
     with tab_watch:
         st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
-
+        
         def render_watchlist_grid(items, title, color_code, show_target=False, total_budget=10000000):
             st.markdown(f"#### {title}")
-
+            
             target_weight = 1.0 / len(items) if items else 0
             target_budget = total_budget * target_weight
-
+            
             if show_target:
                 c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 2, 1.5, 1.5, 1.5, 1.5, 1.5])
                 c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
@@ -493,10 +509,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
                 c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
                 c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
-
+            
             for idx, w in enumerate(items):
                 curr = w.get('current_price', 0)
-
+                
                 if show_target:
                     target_shares = int(target_budget // curr) if curr > 0 else 0
                     c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 2, 1.5, 1.5, 1.5, 1.5, 1.5])
@@ -507,7 +523,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
                     c6.markdown(f"<div class='grid-row' style='color:#AEC1D4;'>{target_shares:,}주</div>", unsafe_allow_html=True)
                     with c7:
-                        if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
+                        if st.button("📊 리포트", key=f"w_det_t_{w['symbol']}", use_container_width=True):
                             show_detail_dialog(w, supabase)
                 else:
                     c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
@@ -519,7 +535,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     with c6:
                         if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
                             show_detail_dialog(w, supabase)
-
+        
         if filtered_confirmed:
             render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464", show_target=True, total_budget=st.session_state.get('total_budget', 10000000))
             st.divider()
@@ -535,7 +551,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # ────────────────────────────────────────────────────────
     with tab_hist:
         st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리")
-
+        
         sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
         if sell_trades:
             for t in sell_trades:
@@ -543,11 +559,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 ret_pct = t.get('return_rate', 0.0)
                 entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
                 t['entry_price'] = entry
-                t['profit_amount'] = trade_p - entry
+                t['profit_amount'] = trade_p - entry 
 
             t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
             t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
-
+            
             styled_t = t_df.style.map(
                 lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
             ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
@@ -556,46 +572,45 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.info("최근 매도(이탈) 이력이 없습니다.")
 
     # ────────────────────────────────────────────────────────
-    # 탭 4: Stock Search (주식 조회) 콤보박스 및 빈칸 방어
+    # 탭 4: Stock Search (주식 조회)
     # ────────────────────────────────────────────────────────
     with tab_search:
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
-
+        
         krx_df = load_krx_list()
-
+        
         if krx_df.empty:
             st.error("⚠️ 종목 리스트를 불러오는데 실패했습니다. (API 일시적 장애)")
             options = [""]
         else:
             options = [""] + krx_df["SearchStr"].tolist()
-
+        
         col_search, _ = st.columns([2, 1])
         with col_search:
             selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
 
         if selected_stock_str:
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-
+            
             all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
-
+            
             if search_query in all_cached_stocks:
                 sel = all_cached_stocks[search_query]
                 df_price = load_price_from_db(supabase, search_query)
                 st.divider()
                 st.success("✅ 캐시된 분석 데이터를 로드했습니다.")
-
-                # 단일 스코어 기반 리포트 공통 렌더링 호출
+                
                 render_detailed_report_content(sel, df_price=df_price, factor_score=sel.get('factor_score', 0))
             else:
                 with st.spinner(f"'{selected_stock_str}' 실시간 퀀트 데이터 스크래핑 중..."):
                     df_price, fund, factor_score, gates = live_evaluate_stock(search_query)
-
+                    
                 if df_price is None or df_price.empty:
                     st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
                 else:
                     sel = {
-                        'symbol': search_query, 'name': selected_stock_str.split(" (")[0],
+                        'symbol': search_query, 'name': selected_stock_str.split(" (")[0], 
                         'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
                         'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
                     }
