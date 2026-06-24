@@ -5,9 +5,8 @@ import streamlit as st
 import pandas as pd
 import json
 from datetime import datetime, timedelta
-import plotly.graph_objects as go
-import FinanceDataReader as fdr
 import numpy as np
+import plotly.graph_objects as go
 from quant_core import (
     load_price_from_db, load_screening_result,
     HARD_GATES, SOFT_GATES, now_kst,
@@ -73,18 +72,23 @@ def _render_detail(sel: dict, supabase):
         else:
             st.info("가격 데이터 없음")
 
-def _build_table(results: list) -> pd.DataFrame:
+def _build_table(results: list, is_watchlist: bool = False) -> pd.DataFrame:
     rows = []
     for idx, r in enumerate(results):
-        rows.append({
+        row = {
             "순위": idx + 1,
             "종목명": r["name"],
             "절대필터": f"{r.get('total_pass',0)}/6",
             "랭킹점수": f"{r.get('factor_score',0):.2f}",
             "현재가": f"₩{r['current_price']:,}",
-            "💡진입제안": f"₩{r.get('entry_price', r['current_price']):,}",
-            "모멘텀": f"{r.get('momentum_score', 0):+.2f}%",
-        })
+        }
+
+        # Watchlist에서는 진입 제안가 제거
+        if not is_watchlist:
+            row["💡진입제안"] = f"₩{r.get('entry_price', r['current_price']):,}"
+
+        row["모멘텀"] = f"{r.get('momentum_score', 0):+.2f}%"
+        rows.append(row)
     return pd.DataFrame(rows)
 
 def load_portfolio_data(supabase):
@@ -100,13 +104,84 @@ def load_portfolio_data(supabase):
         pass
     return holdings, trades, history
 
+def render_portfolio_dashboard(holdings, trades, history):
+    # 1. 상단 총 계좌 요약 (이미지 스타일)
+    total_capital = sum([h.get("current_price", 0) * 100 for h in holdings]) if holdings else 0 # 100주 가정 더미 로직
+    seed_per_stock = total_capital // len(holdings) if holdings else 0
 
-def render_portfolio_and_alpha(supabase):
-    st.markdown("### 💼 퀀트 포트폴리오 & Alpha")
+    with st.container(border=True):
+        st.caption("Equal-Weight Min Seed")
+        st.markdown(f"## {total_capital:,.0f}원")
+        st.caption(f"종목당 {seed_per_stock:,.0f}원 기준 × {len(holdings)}종목")
 
-    holdings, trades, history = load_portfolio_data(supabase)
+    # 2. 보유 종목 (Holdings) 상세 테이블 (이미지 스타일 완벽 구현)
+    st.markdown(f"#### Holdings ({len(holdings)})")
 
-    # 1. 무조건 최근 30일치 KOSPI 데이터를 베이스로 가져옵니다.
+    if holdings:
+        h_data = []
+        for h in holdings:
+            curr = h.get("current_price", 0)
+            entry = h.get("entry_price", curr)
+            stop = h.get("stop_price", entry * 0.85) # 캐시에 없으면 기본 -15%
+            ret = h.get("return_rate", 0.0)
+
+            recent = h.get("recent_30d", [curr]*30)
+            day_pct = ((recent[-1] - recent[-2]) / recent[-2] * 100) if len(recent) > 1 else 0.0
+
+            try:
+                entry_date = pd.to_datetime(h.get("entry_date", now_kst().strftime("%Y-%m-%d")))
+                days_held = (now_kst() - entry_date).days
+            except:
+                entry_date = now_kst()
+                days_held = 0
+
+            # Exit Risk 진행률: (Stop/Current) * 100
+            exit_risk = min(100, max(0, int((stop / curr) * 100))) if curr > 0 else 0
+
+            h_data.append({
+                "Sector": f"🔴 {h.get('market', 'KOSPI')}",
+                "Stock": f"{h['name']} {h.get('market', '')}",
+                "Entry Price": entry,
+                "Current": curr,
+                "Entry Date": entry_date.strftime("%m/%d"),
+                "Days": f"D+{days_held}",
+                "P&L": ret,
+                "Stop": stop,
+                "Day %": day_pct,
+                "Recent 30d": recent,
+                "Fin": "🟢 양호",
+                "Exit Risk": exit_risk,
+                "Alerts": "—"
+            })
+
+        df_h = pd.DataFrame(h_data)
+
+        # Streamlit Column Config를 사용한 시각화 테이블 구성
+        st.dataframe(
+            df_h,
+            column_config={
+                "Sector": st.column_config.TextColumn("Sector"),
+                "Stock": st.column_config.TextColumn("Stock"),
+                "Entry Price": st.column_config.NumberColumn("Entry Price", format="%d"),
+                "Current": st.column_config.NumberColumn("Current", format="%d"),
+                "P&L": st.column_config.NumberColumn("P&L", format="%.2f%%"),
+                "Stop": st.column_config.NumberColumn("Stop", format="%d"),
+                "Day %": st.column_config.NumberColumn("Day %", format="%.2f%%"),
+                "Recent 30d": st.column_config.LineChartColumn("Recent 30d", y_min=0, y_max=None),
+                "Exit Risk": st.column_config.ProgressColumn("Exit Risk", min_value=0, max_value=100, format="%d%%"),
+                "Fin": st.column_config.TextColumn("Fin"),
+                "Alerts": st.column_config.TextColumn("Alerts")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.info("현재 보유 중인 종목이 없습니다.")
+
+def render_alpha_history(history):
+    st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha)")
+    import FinanceDataReader as fdr
+
     end_date = now_kst()
     start_date = end_date - timedelta(days=30)
 
@@ -119,17 +194,13 @@ def render_portfolio_and_alpha(supabase):
     chart_df = pd.DataFrame(index=df_kospi.index)
     chart_df['KOSPI'] = df_kospi['kospi_cum']
 
-    # 2. 포트폴리오 히스토리를 KOSPI 날짜에 매핑 (데이터가 없으면 0%로 시작)
     df_hist = pd.DataFrame(history)
     if not df_hist.empty:
         df_hist['date'] = pd.to_datetime(df_hist['date'])
         df_hist = df_hist.set_index('date')
         df_hist['port_cum'] = df_hist['portfolio_return'].cumsum()
 
-        # KOSPI 인덱스에 포트폴리오 수익률 결합 (ffill로 빈 날짜 채움)
         chart_df = chart_df.join(df_hist['port_cum'], how='left')
-
-        # pandas 최신 버전 에러 수정: fillna(method='ffill') -> ffill()
         chart_df['Portfolio'] = chart_df['port_cum'].ffill().fillna(0)
 
         cum_ret = chart_df['Portfolio'].iloc[-1]
@@ -142,12 +213,10 @@ def render_portfolio_and_alpha(supabase):
     k_cum_ret = chart_df['KOSPI'].iloc[-1] if not chart_df['KOSPI'].empty else 0.0
     k_day_ret = df_kospi['Close'].pct_change().iloc[-1] * 100 if not df_kospi.empty else 0.0
 
-    # 3. Alpha (초과 수익) 계산
     alpha = cum_ret - k_cum_ret
     chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
     chart_df['Alpha_Color'] = chart_df['Alpha'].apply(lambda x: '#00B464' if x >= 0 else '#F04452')
 
-    # 상단 요약 지표 (소수점 2자리 강제 적용)
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Portfolio 누적", f"{cum_ret:+.2f}%", f"Day {day_ret:+.2f}%")
@@ -156,16 +225,13 @@ def render_portfolio_and_alpha(supabase):
     with col3:
         st.metric("Alpha (초과수익)", f"{alpha:+.2f}%")
 
-    # 4. 커스텀 차트 렌더링 (영역 채우기 + 커스텀 툴팁)
     if not chart_df.empty:
         fig = go.Figure()
         custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
 
-        # Portfolio 선 (점 포함)
         fig.add_trace(go.Scatter(
             x=chart_df.index, y=chart_df['Portfolio'], mode='lines+markers', name='Portfolio',
-            line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)',
-            customdata=custom_data,
+            line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)', customdata=custom_data,
             hovertemplate=(
                 "<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br>"
                 "<span style='color:#3182F6;'>●</span> Portfolio &nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br>"
@@ -175,7 +241,6 @@ def render_portfolio_and_alpha(supabase):
             )
         ))
 
-        # KOSPI 선 (점선, 툴팁 스킵)
         fig.add_trace(go.Scatter(
             x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI',
             line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'
@@ -186,32 +251,55 @@ def render_portfolio_and_alpha(supabase):
             xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"),
             yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"),
             hoverlabel=dict(bgcolor="#191F28", font_color="white"),
-            margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-            showlegend=False
+            margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False
         )
+        if len(chart_df) == 1:
+            fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
+
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # 5. 보유 종목 / 매매 내역 탭 (콤마 및 소수점 2자리 포맷 강제)
-    st.markdown("#### 자동 매매 내역")
-    ptab1, ptab2 = st.tabs(["현재 보유 종목", "매매 이탈/진입 이력"])
-    with ptab1:
-        if holdings:
-            h_df = pd.DataFrame(holdings)[["name", "symbol", "entry_price", "current_price", "return_rate"]]
-            h_df.columns = ["종목명", "코드", "매수가", "현재가", "수익률(%)"]
+def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
+    st.title("📡 정통 퀀트 스크리너 & 오토 트레이딩")
 
-            styled_h = h_df.style.map(
-                lambda x: "color: #F04452" if x > 0 else "color: #3182F6" if x < 0 else "",
-                subset=["수익률(%)"]
-            ).format({
-                "매수가": "{:,.0f}",
-                "현재가": "{:,.0f}",
-                "수익률(%)": "{:,.2f}"
-            })
-            st.dataframe(styled_h, hide_index=True)
+    confirmed, watchlist, last_updated = load_screening_result(supabase)
+    holdings, trades, history = load_portfolio_data(supabase)
+
+    # 탭 구성 (UI 이미지와 동일한 탭 구조)
+    tab_port, tab_watch, tab_hist = st.tabs([
+        f"Portfolio ({len(holdings)})",
+        f"Watchlist ({len(watchlist)})",
+        "History"
+    ])
+
+    with tab_port:
+        render_portfolio_dashboard(holdings, trades, history)
+        st.divider()
+        render_alpha_history(history)
+
+    with tab_watch:
+        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
+
+        if confirmed:
+            st.success(f"🏆 신규 추격매수 확정 ({len(confirmed)}개)")
+            df_c = _build_table(confirmed, is_watchlist=False)
+            sel_c = st.dataframe(df_c, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
+            if sel_c and hasattr(sel_c, "selection") and sel_c.selection.rows:
+                st.divider()
+                _render_detail(confirmed[sel_c.selection.rows[0]], supabase)
+            st.divider()
+
+        st.caption(f"👀 추격매수 예비 돌파 종목 ({len(watchlist)}개) - 금액정보 제외")
+        if watchlist:
+            df_w = _build_table(watchlist, is_watchlist=True)
+            sel_w = st.dataframe(df_w, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
+            if sel_w and hasattr(sel_w, "selection") and sel_w.selection.rows:
+                st.divider()
+                _render_detail(watchlist[sel_w.selection.rows[0]], supabase)
         else:
-            st.info("현재 보유 중인 종목이 없습니다. (크론잡이 돌면 조건에 부합하는 종목이 자동 편입됩니다.)")
+            st.info("WatchList 종목이 없습니다.")
 
-    with ptab2:
+    with tab_hist:
+        st.markdown("#### 자동 매매 및 이탈 이력")
         if trades:
             t_df = pd.DataFrame(trades[::-1])[["trade_date", "type", "name", "trade_price", "return_rate", "reason"]]
             t_df.columns = ["일자", "구분", "종목명", "체결가", "손익(%)", "사유"]
@@ -223,56 +311,6 @@ def render_portfolio_and_alpha(supabase):
                 "체결가": "{:,.0f}",
                 "손익(%)": "{:,.2f}"
             })
-            st.dataframe(styled_t, hide_index=True)
+            st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
             st.info("최근 매매 이력이 없습니다.")
-
-def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    st.title("📡 퀀트 스크리너 (Strict Chase Momentum)")
-    st.caption("돌파 및 거래량 급증 확인 후 추격매수 · 20일선 이탈 시 자동 매도 시뮬레이션")
-
-    with st.expander("📚 전략 설계: 10개 강제 추출 폐지 및 진짜 추격매수 필터", expanded=False):
-        st.markdown("""
-- **[무조건 10개 추출 폐지]**: 강력한 추격매수 기준에 부합하지 않으면 **단 1개의 종목도 추천하지 않습니다.**
-- **[절대 방어선 6종목]**: 
-  - 기본 생존: 성장성 / MDD 방어 / 유동성
-  - **추격매수(Chase)**: `정배열 (현재가 > 20MA > 60MA)`, `고점돌파 (최근 두달 고점의 90% 이상)`, `거래량폭증 (장기 대비 1.5배 이상)`
-- **[이탈 로직]**:
-  - `포트폴리오(History)` 탭에서 매일 14:30 기준 20일 이평선(추세)이 깨지거나 리스크(-15%) 초과 시 자동 매도로 기록됩니다.
-        """)
-
-    confirmed, watchlist, last_updated = load_screening_result(supabase)
-
-    # 1. 탭 구성 (WatchList 옆에 포트폴리오 히스토리 탭 추가)
-    tab_conf, tab_watch, tab_port = st.tabs([
-        f"🏆 확정 선별 ({len(confirmed)}개)",
-        f"👀 WatchList ({len(watchlist)}개)",
-        "💼 포트폴리오 & 히스토리"
-    ])
-
-    with tab_conf:
-        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
-        if not confirmed:
-            st.warning("현재 추격매수(Chase Momentum) 6대 조건을 모두 통과한 종목이 0개입니다. 무리한 진입을 피하세요.")
-        else:
-            st.success(f"엄격한 추격매수 조건을 통과한 {len(confirmed)}개 종목이 선별되었습니다.")
-            df_c = _build_table(confirmed)
-            sel_c = st.dataframe(df_c, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
-            if sel_c and hasattr(sel_c, "selection") and sel_c.selection.rows:
-                st.divider()
-                _render_detail(confirmed[sel_c.selection.rows[0]], supabase)
-
-    with tab_watch:
-        if not watchlist:
-            st.info("WatchList 종목이 없습니다.")
-        else:
-            st.caption("추격매수 6조건 중 4개 이상 충족 (예비 돌파 종목)")
-            df_w = _build_table(watchlist)
-            sel_w = st.dataframe(df_w, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
-            if sel_w and hasattr(sel_w, "selection") and sel_w.selection.rows:
-                st.divider()
-                _render_detail(watchlist[sel_w.selection.rows[0]], supabase)
-
-    with tab_port:
-        # 포트폴리오와 알파 차트를 이 탭에 렌더링
-        render_portfolio_and_alpha(supabase)
