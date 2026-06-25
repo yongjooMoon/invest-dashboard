@@ -5,7 +5,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-from datetime import timedelta
+import requests
+import re
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import FinanceDataReader as fdr
 
@@ -68,6 +71,52 @@ def format_marcap(marcap_100m):
     except:
         return "N/A"
 
+def get_ui_financial_extras(symbol, fund):
+    """quant_core.py의 원래 스크래퍼가 가져오지 않는 UI 리포트 전용 지표들을 보완"""
+    try:
+        url = f"https://finance.naver.com/item/main.naver?code={symbol}"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        table = soup.select_one("div.cop_analysis table")
+        if table:
+            for tr in table.select("tbody tr"):
+                th = tr.select_one("th")
+                if not th: continue
+                label = th.text.strip()
+                tds = tr.select("td")
+                vals = []
+                for td in tds:
+                    clean = re.sub(r"[^\d.\-]", "", td.text)
+                    if clean and clean != '-': vals.append(float(clean))
+                    else: vals.append(None)
+                
+                valid_vals = [v for v in vals if v is not None]
+                if not valid_vals: continue
+                recent_val = valid_vals[-1]
+
+                if "영업이익률" in label and fund.get('op_margin') is None: fund['op_margin'] = recent_val
+                elif "ROA" in label and fund.get('roa') is None: fund['roa'] = recent_val
+                elif "PER" in label and fund.get('per') is None: fund['per'] = recent_val
+                elif "PBR" in label and fund.get('pbr') is None: fund['pbr'] = recent_val
+
+        if fund.get('marcap_억') is None:
+            marcap_elem = soup.select_one("#_market_sum")
+            if marcap_elem:
+                txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
+                if '조' in txt:
+                    parts = txt.split('조')
+                    jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
+                    eok_str = re.sub(r'\D', '', parts[1]) if len(parts)>1 else ''
+                    eok = int(eok_str) if eok_str else 0
+                    fund['marcap_억'] = jo * 10000 + eok
+                else:
+                    eok_str = re.sub(r'\D', '', txt)
+                    fund['marcap_억'] = int(eok_str) if eok_str else 0
+    except:
+        pass
+    return fund
+
 def live_evaluate_stock(supabase, symbol, name=""):
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
     if df.empty: return None, {}, 0, {}
@@ -75,33 +124,51 @@ def live_evaluate_stock(supabase, symbol, name=""):
     # 1. DB에서 캐싱된 펀더멘털 데이터 조회
     fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
-
+    
     # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목)
     required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억']
     needs_update = not fund or any(fund.get(k) is None for k in required_keys)
-
+    
     # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
     if needs_update:
-        scraped_fund = fetch_naver_fundamental(symbol)
+        scraped_fund = fetch_naver_fundamental(symbol) # core 원본 함수 호출
         for k, v in scraped_fund.items():
             if v is not None:
                 fund[k] = v
-
+        
+        # UI 리포트에 보여주기 위한 전용 데이터 보완 스크래핑
+        fund = get_ui_financial_extras(symbol, fund)
+    
         if fund:
             try:
                 save_fundamental_to_db(supabase, symbol, name, fund)
             except Exception as e:
-                print(f"DB 저장 오류 (DB 스키마에 신규 컬럼이 추가되었는지 확인하세요): {e}")
+                print(f"DB 저장 오류 (DB 스키마에 신규 컬럼 추가 필요 시 무시됨): {e}")
 
-    # 3. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
+    # 3. 누락되었던 YoY (전년동기대비 성장률) 리포트 출력을 위한 보완 계산
+    c_net = fund.get('net_income_cur')
+    p_net = fund.get('net_income_prev')
+    if c_net is not None and p_net is not None and p_net != 0:
+        fund['net_income_yoy'] = ((c_net - p_net) / abs(p_net)) * 100
+        
+    c_rev = fund.get('revenue_cur')
+    p_rev = fund.get('revenue_prev')
+    if c_rev is not None and p_rev is not None and p_rev != 0:
+        fund['revenue_yoy'] = ((c_rev - p_rev) / abs(p_rev)) * 100
+
+    c_op = fund.get('op_profit_cur')
+    if fund.get('op_margin') is None and c_op is not None and c_rev:
+        fund['op_margin'] = (c_op / c_rev) * 100
+
+    # 4. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
     metrics = calc_quant_metrics(df, fund)
-
+    
     if "ma20" not in metrics or metrics.get("ma20", 0) == 0:
         return df, fund, 0, {}
 
     curr = df['Close'].iloc[-1]
 
-    # 4. quant_core.py의 절대 조건 6가지와 완벽하게 동일한 조건식 적용
+    # 5. quant_core.py의 절대 조건 6가지와 완벽하게 동일한 조건식 적용
     f_growth = metrics["growth_composite"] > 0
     f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
     f_liq    = metrics["liquidity_20d"] >= 50
@@ -119,8 +186,8 @@ def live_evaluate_stock(supabase, symbol, name=""):
     }
 
     pass_count = sum([1 for g in gates.values() if g['pass']])
-
-    # 5. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
+    
+    # 6. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
     mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
     net_yoy = metrics.get("net_yoy", 0)
     factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
@@ -238,11 +305,11 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
         gates_data = sel.get("filter_details", {})
         if not gates_data or "Growth Composite" not in gates_data:
             gates = {
-                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'},
+                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'}, 
                 'B': {'name': 'Dynamic MDD', 'pass': False, 'reason': '-'},
-                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'},
+                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'}, 
                 'D': {'name': 'Trend Alignment', 'pass': False, 'reason': '-'},
-                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'},
+                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'}, 
                 'F': {'name': 'Volume Surge', 'pass': False, 'reason': '-'}
             }
         else:
