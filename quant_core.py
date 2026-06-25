@@ -7,6 +7,7 @@ quant_core.py
 1. 억지로 10개 채우기 완전 폐지: 절대 조건 미달 시 0개 반환
 2. 진짜 추격매수 조건 도입 (Trend, Breakout, Volume Surge)
 3. 스코어(Ranking)는 생존 종목들의 상대평가용으로만 사용
+4. 펀더멘털(Fundamental) 스크래퍼 강화 및 빈값 통과 버그(>=0) 차단
 """
 
 import json, re, time
@@ -49,16 +50,6 @@ PREFILTER_TVOL_억   = 50
 # 확정/워치리스트 필터 기준 (절대 기준)
 CONFIRM_FILTER_MIN  = 6     # 6개 강력한 추격매수 조건 ALL PASS
 WATCHLIST_FILTER_MIN= 4     # 최소 4개 이상 통과시 관심종목
-
-# UI 표시용 Gate 정의
-HARD_GATES = [
-    ("Growth Composite", None), ("Dynamic MDD", None), ("Liquidity", None),
-    ("Trend Alignment", None), ("Price Breakout", None), ("Volume Surge", None)
-]
-SOFT_GATES = [
-    ("Growth Rank", None), ("Momentum Rank", None), ("Breakout Rank", None),
-    ("Volume Rank", None), ("Supply Rank", None)
-]
 
 # ══════════════════════════════════════════
 # [A] 유니버스 사전 필터링 & [B] 일봉 DB (유지)
@@ -111,6 +102,113 @@ def load_price_from_db(supabase, symbol: str) -> pd.DataFrame:
         return df.dropna(subset=["Close"])
     except: return pd.DataFrame()
 
+def fetch_dart_financial(corp_code: str, dart_api_key: str, year: int = None) -> dict:
+    if year is None: year = now_kst().year - 1
+    url = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
+    result = {"roe": None, "debt_ratio": None, "op_profit": None, "net_income": None, "revenue": None, "eps": None}
+    for reprt_code in ["11011", "11012"]:
+        try:
+            res = requests.get(url, params={"crtfc_key": dart_api_key, "corp_code": corp_code, "bsns_year": str(year), "reprt_code": reprt_code, "fs_div": "CFS"}, timeout=10).json()
+            if res.get("status") != "000": continue
+            for item in res.get("list", []):
+                acnt, val_raw = item.get("account_nm", ""), _parse_num(item.get("thstrm_amount", "0"))
+                val_억 = val_raw / 1e8
+                if "영업이익" in acnt and "영업이익률" not in acnt and result["op_profit"] is None: result["op_profit"] = val_억
+                if "당기순이익" in acnt and result["net_income"] is None: result["net_income"] = val_억
+                if "매출액" in acnt and result["revenue"] is None: result["revenue"] = val_억
+                if "ROE" in acnt and result["roe"] is None: result["roe"] = val_raw
+                if "부채비율" in acnt and result["debt_ratio"] is None: result["debt_ratio"] = val_raw
+            break
+        except: pass
+    return result
+
+def fetch_naver_fundamental(symbol: str) -> dict:
+    """네이버 펀더멘털 종합 수집 (누락 방지 및 상세 리포트 지표 추가)"""
+    fund = {}
+    try:
+        url = f"https://finance.naver.com/item/main.naver?code={symbol}"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        table = soup.select_one("div.cop_analysis table")
+        if table:
+            for tr in table.select("tbody tr"):
+                th = tr.select_one("th")
+                if not th: continue
+                label = th.text.strip()
+                tds = tr.select("td")
+
+                vals = []
+                for td in tds:
+                    clean = re.sub(r"[^\d.\-]", "", td.text)
+                    if clean and clean != '-': vals.append(float(clean))
+                    else: vals.append(None)
+
+                valid_vals = [v for v in vals if v is not None]
+                recent_val = valid_vals[-1] if valid_vals else None
+                prev_val = valid_vals[-2] if len(valid_vals) > 1 else None
+
+                if "매출액" in label:
+                    fund['revenue_cur'] = recent_val
+                    fund['revenue_prev'] = prev_val
+                elif "영업이익" in label and "영업이익률" not in label:
+                    fund['op_profit_cur'] = recent_val
+                    fund['op_profit_prev'] = prev_val
+                elif "당기순이익" in label or ("순이익" in label and "순이익률" not in label):
+                    fund['net_income_cur'] = recent_val
+                    fund['net_income_prev'] = prev_val
+                elif "영업이익률" in label: fund['op_margin'] = recent_val
+                elif "순이익률" in label: fund['net_margin'] = recent_val
+                elif "ROE" in label: fund['roe'] = recent_val
+                elif "ROA" in label: fund['roa'] = recent_val
+                elif "부채비율" in label: fund['debt_ratio'] = recent_val
+                elif "PER" in label: fund['per'] = recent_val
+                elif "PBR" in label: fund['pbr'] = recent_val
+                elif "배당수익률" in label or "시가배당률" in label: fund['dividend_yield'] = recent_val
+                elif "EPS" in label:
+                    fund['eps_cur'] = recent_val
+                    fund['eps_prev'] = prev_val
+
+        # 시가총액 추가 스크래핑
+        marcap_elem = soup.select_one("#_market_sum")
+        if marcap_elem:
+            txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
+            if '조' in txt:
+                parts = txt.split('조')
+                jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
+                eok_str = re.sub(r'\D', '', parts[1]) if len(parts)>1 else ''
+                eok = int(eok_str) if eok_str else 0
+                fund['marcap_억'] = jo * 10000 + eok
+            else:
+                eok_str = re.sub(r'\D', '', txt)
+                fund['marcap_억'] = int(eok_str) if eok_str else 0
+
+    except: pass
+    return fund
+
+def load_fundamental_from_db(supabase, symbol: str) -> dict | None:
+    try:
+        res = supabase.table(TBL_FUNDA).select("*").eq("symbol", symbol).execute()
+        if res.data and not is_expired(res.data[0].get("updated_at",""), FUNDA_TTL_SEC): return res.data[0]
+    except: pass
+    return None
+
+def save_fundamental_to_db(supabase, symbol: str, name: str, data: dict):
+    supabase.table(TBL_FUNDA).upsert({
+        "symbol": symbol, "name": name,
+        "roe": data.get("roe"), "debt_ratio": data.get("debt_ratio"),
+        "op_profit_cur": data.get("op_profit_cur"), "op_profit_prev": data.get("op_profit_prev"),
+        "net_income_cur": data.get("net_income_cur"), "net_income_prev": data.get("net_income_prev"),
+        "revenue_cur": data.get("revenue_cur"), "revenue_prev": data.get("revenue_prev"),
+        "foreign_net_buy": data.get("foreign_net_buy"), "institute_net_buy": data.get("institute_net_buy"),
+        "eps_cur": data.get("eps_cur"), "eps_prev": data.get("eps_prev"),
+        "per": data.get("per"), "pbr": data.get("pbr"),
+        "op_margin": data.get("op_margin"), "net_margin": data.get("net_margin"),
+        "roa": data.get("roa"), "dividend_yield": data.get("dividend_yield"),
+        "marcap_억": data.get("marcap_억"),
+        "updated_at": now_kst_str(),
+    }).execute()
+
 def upsert_daily_rows(supabase, symbol: str, name: str, rows: list):
     if rows: supabase.table(TBL_DAILY).upsert([{**r, "symbol": symbol, "name": name} for r in rows], on_conflict="symbol,date").execute()
 
@@ -122,7 +220,7 @@ def trim_old_rows(supabase, symbol: str):
     except: pass
 
 # ══════════════════════════════════════════
-# [C] 펀더멘털
+# [C] 펀더멘털 스크래핑 (업그레이드 적용)
 # ══════════════════════════════════════════
 def _parse_num(txt) -> float | None:
     if not txt: return None
@@ -152,29 +250,45 @@ def fetch_dart_financial(corp_code: str, dart_api_key: str, year: int = None) ->
     return result
 
 def fetch_naver_fundamental(symbol: str) -> dict:
-    result = {"roe": None, "debt_ratio": None, "op_profit_cur": None, "op_profit_prev": None, "net_income_cur": None, "net_income_prev": None, "revenue_cur": None, "revenue_prev": None}
+    """네이버 펀더멘털 종합 수집 (누락 방지)"""
+    fund = {"roe": None, "debt_ratio": None, "op_profit_cur": None, "op_profit_prev": None, "net_income_cur": None, "net_income_prev": None, "revenue_cur": None, "revenue_prev": None}
     try:
-        soup = BeautifulSoup(requests.get(f"https://finance.naver.com/item/main.naver?code={symbol}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8).content, "html.parser")
+        url = f"https://finance.naver.com/item/main.naver?code={symbol}"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+
         table = soup.select_one("div.cop_analysis table")
         if table:
             for tr in table.select("tbody tr"):
                 th = tr.select_one("th")
                 if not th: continue
-                label, tds = th.text.strip(), tr.select("td")
-                valid_vals = [v for v in [_parse_num(td.text) for td in (tds[:4] if len(tds) >= 4 else tds)] if v is not None]
-                if not valid_vals: continue
-                cur_val, prev_val = valid_vals[-1], valid_vals[-2] if len(valid_vals) >= 2 else None
-                if "매출액" in label: result["revenue_prev"], result["revenue_cur"] = prev_val, cur_val
-                elif "영업이익" in label and "영업이익률" not in label: result["op_profit_prev"], result["op_profit_cur"] = prev_val, cur_val
-                elif "당기순이익" in label or "순이익" in label: result["net_income_prev"], result["net_income_cur"] = prev_val, cur_val
-                elif "ROE" in label: result["roe"] = cur_val
-        for th in soup.find_all("th"):
-            if "부채비율" in th.text:
-                valid_vals = [_parse_num(td.text) for td in th.find_parent("tr").select("td")[:4]]
-                if valid_vals: result["debt_ratio"] = valid_vals[-1]
-                break
+                label = th.text.strip()
+                tds = tr.select("td")
+
+                vals = []
+                for td in tds:
+                    clean = re.sub(r"[^\d.\-]", "", td.text)
+                    if clean and clean != '-': vals.append(float(clean))
+                    else: vals.append(None)
+
+                valid_vals = [v for v in vals if v is not None]
+                recent_val = valid_vals[-1] if valid_vals else None
+                prev_val = valid_vals[-2] if len(valid_vals) > 1 else None
+
+                if "매출액" in label:
+                    fund['revenue_cur'] = recent_val
+                    fund['revenue_prev'] = prev_val
+                elif "영업이익" in label and "영업이익률" not in label:
+                    fund['op_profit_cur'] = recent_val
+                    fund['op_profit_prev'] = prev_val
+                elif "당기순이익" in label or ("순이익" in label and "순이익률" not in label):
+                    fund['net_income_cur'] = recent_val
+                    fund['net_income_prev'] = prev_val
+                elif "ROE" in label: fund['roe'] = recent_val
+                elif "부채비율" in label: fund['debt_ratio'] = recent_val
+
     except: pass
-    return result
+    return fund
 
 def load_fundamental_from_db(supabase, symbol: str) -> dict | None:
     try:
@@ -226,6 +340,7 @@ def calc_quant_metrics(df: pd.DataFrame, fund: dict) -> dict:
     def safe_yoy(c, p):
         if c is None or p is None or p == 0: return 0.0
         return (c - p) / abs(p) * 100
+
     metrics["net_yoy"] = safe_yoy(fund.get("net_income_cur"), fund.get("net_income_prev"))
     op_yoy = safe_yoy(fund.get("op_profit_cur"), fund.get("op_profit_prev"))
     rev_yoy = safe_yoy(fund.get("revenue_cur"), fund.get("revenue_prev"))
@@ -250,7 +365,7 @@ def calc_quant_metrics(df: pd.DataFrame, fund: dict) -> dict:
     metrics["ma20"] = close.iloc[-20:].mean()
     metrics["ma60"] = close.iloc[-60:].mean()
 
-    # 5. Price Breakout (60일 신고가 근접성 - 돌파 매매 핵심)
+    # 5. Price Breakout (60일 신고가 근접성)
     metrics["high_60d"] = close.iloc[-60:].max()
 
     # 6. Volume Surge (거래량 급증)
@@ -281,14 +396,13 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
         curr_price = int(df["Close"].iloc[-1])
 
         # 절대 조건 6가지 (강력한 추격매수 로직)
-        f_growth = metrics["growth_composite"] >= 0 # 적자지속 등 불량기업 제외
-        f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"] # 폭락주 잡기 방지
-        f_liq    = metrics["liquidity_20d"] >= 50 # 유동성 50억 이상 (강화)
-
-        # 💡 추격매수 핵심 로직
-        f_trend  = (curr_price > metrics["ma20"]) and (metrics["ma20"] > metrics["ma60"]) # 완전 정배열
-        f_break  = curr_price >= (metrics["high_60d"] * 0.90) # 최근 두달 고점의 90% 이상 위치 (강한 놈만 잡는다)
-        f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5) # 단기 거래량이 장기 평균 대비 50% 이상 폭증
+        # 버그 픽스: 0.0 (누락/정체)일 때 >=0 으로 무조건 통과되는 문제 방지 (> 0 으로 엄격 적용)
+        f_growth = metrics["growth_composite"] > 0
+        f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
+        f_liq    = metrics["liquidity_20d"] >= 50
+        f_trend  = (curr_price > metrics["ma20"]) and (metrics["ma20"] > metrics["ma60"])
+        f_break  = curr_price >= (metrics["high_60d"] * 0.90)
+        f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5)
 
         pass_count = sum([f_growth, f_mdd, f_liq, f_trend, f_break, f_vol])
 
@@ -320,8 +434,8 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
 
     c_df = pd.DataFrame([c["metrics"] for c in candidates])
 
+    # 상대평가 랭킹으로 단일 팩터 스코어 생성
     s_growth = c_df["growth_composite"].rank(pct=True, na_option='bottom') * 20
-    # 가격이 고가에 얼마나 근접했는지 랭킹
     s_break  = (c_df["high_60d"] / c_df["ma20"]).rank(pct=True, ascending=False, na_option='bottom') * 30
     s_vol    = (c_df["vol_5d"] / c_df["vol_60d"]).rank(pct=True, na_option='bottom') * 30
     s_sd     = c_df["supply_demand"].rank(pct=True, na_option='bottom') * 20
@@ -334,26 +448,17 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
         c["net_income_yoy"] = round(c["metrics"]["net_yoy"], 2)
         c["momentum_score"] = round(((c["current_price"] - c["metrics"]["ma60"]) / c["metrics"]["ma60"]) * 100, 2)
         c["screened_at"] = now_kst_str()
-
         c["total_pass"] = c["pass_count"]
 
-        c["filter_details"]["Growth Rank"] = {"pass": True, "reason": f"상위 {100 - (s_growth.iloc[i]/20*100):.1f}%"}
-        c["filter_details"]["Momentum Rank"] = {"pass": True, "reason": f"-"}
-        c["filter_details"]["Breakout Rank"] = {"pass": True, "reason": f"상위 {100 - (s_break.iloc[i]/30*100):.1f}%"}
-        c["filter_details"]["Volume Rank"] = {"pass": True, "reason": f"상위 {100 - (s_vol.iloc[i]/30*100):.1f}%"}
-        c["filter_details"]["Supply Rank"] = {"pass": True, "reason": f"상위 {100 - (s_sd.iloc[i]/20*100):.1f}%"}
-
-        # 절대 조건: 10개 강제 추출 폐지. 조건 충족하는 종목만 편입
         if c["pass_count"] >= CONFIRM_FILTER_MIN:
             confirmed.append(c)
-            log_fn(f"  ✅ [Confirm] {c['name']} | Score: {c['factor_score']} | 진입가: {c['entry_price']:,}")
         elif c["pass_count"] >= WATCHLIST_FILTER_MIN:
             watchlist.append(c)
 
     confirmed.sort(key=lambda x: x["factor_score"], reverse=True)
     watchlist.sort(key=lambda x: x["factor_score"], reverse=True)
 
-    return confirmed, watchlist # 슬라이싱([:10]) 완전 제거
+    return confirmed, watchlist
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
