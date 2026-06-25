@@ -5,17 +5,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-import requests
-import re
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+from datetime import timedelta
 import plotly.graph_objects as go
 import FinanceDataReader as fdr
 
 from quant_core import (
     load_price_from_db, load_screening_result,
     now_kst, fetch_naver_fundamental,
-    load_fundamental_from_db, save_fundamental_to_db
+    load_fundamental_from_db, save_fundamental_to_db,
+    calc_quant_metrics
 )
 
 # ══════════════════════════════════════════
@@ -77,54 +75,54 @@ def live_evaluate_stock(supabase, symbol, name=""):
     # 1. DB에서 캐싱된 펀더멘털 데이터 조회
     fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
-    
-    # 2. 필수 데이터가 누락되었는지 확인 (새로 DB에 추가된 지표들 검사)
+
+    # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목)
     required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억']
     needs_update = not fund or any(fund.get(k) is None for k in required_keys)
-    
+
     # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
     if needs_update:
         scraped_fund = fetch_naver_fundamental(symbol)
         for k, v in scraped_fund.items():
             if v is not None:
                 fund[k] = v
-        
+
         if fund:
             try:
                 save_fundamental_to_db(supabase, symbol, name, fund)
             except Exception as e:
                 print(f"DB 저장 오류 (DB 스키마에 신규 컬럼이 추가되었는지 확인하세요): {e}")
 
+    # 3. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
+    metrics = calc_quant_metrics(df, fund)
+
+    if "ma20" not in metrics or metrics.get("ma20", 0) == 0:
+        return df, fund, 0, {}
+
     curr = df['Close'].iloc[-1]
-    ma20 = df['Close'].iloc[-20:].mean() if len(df)>=20 else curr
-    ma60 = df['Close'].iloc[-60:].mean() if len(df)>=60 else curr
-    high60 = df['Close'].tail(60).max() if len(df)>=60 else curr
-    vol5 = df['Volume'].tail(5).mean() if len(df)>=5 else 1
-    vol60 = df['Volume'].tail(60).mean() if len(df)>=60 else 1
 
-    c_net = fund.get('net_income_cur')
-    p_net = fund.get('net_income_prev')
-    c_rev = fund.get('revenue_cur')
-    p_rev = fund.get('revenue_prev')
-
-    net_yoy = ((c_net - p_net)/abs(p_net)*100) if c_net is not None and p_net is not None and p_net != 0 else 0.0
-    rev_yoy = ((c_rev - p_rev)/abs(p_rev)*100) if c_rev is not None and p_rev is not None and p_rev != 0 else 0.0
-
-    fund['net_income_yoy'] = net_yoy
-    fund['revenue_yoy'] = rev_yoy
+    # 4. quant_core.py의 절대 조건 6가지와 완벽하게 동일한 조건식 적용
+    f_growth = metrics["growth_composite"] > 0
+    f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
+    f_liq    = metrics["liquidity_20d"] >= 50
+    f_trend  = (curr > metrics["ma20"]) and (metrics["ma20"] > metrics["ma60"])
+    f_break  = curr >= (metrics["high_60d"] * 0.90)
+    f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5)
 
     gates = {
-        'A': {'name': 'Growth (YoY)', 'pass': net_yoy > 0, 'reason': f"{net_yoy:+.1f}%"},
-        'B': {'name': 'Trend (MA)', 'pass': curr > ma20 > ma60, 'reason': "정배열" if curr>ma20>ma60 else "역배열"},
-        'C': {'name': 'Breakout', 'pass': curr >= high60*0.9, 'reason': f"{curr/high60*100:.1f}%"},
-        'D': {'name': 'Volume Surge', 'pass': vol5 > vol60*1.5, 'reason': f"{vol5/vol60:.1f}x"},
-        'E': {'name': 'Liquidity', 'pass': (curr*vol5)/1e8 > 50, 'reason': f"{(curr*vol5)/1e8:,.0f}억"},
-        'F': {'name': 'Profitability', 'pass': c_net is not None and c_net > 0, 'reason': f"{c_net or 0:,.0f}억"}
+        'A': {'name': 'Growth Composite', 'pass': f_growth, 'reason': f"Comp {metrics['growth_composite']:+.1f}%"},
+        'B': {'name': 'Dynamic MDD', 'pass': f_mdd, 'reason': f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
+        'C': {'name': 'Liquidity', 'pass': f_liq, 'reason': f"{metrics['liquidity_20d']:,.0f}억"},
+        'D': {'name': 'Trend Alignment', 'pass': f_trend, 'reason': "Price > 20MA > 60MA" if f_trend else "추세 미달"},
+        'E': {'name': 'Price Breakout', 'pass': f_break, 'reason': f"고점대비 {(curr/metrics['high_60d'])*100:.1f}%" if metrics.get('high_60d') else "-"},
+        'F': {'name': 'Volume Surge', 'pass': f_vol, 'reason': f"Vol {metrics['vol_5d']/metrics['vol_60d']:.1f}x 급증" if metrics.get('vol_60d') else "-"}
     }
 
     pass_count = sum([1 for g in gates.values() if g['pass']])
-    mom = ((curr-ma60)/ma60*100) if ma60 > 0 else 0
 
+    # 5. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
+    mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
+    net_yoy = metrics.get("net_yoy", 0)
     factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
 
     return df, fund, factor_score, gates
@@ -240,18 +238,21 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
         gates_data = sel.get("filter_details", {})
         if not gates_data or "Growth Composite" not in gates_data:
             gates = {
-                'A': {'name': 'Growth (YoY)', 'pass': False, 'reason': '-'}, 'B': {'name': 'Trend (MA)', 'pass': False, 'reason': '-'},
-                'C': {'name': 'Breakout', 'pass': False, 'reason': '-'}, 'D': {'name': 'Volume Surge', 'pass': False, 'reason': '-'},
-                'E': {'name': 'Liquidity', 'pass': False, 'reason': '-'}, 'F': {'name': 'Dynamic MDD', 'pass': False, 'reason': '-'}
+                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'},
+                'B': {'name': 'Dynamic MDD', 'pass': False, 'reason': '-'},
+                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'},
+                'D': {'name': 'Trend Alignment', 'pass': False, 'reason': '-'},
+                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'},
+                'F': {'name': 'Volume Surge', 'pass': False, 'reason': '-'}
             }
         else:
             gates = {
-                'A': {'name': 'Growth (YoY)', 'pass': gates_data.get("Growth Composite", {}).get("pass", False), 'reason': gates_data.get("Growth Composite", {}).get("reason", "-")},
-                'B': {'name': 'Trend (MA)', 'pass': gates_data.get("Trend Alignment", {}).get("pass", False), 'reason': gates_data.get("Trend Alignment", {}).get("reason", "-")},
-                'C': {'name': 'Breakout', 'pass': gates_data.get("Price Breakout", {}).get("pass", False), 'reason': gates_data.get("Price Breakout", {}).get("reason", "-")},
-                'D': {'name': 'Volume Surge', 'pass': gates_data.get("Volume Surge", {}).get("pass", False), 'reason': gates_data.get("Volume Surge", {}).get("reason", "-")},
-                'E': {'name': 'Liquidity', 'pass': gates_data.get("Liquidity", {}).get("pass", False), 'reason': gates_data.get("Liquidity", {}).get("reason", "-")},
-                'F': {'name': 'Dynamic MDD', 'pass': gates_data.get("Dynamic MDD", {}).get("pass", False), 'reason': gates_data.get("Dynamic MDD", {}).get("reason", "-")}
+                'A': {'name': 'Growth Composite', 'pass': gates_data.get("Growth Composite", {}).get("pass", False), 'reason': gates_data.get("Growth Composite", {}).get("reason", "-")},
+                'B': {'name': 'Dynamic MDD', 'pass': gates_data.get("Dynamic MDD", {}).get("pass", False), 'reason': gates_data.get("Dynamic MDD", {}).get("reason", "-")},
+                'C': {'name': 'Liquidity', 'pass': gates_data.get("Liquidity", {}).get("pass", False), 'reason': gates_data.get("Liquidity", {}).get("reason", "-")},
+                'D': {'name': 'Trend Alignment', 'pass': gates_data.get("Trend Alignment", {}).get("pass", False), 'reason': gates_data.get("Trend Alignment", {}).get("reason", "-")},
+                'E': {'name': 'Price Breakout', 'pass': gates_data.get("Price Breakout", {}).get("pass", False), 'reason': gates_data.get("Price Breakout", {}).get("reason", "-")},
+                'F': {'name': 'Volume Surge', 'pass': gates_data.get("Volume Surge", {}).get("pass", False), 'reason': gates_data.get("Volume Surge", {}).get("reason", "-")}
             }
 
     cols = st.columns(6)
