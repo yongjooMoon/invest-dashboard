@@ -14,7 +14,8 @@ import FinanceDataReader as fdr
 
 from quant_core import (
     load_price_from_db, load_screening_result,
-    now_kst, fetch_naver_fundamental
+    now_kst, fetch_naver_fundamental,
+    load_fundamental_from_db, save_fundamental_to_db
 )
 
 # ══════════════════════════════════════════
@@ -69,77 +70,30 @@ def format_marcap(marcap_100m):
     except:
         return "N/A"
 
-def get_naver_financials_fallback(symbol):
-    fund = {}
-    try:
-        url = f"https://finance.naver.com/item/main.naver?code={symbol}"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-
-        table = soup.select_one("div.cop_analysis table")
-        if table:
-            for tr in table.select("tbody tr"):
-                th = tr.select_one("th")
-                if not th: continue
-                label = th.text.strip()
-                tds = tr.select("td")
-
-                vals = []
-                for td in tds:
-                    clean = re.sub(r"[^\d.\-]", "", td.text)
-                    if clean and clean != '-': vals.append(float(clean))
-                    else: vals.append(None)
-
-                valid_vals = [v for v in vals if v is not None]
-                recent_val = valid_vals[-1] if valid_vals else None
-                prev_val = valid_vals[-2] if len(valid_vals) > 1 else None
-
-                if "매출액" in label:
-                    fund['revenue_cur'] = recent_val
-                    fund['revenue_prev'] = prev_val
-                elif "영업이익" in label and "영업이익률" not in label:
-                    fund['op_profit_cur'] = recent_val
-                    fund['op_profit_prev'] = prev_val
-                elif "당기순이익" in label or ("순이익" in label and "순이익률" not in label):
-                    fund['net_income_cur'] = recent_val
-                    fund['net_income_prev'] = prev_val
-                elif "영업이익률" in label: fund['op_margin'] = recent_val
-                elif "순이익률" in label: fund['net_margin'] = recent_val
-                elif "ROE" in label: fund['roe'] = recent_val
-                elif "ROA" in label: fund['roa'] = recent_val
-                elif "부채비율" in label: fund['debt_ratio'] = recent_val
-                elif "PER" in label: fund['per'] = recent_val
-                elif "PBR" in label: fund['pbr'] = recent_val
-                elif "배당수익률" in label or "시가배당률" in label: fund['dividend_yield'] = recent_val
-
-        marcap_elem = soup.select_one("#_market_sum")
-        if marcap_elem:
-            txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
-            if '조' in txt:
-                parts = txt.split('조')
-                jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
-                eok_str = re.sub(r'\D', '', parts[1]) if len(parts)>1 else ''
-                eok = int(eok_str) if eok_str else 0
-                fund['marcap_억'] = jo * 10000 + eok
-            else:
-                eok_str = re.sub(r'\D', '', txt)
-                fund['marcap_억'] = int(eok_str) if eok_str else 0
-
-        return fund
-    except:
-        return fund
-
-def live_evaluate_stock(symbol):
+def live_evaluate_stock(supabase, symbol, name=""):
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
     if df.empty: return None, {}, 0, {}
 
-    fund = fetch_naver_fundamental(symbol)
+    # 1. DB에서 캐싱된 펀더멘털 데이터 조회
+    fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
-
-    fallback = get_naver_financials_fallback(symbol)
-    for k, v in fallback.items():
-        if v is not None:
-            fund[k] = v
+    
+    # 2. 필수 데이터가 누락되었는지 확인 (새로 DB에 추가된 지표들 검사)
+    required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억']
+    needs_update = not fund or any(fund.get(k) is None for k in required_keys)
+    
+    # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
+    if needs_update:
+        scraped_fund = fetch_naver_fundamental(symbol)
+        for k, v in scraped_fund.items():
+            if v is not None:
+                fund[k] = v
+        
+        if fund:
+            try:
+                save_fundamental_to_db(supabase, symbol, name, fund)
+            except Exception as e:
+                print(f"DB 저장 오류 (DB 스키마에 신규 컬럼이 추가되었는지 확인하세요): {e}")
 
     curr = df['Close'].iloc[-1]
     ma20 = df['Close'].iloc[-20:].mean() if len(df)>=20 else curr
@@ -158,8 +112,6 @@ def live_evaluate_stock(symbol):
 
     fund['net_income_yoy'] = net_yoy
     fund['revenue_yoy'] = rev_yoy
-
-    # KRX 데이터를 직접 호출하던 로직을 완전히 제거. (시가총액은 이미 네이버 스크래핑으로 획득)
 
     gates = {
         'A': {'name': 'Growth (YoY)', 'pass': net_yoy > 0, 'reason': f"{net_yoy:+.1f}%"},
@@ -230,16 +182,16 @@ def render_exit_risk_content(h, supabase):
 
     st.subheader(f"🚨 {h['name']} Risk 분석")
     st.write(f"**현재가:** ₩{curr:,.0f} &nbsp;|&nbsp; **손절가:** ₩{stop:,.0f}")
-    
+
     st.divider()
 
     st.markdown(f"**OVERALL EXIT PROXIMITY : {int(exit_risk)}%**")
     st.progress(int(exit_risk))
-    st.write("") 
+    st.write("")
 
     st.markdown(f"**Trailing Stop (ATR) : {int(ts_risk)}%**")
     st.progress(int(ts_risk))
-    st.write("") 
+    st.write("")
 
     st.markdown(f"**Trend Break (MA20) : {int(ma_risk)}%**")
     st.progress(int(ma_risk))
@@ -377,7 +329,8 @@ def show_detail_dialog(sel, supabase):
                         sel['filter_details'] = item['filter_details']
                     break
 
-        df_price, live_fund, live_score, gates = live_evaluate_stock(sel['symbol'])
+        # supabase 클라이언트를 넘겨 캐싱 기능 활성화
+        df_price, live_fund, live_score, gates = live_evaluate_stock(supabase, sel['symbol'], sel.get('name', ''))
 
         if live_fund:
             for k, v in live_fund.items():
@@ -643,8 +596,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
                 render_detailed_report_content(sel, df_price=df_price, factor_score=sel.get('factor_score', 0))
             else:
-                with st.spinner(f"'{selected_stock_str}' 실시간 퀀트 데이터 스크래핑 중..."):
-                    df_price, fund, factor_score, gates = live_evaluate_stock(search_query)
+                with st.spinner(f"'{selected_stock_str}' 실시간 퀀트 데이터 분석 중..."):
+                    # supabase 클라이언트를 넘겨 캐싱 기능 활성화
+                    df_price, fund, factor_score, gates = live_evaluate_stock(supabase, search_query, selected_stock_str.split(" (")[0])
 
                 if df_price is None or df_price.empty:
                     st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
