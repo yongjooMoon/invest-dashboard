@@ -33,23 +33,17 @@ def load_portfolio_data(supabase):
         pass
     return holdings, trades, history
 
-@st.cache_data(ttl=86400)
-def load_krx_list():
+@st.cache_data(ttl=3600)
+def load_krx_list_from_db(_supabase):
+    """UI에서 외부 API 호출을 배제하고 DB(크론이 수집한 캐시)에서 종목 마스터를 안전하게 로드"""
     try:
-        krx = fdr.StockListing("KRX")
-        if "Code" in krx.columns: krx = krx.rename(columns={"Code": "Symbol"})
-        if "종목코드" in krx.columns: krx = krx.rename(columns={"종목코드": "Symbol"})
-        if "Name" not in krx.columns and "종목명" in krx.columns: krx = krx.rename(columns={"종목명": "Name"})
-        if "Marcap" not in krx.columns and "시가총액" in krx.columns: krx = krx.rename(columns={"시가총액": "Marcap"})
-
-        krx = krx.dropna(subset=["Symbol", "Name"])
-        krx["SearchStr"] = krx["Name"].astype(str) + " (" + krx["Symbol"].astype(str) + ")"
-
-        if "Marcap" in krx.columns:
-            return krx[["Symbol", "Name", "SearchStr", "Marcap"]]
-        return krx[["Symbol", "Name", "SearchStr"]]
+        res = _supabase.table("quant_screening_cache").select("results").eq("id", 99).execute()
+        if res.data:
+            krx_data = json.loads(res.data[0]["results"])
+            return pd.DataFrame(krx_data)
     except Exception as e:
-        return pd.DataFrame(columns=["Symbol", "Name", "SearchStr", "Marcap"])
+        pass
+    return pd.DataFrame(columns=["Symbol", "Name", "SearchStr"])
 
 def calculate_exit_risk(curr, entry, stop):
     if curr <= 0 or entry <= 0 or stop <= 0: return 0
@@ -165,10 +159,7 @@ def live_evaluate_stock(symbol):
     fund['net_income_yoy'] = net_yoy
     fund['revenue_yoy'] = rev_yoy
 
-    krx_df = load_krx_list()
-    matched = krx_df[krx_df['Symbol'] == symbol]
-    if not matched.empty and 'Marcap' in matched.columns and fund.get('marcap_억', 0) == 0:
-        fund['marcap_억'] = matched.iloc[0]['Marcap'] / 1e8 if pd.notnull(matched.iloc[0]['Marcap']) else 0
+    # KRX 데이터를 직접 호출하던 로직을 완전히 제거. (시가총액은 이미 네이버 스크래핑으로 획득)
 
     gates = {
         'A': {'name': 'Growth (YoY)', 'pass': net_yoy > 0, 'reason': f"{net_yoy:+.1f}%"},
@@ -190,7 +181,7 @@ def live_evaluate_stock(symbol):
 # [Component] Popovers & Shared Renderers
 # ══════════════════════════════════════════
 def render_exit_risk_content(h, supabase):
-    """HTML 문법 충돌을 완전히 제거하고 Streamlit 네이티브 UI로 팝업을 구축합니다."""
+    """HTML을 사용하지 않고 Streamlit 네이티브 컴포넌트로 구현된 안전하고 깔끔한 팝업"""
     curr = h.get("current_price", 0)
     entry = h.get("entry_price", curr)
     stop = h.get("stop_price", entry * 0.85)
@@ -230,25 +221,28 @@ def render_exit_risk_content(h, supabase):
 
     exit_risk = calculate_exit_risk(curr, entry, stop)
 
-    # 🚨 강제 CSS로 popover 최소 너비 확보 (답답함 해소)
+    # 100% Native UI (HTML 충돌/에러 방지 및 시원한 가로 너비)
     st.markdown(
         """<style>
         div[data-testid="stPopoverBody"] { min-width: 350px !important; }
         </style>""", unsafe_allow_html=True
     )
 
-    # 순수 Streamlit UI 렌더링
     st.subheader(f"🚨 {h['name']} Risk 분석")
-    st.caption(f"**현재가:** ₩{curr:,.0f} &nbsp;|&nbsp; **손절가:** ₩{stop:,.0f}")
+    st.write(f"**현재가:** ₩{curr:,.0f} &nbsp;|&nbsp; **손절가:** ₩{stop:,.0f}")
+    
+    st.divider()
 
-    st.markdown(f"**OVERALL EXIT PROXIMITY : {exit_risk}%**")
-    st.progress(exit_risk / 100.0)
+    st.markdown(f"**OVERALL EXIT PROXIMITY : {int(exit_risk)}%**")
+    st.progress(int(exit_risk))
+    st.write("") 
 
-    st.markdown(f"**Trailing Stop (ATR) : {ts_risk:.1f}%**")
-    st.progress(ts_risk / 100.0)
+    st.markdown(f"**Trailing Stop (ATR) : {int(ts_risk)}%**")
+    st.progress(int(ts_risk))
+    st.write("") 
 
-    st.markdown(f"**Trend Break (MA20) : {ma_risk:.1f}%**")
-    st.progress(ma_risk / 100.0)
+    st.markdown(f"**Trend Break (MA20) : {int(ma_risk)}%**")
+    st.progress(int(ma_risk))
 
     st.divider()
     c1, c2 = st.columns(2)
@@ -407,7 +401,7 @@ def show_detail_dialog(sel, supabase):
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    st.title("📡 퀀트트레이딩 & 추격매수")
+    st.title("📡 정통 퀀트 스크리너 & 오토 트레이딩")
 
     confirmed, watchlist, last_updated = load_screening_result(supabase)
     holdings, trades, history = load_portfolio_data(supabase)
@@ -474,7 +468,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 with c6:
                     bc1, bc2 = st.columns(2)
                     with bc1:
-                        # 🚨 팝업 UI 에러 원천 차단: 네이티브 Streamlit 렌더링 방식 사용
+                        # 🚨 완전히 새로워진 네이티브 UI Popover
                         with st.popover("🚨 Risk", use_container_width=True):
                             render_exit_risk_content(h, supabase)
                     with bc2:
@@ -521,7 +515,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             chart_df['Portfolio'] = chart_df['sold_return'].cumsum()
 
             cum_ret = chart_df['Portfolio'].iloc[-1]
-            # 당일 실현 수익률
             day_ret = chart_df['sold_return'].iloc[-1]
         else:
             chart_df['Portfolio'] = 0.0
@@ -625,10 +618,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
-        krx_df = load_krx_list()
+        krx_df = load_krx_list_from_db(supabase)
 
         if krx_df.empty:
-            st.error("⚠️ 종목 리스트를 불러오는데 실패했습니다. (API 일시적 장애)")
+            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
             options = [""]
         else:
             options = [""] + krx_df["SearchStr"].tolist()
