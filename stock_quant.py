@@ -402,7 +402,7 @@ def show_detail_dialog(sel, supabase):
 
         if live_fund:
             for k, v in live_fund.items():
-                if pd.notna(v) and v is not None and v != 0:
+                if pd.notna(v) and v is not None:
                     sel[k] = v
 
         if 'filter_details' not in sel and gates:
@@ -653,29 +653,35 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
         if selected_stock_str:
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+            stock_name = selected_stock_str.split(" (")[0]
 
             all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
-            if search_query in all_cached_stocks:
-                sel = all_cached_stocks[search_query]
-                df_price = load_price_from_db(supabase, search_query)
-                st.divider()
-                st.success("✅ 캐시된 분석 데이터를 로드했습니다.")
+            with st.spinner(f"'{selected_stock_str}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
+                # 캐시된 종목이든 아니든 무조건 펀더멘털 데이터를 한 번 로드/보완하도록 변경
+                df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
 
-                render_detailed_report_content(sel, df_price=df_price, factor_score=sel.get('factor_score', 0))
+            if df_price is None or df_price.empty:
+                st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
             else:
-                with st.spinner(f"'{selected_stock_str}' 실시간 퀀트 데이터 분석 중..."):
-                    # supabase 클라이언트를 넘겨 캐싱 기능 활성화
-                    df_price, fund, factor_score, gates = live_evaluate_stock(supabase, search_query, selected_stock_str.split(" (")[0])
+                st.divider()
+                if search_query in all_cached_stocks:
+                    st.success("✅ 캐시된 스크리닝 랭킹과 최신 펀더멘털 데이터를 결합했습니다.")
+                    sel = all_cached_stocks[search_query]
+                    
+                    # 로드한 최신 펀더멘털 데이터를 캐시된 데이터에 병합 (N/A 오류 해결의 핵심)
+                    if live_fund:
+                        for k, v in live_fund.items():
+                            if pd.notna(v) and v is not None:
+                                sel[k] = v
 
-                if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=live_gates)
                 else:
+                    st.success("✅ 실시간 퀀트 분석 데이터를 로드했습니다.")
                     sel = {
-                        'symbol': search_query, 'name': selected_stock_str.split(" (")[0],
+                        'symbol': search_query, 'name': stock_name,
                         'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
                         'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
                     }
-                    if fund: sel.update(fund)
-                    st.divider()
-                    render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=factor_score, gates=gates)
+                    if live_fund: sel.update(live_fund)
+                    render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
