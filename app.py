@@ -32,14 +32,14 @@ if "current_menu" not in st.session_state:
 
 # --- [3. 로그인 전용 단일 UI] ---
 if not st.session_state.logged_in:
-    st.title("✨ 투자 자산 대시보드")
-    st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
+    # 불필요한 설명 및 여백 최소화
+    st.markdown("### ✨ 투자 자산 대시보드")
     
     # st.form을 사용하여 엔터(Enter) 키로 로그인(Submit) 가능하도록 구현
     with st.form("login_form"):
-        # UI에서 지저분한 안내 문구 제거
-        login_username = st.text_input("사용자 아이디 (Username)", key="login_id")
-        login_pw = st.text_input("비밀번호 (Password)", type="password")
+        # UI에서 지저분한 안내 문구/주석 완벽히 제거
+        login_username = st.text_input("아이디", key="login_id")
+        login_pw = st.text_input("비밀번호", type="password")
         
         submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
         
@@ -90,11 +90,21 @@ if not st.session_state.logged_in:
 
 # --- [4. 로그인 성공 후 프레임워크 가동 (Top Menu 구조)] ---
 
-# 상단 헤더 및 네비게이션 레이아웃 (버튼을 탭처럼 활용)
-header_cols = st.columns([2.5, 1.5, 1.5, 2, 1, 1])
+# 상단 여백 축소 및 콤팩트한 UI를 위한 CSS 주입
+st.markdown("""
+<style>
+    .block-container { padding-top: 1.5rem !important; padding-bottom: 1rem !important; }
+    .stButton>button { padding: 0.2rem 0.5rem !important; min-height: 38px !important; }
+    .user-text { text-align: right; font-size: 14px; margin-top: 8px; color: #4e5968; }
+</style>
+""", unsafe_allow_html=True)
+
+# 상단 헤더 및 네비게이션 레이아웃 (1줄로 이미지처럼 슬림하게 배치)
+# 비율: [타이틀, 메뉴1, 메뉴2, 빈공간(스페이서), 유저이름, API버튼, 로그아웃버튼]
+header_cols = st.columns([2.5, 1.5, 1.5, 4.0, 1.2, 0.9, 0.9])
 
 with header_cols[0]:
-    st.subheader("✨ 내부 투자 자산 데스크")
+    st.markdown("<h4 style='margin-top: 3px; margin-bottom: 0px;'>✨ 내부 투자 자산 데스크</h4>", unsafe_allow_html=True)
 
 with header_cols[1]:
     # 퀀트 메뉴 버튼 (활성화 시 색상 변경)
@@ -112,10 +122,12 @@ with header_cols[2]:
         st.session_state.current_view = "main"
         st.rerun()
 
-with header_cols[3]:
-    st.markdown(f"<div style='text-align: right; padding-top: 8px;'>👤 <b>{st.session_state.username}</b>님</div>", unsafe_allow_html=True)
+# header_cols[3]은 중앙을 띄워주는 스페이서(빈 공간) 역할을 합니다.
 
 with header_cols[4]:
+    st.markdown(f"<div class='user-text'>👤 <b>{st.session_state.username}</b>님</div>", unsafe_allow_html=True)
+
+with header_cols[5]:
     # admin 계정일 때만 API 설정 버튼 노출
     if st.session_state.username == "admin":
         is_api_view = st.session_state.current_view == "api_settings"
@@ -123,7 +135,7 @@ with header_cols[4]:
             st.session_state.current_view = "api_settings" if not is_api_view else "main"
             st.rerun()
 
-with header_cols[5]:
+with header_cols[6]:
     if st.button("로그아웃", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = None
