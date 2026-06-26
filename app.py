@@ -10,7 +10,39 @@ SUPABASE_URL = "https://unvcqrjzvtgtjovfyvow.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVudmNxcmp6dnRndGpvdmZ5dm93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1NDM5MjEsImV4cCI6MjA5NjExOTkyMX0.XWhOYvFlO3z0lVU57tIjQDbGVUFyHTv3niLsV2ZUeJ4"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.set_page_config(page_title="토스 스타일 퀀트 대시보드", page_icon="✨", layout="wide")
+# 초기 사이드바 상태를 확장으로 두되, CSS로 너비를 강제 축소
+st.set_page_config(page_title="토스 스타일 퀀트 대시보드", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
+
+# --- 슬림형 사이드바(Left Menu)를 위한 전역 CSS 주입 ---
+st.markdown("""
+<style>
+    /* 사이드바의 너비를 아주 얇게 강제 고정 (아이콘 전용 사이즈) */
+    section[data-testid="stSidebar"] {
+        width: 80px !important;
+        min-width: 80px !important;
+        max-width: 80px !important;
+        background-color: #f8f9fa; /* 약간의 배경색 */
+    }
+    
+    /* 사이드바 내부 여백 제거하여 버튼을 중앙으로 */
+    section[data-testid="stSidebar"] .block-container {
+        padding: 2rem 0.5rem !important;
+    }
+    
+    /* 버튼 텍스트(이모지) 크기 조절 */
+    section[data-testid="stSidebar"] .stButton > button {
+        font-size: 22px !important;
+        height: 50px !important;
+        padding: 0 !important;
+        border-radius: 12px !important;
+    }
+    
+    /* 상단 빈 여백 축소 */
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- [2. 세션 상태 초기화] ---
 if "logged_in" not in st.session_state:
@@ -88,39 +120,41 @@ if not st.session_state.logged_in:
                     st.error(f"시스템 데이터베이스 통신 장애: {str(e)}")
     st.stop()
 
-# --- [4. 로그인 성공 후 프레임워크 가동 (Left Menu 구조)] ---
+# --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
 
-# 좌측 사이드바 (Left Menu) 영역 구성
+# 글자 없이 이모지와 툴팁(help)만 사용하는 슬림한 사이드바
 with st.sidebar:
-    st.markdown(f"### 👤 {st.session_state.username}님")
-    st.caption("내부 투자 자산 데스크")
-    st.divider()
+    st.write("") # 상단 여백
     
-    # 퀀트 메뉴 버튼
+    # 1. 퀀트 메뉴 버튼
     is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
-    if st.button("📈 주식 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
+    if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
         st.session_state.current_menu = "quant"
         st.session_state.current_view = "main"
         st.rerun()
         
-    # 부동산 메뉴 버튼
+    st.write("") # 간격 띄우기
+    
+    # 2. 부동산 메뉴 버튼
     is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
-    if st.button("🏢 부동산 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
+    if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
         st.session_state.current_menu = "real_estate"
         st.session_state.current_view = "main"
         st.rerun()
         
-    # Admin 계정일 경우에만 API 설정 노출
+    # 3. Admin 계정일 경우에만 API 설정 아이콘 노출
     if st.session_state.username == "admin":
-        st.divider()
+        st.write("") # 간격 띄우기
         is_api_view = st.session_state.current_view == "api_settings"
-        if st.button("⚙️ API 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
+        if st.button("⚙️", help="시스템 공통 API 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
             st.session_state.current_view = "api_settings"
             st.rerun()
             
-    st.divider()
-    # 로그아웃 버튼
-    if st.button("🔓 로그아웃", use_container_width=True):
+    # 하단으로 버튼을 밀어내기 위한 빈 공간 확보
+    st.markdown("<div style='height: 50vh;'></div>", unsafe_allow_html=True)
+    
+    # 4. 로그아웃 버튼 (접속자 아이디 툴팁 포함)
+    if st.button("🔓", help=f"현재 접속자: {st.session_state.username}님\n(클릭 시 로그아웃)", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = None
         st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
