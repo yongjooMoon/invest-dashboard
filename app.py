@@ -1,6 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import hashlib
+import re
 import real_estate
 import stock_quant
 
@@ -11,7 +12,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="토스 스타일 퀀트 대시보드", page_icon="✨", layout="wide")
 
-# --- [2. 세션 상태 초기화 (부동산 + 한투 금융 + 네이버 뉴스 5대 키 라인 완비)] ---
+# --- [2. 세션 상태 초기화] ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -24,69 +25,99 @@ if "api_keys" not in st.session_state:
         "naver_id": "", 
         "naver_secret": ""
     }
+if "current_view" not in st.session_state:
+    st.session_state.current_view = "main"
 
 # --- [3. 로그인 전용 단일 UI] ---
 if not st.session_state.logged_in:
     st.title("✨ 투자 자산 대시보드")
     st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
     
-    login_username = st.text_input("사용자 아이디 (Username)")
-    login_pw = st.text_input("비밀번호 (Password)", type="password")
-    
-    if st.button("로그인", type="primary"):
-        if login_username.strip() == "" or login_pw.strip() == "":
-            st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
-        else:            
-            try:
-                # 커스텀 테이블(custom_users)에서 아이디와 해시 비밀번호가 일치하는지 조회
-                user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", login_pw).execute()
-                
-                if user_query.data:
-                    st.session_state.logged_in = True
-                    st.session_state.username = login_username
+    # st.form을 사용하여 엔터(Enter) 키로 로그인(Submit) 가능하도록 구현
+    with st.form("login_form"):
+        login_username = st.text_input("사용자 아이디 (Username - 영문/숫자만)", key="login_id")
+        login_pw = st.text_input("비밀번호 (Password)", type="password")
+        
+        submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
+        
+        if submitted:
+            # 한글 입력 방지 로직 (정규식 검사)
+            if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
+                st.error("🚨 아이디에는 한글을 입력할 수 없습니다. 영문과 숫자만 입력해 주세요.")
+            elif login_username.strip() == "" or login_pw.strip() == "":
+                st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
+            else:            
+                try:
+                    # 커스텀 테이블(custom_users)에서 아이디와 해시 비밀번호가 일치하는지 조회
+                    user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", login_pw).execute()
                     
-                    # 해당 계정의 5대 마스터 API 크레덴셜 정보 전면 로드
-                    user_keys = supabase.table("user_api_keys").select("*").eq("username", login_username).execute()
-                    if user_keys.data:
-                        st.session_state.api_keys = {
-                            "rtms_key": user_keys.data[0].get("rtms_key", ""),
-                            "app_key": user_keys.data[0].get("app_key", ""),
-                            "app_secret": user_keys.data[0].get("app_secret", ""),
-                            "naver_id": user_keys.data[0].get("naver_id", ""),
-                            "naver_secret": user_keys.data[0].get("naver_secret", "")
-                        }
+                    if user_query.data:
+                        st.session_state.logged_in = True
+                        st.session_state.username = login_username
+                        st.session_state.current_view = "main"
+                        
+                        # [구조 변경] 개별 유저 키가 아닌 'admin' 공통 마스터 API 크레덴셜 정보 로드
+                        admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+                        if admin_keys.data:
+                            st.session_state.api_keys = {
+                                "rtms_key": admin_keys.data[0].get("rtms_key", ""),
+                                "app_key": admin_keys.data[0].get("app_key", ""),
+                                "app_secret": admin_keys.data[0].get("app_secret", ""),
+                                "naver_id": admin_keys.data[0].get("naver_id", ""),
+                                "naver_secret": admin_keys.data[0].get("naver_secret", "")
+                            }
+                        else:
+                            # admin 키가 아예 없다면 초기 생성 (구조적 에러 방지)
+                            supabase.table("user_api_keys").insert({
+                                "username": "admin", 
+                                "rtms_key": "", 
+                                "app_key": "", 
+                                "app_secret": "",
+                                "naver_id": "",
+                                "naver_secret": ""
+                            }).execute()
+                        
+                        st.rerun()
                     else:
-                        # 레코드가 없다면 구조적 에러 방지를 위해 5대 키 공백 행 초기 주입
-                        supabase.table("user_api_keys").insert({
-                            "username": login_username, 
-                            "rtms_key": "", 
-                            "app_key": "", 
-                            "app_secret": "",
-                            "naver_id": "",
-                            "naver_secret": ""
-                        }).execute()
-                    
-                    st.success(f"🎉 인증 성공! {login_username}님 환영합니다.")
-                    st.rerun()
-                else:
-                    st.error("❌ 불허된 크레덴셜입니다. 아이디 또는 비밀번호를 다시 확인하세요.")
-            except Exception as e:
-                st.error(f"시스템 데이터베이스 통신 장애: {str(e)}")
+                        st.error("❌ 등록되지 않은 계정이거나 비밀번호가 일치하지 않습니다.")
+                except Exception as e:
+                    st.error(f"시스템 데이터베이스 통신 장애: {str(e)}")
     st.stop()
 
-# --- [4. 로그인 성공 후 프레임워크 가동] ---
-st.sidebar.markdown(f"👤 데스크 제어권: **{st.session_state.username}**")
-if st.sidebar.button("시스템 로그아웃", type="secondary"):
-    st.session_state.logged_in = False
-    st.session_state.username = None
-    st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-    st.rerun()
+# --- [4. 로그인 성공 후 프레임워크 가동 (Top Menu 구조)] ---
 
-menu = st.sidebar.radio("원하는 데스크를 선택하세요", ["⚙️ 내 API 키 자산 설정", "🏢 부동산 실거래가 스캔", "📈 주식 포트폴리오 퀀트"])
+# 상단 헤더 및 네비게이션 레이아웃
+header_col1, header_col2, header_col3, header_col4 = st.columns([5, 2, 1, 1])
 
-if menu == "⚙️ 내 API 키 자산 설정":
-    st.title("⚙️ 내 API 크레덴셜 관리")
-    st.markdown("사용자님의 고유 자산 데이터 연동을 위한 API 키들을 안전하게 보관합니다.")
+with header_col1:
+    st.subheader("✨ 내부 투자 자산 데스크")
+
+with header_col2:
+    st.markdown(f"<div style='text-align: right; padding-top: 15px;'>👤 <b>{st.session_state.username}</b>님</div>", unsafe_allow_html=True)
+
+with header_col3:
+    # admin 계정일 때만 API 설정 버튼 노출
+    if st.session_state.username == "admin":
+        if st.button("⚙️ API 설정", use_container_width=True):
+            st.session_state.current_view = "api_settings" if st.session_state.current_view != "api_settings" else "main"
+            st.rerun()
+
+with header_col4:
+    if st.button("로그아웃", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.username = None
+        st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+        st.session_state.current_view = "main"
+        st.rerun()
+
+st.divider()
+
+# --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
+
+if st.session_state.current_view == "api_settings" and st.session_state.username == "admin":
+    # API 키 자산 설정 (Admin 전용 공통 키 관리)
+    st.title("⚙️ 시스템 공통 API 크레덴셜 관리")
+    st.markdown("전체 시스템이 공통으로 사용하는 마스터 API 키를 설정합니다. (**Admin 전용**)")
     
     rtms = st.text_input("1. 국토교통부 실거래 API Key (Decoding)", value=st.session_state.api_keys["rtms_key"], type="password")
     a_key = st.text_input("2. 한국투자증권 오픈 API App Key (시세/수급용)", value=st.session_state.api_keys["app_key"])
@@ -94,11 +125,11 @@ if menu == "⚙️ 내 API 키 자산 설정":
     n_id = st.text_input("4. 네이버 오픈 API Client ID (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_id"])
     n_sec = st.text_input("5. 네이버 오픈 API Client Secret (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_secret"], type="password")
     
-    if st.button("크레덴셜 장부 업데이트", type="primary"):
+    if st.button("마스터 크레덴셜 업데이트", type="primary"):
         try:
-            # Supabase 원장에 5대 핵심 키 바인딩 데이터 Upsert 집행
+            # 개별 username이 아닌 'admin' 공통 원장에 반영
             supabase.table("user_api_keys").upsert({
-                "username": st.session_state.username,
+                "username": "admin",
                 "rtms_key": rtms,
                 "app_key": a_key,
                 "app_secret": a_sec,
@@ -106,12 +137,31 @@ if menu == "⚙️ 내 API 키 자산 설정":
                 "naver_secret": n_sec
             }).execute()
             st.session_state.api_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
-            st.success("5대 보안 자산 데이터가 테이블에 무결점 반영되었습니다.")
+            st.success("✅ 마스터 5대 보안 자산 데이터가 시스템에 무결점 반영되었습니다.")
         except Exception as e:
             st.error(f"저장 실패: {str(e)}")
+            
+    if st.button("← 메인으로 돌아가기"):
+        st.session_state.current_view = "main"
+        st.rerun()
 
-elif menu == "🏢 부동산 실거래가 스캔":
-    real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
+else:
+    # 메인 투자 대시보드 화면
+    # 수평 라디오 버튼으로 탭 효과 구현 (주식 퀀트가 기본 선택)
+    st.markdown("""
+    <style>
+        div.row-widget.stRadio > div{ flex-direction:row; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    menu = st.radio(
+        "메뉴를 선택하세요", 
+        ["📈 주식 포트폴리오 퀀트", "🏢 부동산 실거래가 스캔"], 
+        label_visibility="collapsed"
+    )
 
-elif menu == "📈 주식 포트폴리오 퀀트":
-    stock_quant.run_stock_quant_page(supabase, st.session_state.username)
+    if menu == "📈 주식 포트폴리오 퀀트":
+        stock_quant.run_stock_quant_page(supabase, st.session_state.username)
+
+    elif menu == "🏢 부동산 실거래가 스캔":
+        real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
