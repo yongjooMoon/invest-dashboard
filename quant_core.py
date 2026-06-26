@@ -81,7 +81,7 @@ def load_filtered_universe(marcap_min_억: int = PREFILTER_MARCAP_억, tvol_min_
     raw_df = pd.concat([kospi, kosdaq], ignore_index=True)
     raw_df = raw_df[raw_df["Symbol"].str.len() == 6].dropna(subset=["Symbol","Name"])
 
-    exclude_kw = ["ETF","ETN","스팩","리츠","우","REIT","인프라","선박"]
+    exclude_kw = ["ETF","ETN","스팩","리츠","REIT","인프라","선박"]
     mask_name = raw_df["Name"].str.contains("|".join(exclude_kw), na=False)
     mask_code = raw_df["Symbol"].str[-1] != "0"
     common = raw_df[~mask_name & ~mask_code].copy()
