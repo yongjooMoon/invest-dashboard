@@ -422,7 +422,7 @@ def show_detail_dialog(sel, supabase):
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    st.title("📡 정통 퀀트 스크리너 & 오토 트레이딩")
+    st.title("📡 퀀트투자")
 
     confirmed, watchlist, last_updated = load_screening_result(supabase)
     holdings, trades, history = load_portfolio_data(supabase)
