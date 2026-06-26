@@ -103,7 +103,7 @@ def get_ui_financial_extras(symbol, fund):
         if fund.get('marcap_억') is None:
             marcap_elem = soup.select_one("#_market_sum")
             if marcap_elem:
-                txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n')
+                txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
                 if '조' in txt:
                     parts = txt.split('조')
                     jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
@@ -431,11 +431,13 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
     filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
-    tab_port, tab_watch, tab_hist, tab_search = st.tabs([
+    # [핵심] 마지막에 📖 Algo Whitepaper 탭을 추가했습니다.
+    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
         "매도 히스토리 (History)",
-        "🔍 Stock Search"
+        "🔍 Stock Search",
+        "📖 Algo Whitepaper"
     ])
 
     st.markdown("""
@@ -465,28 +467,8 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 st.markdown("## 0 원")
                 st.caption("보유 중인 종목이 없습니다.")
 
-        # Holdings 타이틀 및 퀀트 설명 팝오버 (i 아이콘)
-        col_title, col_info, _ = st.columns([1.5, 0.5, 8.0])
-        with col_title:
-            st.markdown(f"<h4 style='margin-bottom:0; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
-        with col_info:
-            with st.popover("ℹ️"):
-                st.markdown("""
-                **🚀 주식을 사는 조건 (추격매수)**
-                1. **성장성**: 작년보다 돈을 더 잘 벌고 있는가?
-                2. **방어력**: 최근 심하게 넘어진(폭락한) 적이 없는가?
-                3. **유동성**: 시장에서 사람들이 많이 찾는 인기 주식인가?
-                4. **오르막길**: 주가가 계단(정배열)을 오르고 있는가?
-                5. **신기록**: 최근 3달 내 최고 기록을 깼는가? (돌파)
-                6. **관중폭발**: 갑자기 사는 사람들이 우르르 몰렸는가?
-
-                **🚨 주식을 파는 조건 (이탈/매도)**
-                1. **안전장치**: 너무 떨어지면 다치기 전에 자동 탈출 (동적 손절)
-                2. **미끄럼틀**: 오르막길이 끝나고 꺾이면 탈출 (추세붕괴)
-                3. **축하파티**: 수익이 +40% 나면 기분 좋게 챙기기 (익절)
-                """)
-
-        st.write("") # 약간의 간격 확보
+        # [수정] 불필요한 i 버튼 팝오버를 제거하고 깔끔한 타이틀만 남겼습니다.
+        st.markdown(f"<h4 style='margin-bottom:10px; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
 
         if holdings:
             c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
@@ -717,3 +699,55 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     }
                     if live_fund: sel.update(live_fund)
                     render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
+                    
+    # ────────────────────────────────────────────────────────
+    # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
+    # ────────────────────────────────────────────────────────
+    with tab_docs:
+        st.markdown("## 🧠 Chase Momentum Algorithm Whitepaper")
+        st.caption("초보자부터 전문가까지 모두가 쉽게 이해할 수 있는 정통 퀀트 추격매수 & 방어 전략 안내서입니다.")
+        st.divider()
+
+        st.markdown("### 🚀 매수 진입 6대 관문 (Entry Gates)")
+        st.markdown("""
+        **A. 성장성 (Growth Composite)**
+        > **"돈을 더 잘 벌고 있는가?"**
+        * 회사의 기초 체력을 봅니다. 단순히 흑자가 아니라, 매출, 영업이익, 순이익이 작년 동기 대비 얼마나 성장했는지 종합적으로 점수를 매깁니다. 기초가 부실한 회사는 처음부터 걸러냅니다.
+
+        **B. 방어력 (Dynamic MDD)**
+        > **"최근에 심하게 다친 적 없이 튼튼하게 버티고 있는가?"**
+        * 아무리 좋은 회사라도 롤러코스터처럼 고점 대비 심하게 폭락하는 종목은 피합니다. 주식마다 가지고 있는 변동성(ATR)을 계산해, 이 종목이 버틸 수 있는 최대 하락 폭을 넘어서 추락했다면 제외합니다.
+
+        **C. 유동성 (Liquidity)**
+        > **"시장에서 사람들이 많이 찾는 진짜 인기 주식인가?"**
+        * 내가 사고 싶을 때 사고, 팔고 싶을 때 팔 수 있어야 합니다. 최근 20일 동안 하루 평균 거래 대금이 50억 원을 넘는, 시장의 돈이 몰리는 핫한 종목들 사이에서만 싸웁니다.
+
+        **D. 추세 (Trend Alignment)**
+        > **"오르막길을 안정적으로 걷고 있는가?"**
+        * 주가가 미끄럼틀을 타고 내려가고 있는(역배열) 종목은 사지 않습니다. 현재 가격이 단기(20일) 평균 가격보다 위에 있고, 단기 평균 가격이 장기(60일) 평균 가격보다 위에 있는 '정배열' 상태의 상승 기류를 탄 종목만 고릅니다.
+
+        **E. 가격 돌파 (Price Breakout)**
+        > **"신기록을 세우며 천장을 뚫었는가?"**
+        * 최근 3개월(60일) 동안 가장 비쌌던 '최고 기록'의 90% 이상까지 다시 치고 올라온 종목을 잡습니다. 위에 있는 매물대(벽)를 뚫고 언제든 날아갈 폭발적인 에너지를 모은 선수만 뽑는 과정입니다.
+
+        **F. 수급 (Volume Surge)**
+        > **"관중들이 우르르 몰려오며 환호하고 있는가?"**
+        * 단순히 가격만 슬금슬금 오르는 게 아니라, 평소(60일 평균)보다 거래량이 1.5배 이상 '빵!' 터지는 순간이어야 합니다. 시장의 거대한 자금이 쏠리면서 모멘텀이 터졌다는 강력한 증거입니다.
+        """)
+        
+        st.divider()
+        
+        st.markdown("### 🚨 생존 매도 3대 원칙 (Exit Signals)")
+        st.markdown("""
+        **1. Trailing Stop (ATR 기반 동적 손절)**
+        > **"다치기 전에 치고 빠지는 최상위 안전장치"**
+        * 단순히 "-5% 떨어지면 판다"처럼 바보같이 고정된 비율을 쓰지 않습니다. 주식의 성격(변동성)을 파악해, 위아래로 심하게 흔들리는 종목은 넉넉하게, 얌전한 종목은 타이트하게 손절선을 잡습니다. 특히 주가가 오르면 손절선도 같이 따라 올라가서(Trailing) 이익을 철통같이 방어합니다.
+
+        **2. Trend Breakdown (추세 다중붕괴)**
+        > **"상승 엔진이 꺼졌음을 감지"**
+        * 오르막길을 가던 주가가 단기 이평선(10일, 20일) 아래로 뚫고 내려가고, 그 평균선들의 기울기마저 꺾여버리면(미끄럼틀 형성) 미련 없이 팔고 나옵니다. "아, 이제 상승하는 힘이 다 빠졌구나"라고 시스템이 냉정하게 판단합니다.
+
+        **3. Target Take-Profit (목표 달성)**
+        > **"승리를 챙기는 기분 좋은 축하 파티"**
+        * 수익률이 +40%에 도달하면 욕심을 멈추고 안전하게 팔아 지갑에 챙겨 넣습니다. 주식 시장에서 가장 어려운 '익절'을 기계적으로 수행하여 계좌를 우상향 시킵니다.
+        """)
