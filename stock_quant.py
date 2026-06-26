@@ -466,11 +466,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 st.caption("보유 중인 종목이 없습니다.")
 
         # Holdings 타이틀 및 퀀트 설명 팝오버 (i 아이콘)
-        col_title, col_info = st.columns([1.8, 8.2])
+        col_title, col_info, _ = st.columns([1.5, 0.5, 8.0])
         with col_title:
-            st.markdown(f"<h4 style='margin-bottom:0;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
+            st.markdown(f"<h4 style='margin-bottom:0; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
         with col_info:
-            with st.popover("ℹ️ 퀀트 원리 보기"):
+            with st.popover("ℹ️"):
                 st.markdown("""
                 **🚀 주식을 사는 조건 (추격매수)**
                 1. **성장성**: 작년보다 돈을 더 잘 벌고 있는가?
