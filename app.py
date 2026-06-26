@@ -32,12 +32,12 @@ if "current_menu" not in st.session_state:
 
 # --- [3. 로그인 전용 단일 UI] ---
 if not st.session_state.logged_in:
-    # 불필요한 설명 및 여백 최소화
-    st.markdown("### ✨ 투자 자산 대시보드")
+    # 불필요한 설명 및 타이틀 완벽히 제거
+    st.write("")
+    st.write("")
     
     # st.form을 사용하여 엔터(Enter) 키로 로그인(Submit) 가능하도록 구현
     with st.form("login_form"):
-        # UI에서 지저분한 안내 문구/주석 완벽히 제거
         login_username = st.text_input("아이디", key="login_id")
         login_pw = st.text_input("비밀번호", type="password")
         
@@ -94,54 +94,74 @@ if not st.session_state.logged_in:
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem !important; padding-bottom: 1rem !important; }
-    .stButton>button { padding: 0.2rem 0.5rem !important; min-height: 38px !important; }
-    .user-text { text-align: right; font-size: 14px; margin-top: 8px; color: #4e5968; }
+    .user-text { text-align: right; font-size: 14px; margin-top: 8px; color: #4e5968; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
 
-# 상단 헤더 및 네비게이션 레이아웃 (1줄로 이미지처럼 슬림하게 배치)
-# 비율: [타이틀, 메뉴1, 메뉴2, 빈공간(스페이서), 유저이름, API버튼, 로그아웃버튼]
-header_cols = st.columns([2.5, 1.5, 1.5, 4.0, 1.2, 0.9, 0.9])
+# 버튼 상태 식별
+is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
+is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
+is_api_view = st.session_state.current_view == "api_settings"
 
-with header_cols[0]:
-    st.markdown("<h4 style='margin-top: 3px; margin-bottom: 0px;'>✨ 내부 투자 자산 데스크</h4>", unsafe_allow_html=True)
-
-with header_cols[1]:
-    # 퀀트 메뉴 버튼 (활성화 시 색상 변경)
-    is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
-    if st.button("📈 주식 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
-        st.session_state.current_menu = "quant"
-        st.session_state.current_view = "main"
-        st.rerun()
-
-with header_cols[2]:
-    # 부동산 메뉴 버튼 (활성화 시 색상 변경)
-    is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
-    if st.button("🏢 부동산 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
-        st.session_state.current_menu = "real_estate"
-        st.session_state.current_view = "main"
-        st.rerun()
-
-# header_cols[3]은 중앙을 띄워주는 스페이서(빈 공간) 역할을 합니다.
-
-with header_cols[4]:
-    st.markdown(f"<div class='user-text'>👤 <b>{st.session_state.username}</b>님</div>", unsafe_allow_html=True)
-
-with header_cols[5]:
-    # admin 계정일 때만 API 설정 버튼 노출
-    if st.session_state.username == "admin":
-        is_api_view = st.session_state.current_view == "api_settings"
-        if st.button("⚙️ API", use_container_width=True, type="primary" if is_api_view else "secondary"):
+# Admin 여부에 따른 다이내믹 컬럼 분기 (화면 잘림 완벽 방지)
+if st.session_state.username == "admin":
+    # 텍스트 대신 앙증맞은 아이콘 버튼 사용
+    cols = st.columns([0.6, 0.6, 6.4, 1.2, 0.6, 0.6])
+    
+    with cols[0]:
+        if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
+            st.session_state.current_menu = "quant"
+            st.session_state.current_view = "main"
+            st.rerun()
+            
+    with cols[1]:
+        if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
+            st.session_state.current_menu = "real_estate"
+            st.session_state.current_view = "main"
+            st.rerun()
+            
+    with cols[3]:
+        st.markdown(f"<div class='user-text'>👤 {st.session_state.username}님</div>", unsafe_allow_html=True)
+        
+    with cols[4]:
+        if st.button("⚙️", help="API 자산 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
             st.session_state.current_view = "api_settings" if not is_api_view else "main"
             st.rerun()
+            
+    with cols[5]:
+        if st.button("🔓", help="시스템 로그아웃", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.username = None
+            st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+            st.session_state.current_view = "main"
+            st.rerun()
 
-with header_cols[6]:
-    if st.button("로그아웃", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.username = None
-        st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-        st.session_state.current_view = "main"
-        st.rerun()
+else:
+    # 일반 사용자 화면 레이아웃
+    cols = st.columns([0.6, 0.6, 7.0, 1.2, 0.6])
+    
+    with cols[0]:
+        if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
+            st.session_state.current_menu = "quant"
+            st.session_state.current_view = "main"
+            st.rerun()
+            
+    with cols[1]:
+        if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
+            st.session_state.current_menu = "real_estate"
+            st.session_state.current_view = "main"
+            st.rerun()
+            
+    with cols[3]:
+        st.markdown(f"<div class='user-text'>👤 {st.session_state.username}님</div>", unsafe_allow_html=True)
+        
+    with cols[4]:
+        if st.button("🔓", help="시스템 로그아웃", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.username = None
+            st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+            st.session_state.current_view = "main"
+            st.rerun()
 
 st.divider()
 
