@@ -32,9 +32,9 @@ if "current_menu" not in st.session_state:
 
 # --- [3. 로그인 전용 단일 UI] ---
 if not st.session_state.logged_in:
-    # 불필요한 설명 및 타이틀 완벽히 제거
-    st.write("")
-    st.write("")
+    # 로그인 창 타이틀 원복 (메인 화면에서만 지우고 여기선 보여줌)
+    st.title("✨ 투자 자산 대시보드")
+    st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
     
     # st.form을 사용하여 엔터(Enter) 키로 로그인(Submit) 가능하도록 구현
     with st.form("login_form"):
@@ -44,7 +44,7 @@ if not st.session_state.logged_in:
         submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
         
         if submitted:
-            # 한글 입력 방지 로직 (정규식 검사는 유지)
+            # 한글 입력 방지 로직
             if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
                 st.error("🚨 아이디에는 한글을 입력할 수 없습니다. 영문과 숫자만 입력해 주세요.")
             elif login_username.strip() == "" or login_pw.strip() == "":
@@ -71,7 +71,7 @@ if not st.session_state.logged_in:
                                 "naver_secret": admin_keys.data[0].get("naver_secret", "")
                             }
                         else:
-                            # admin 키가 아예 없다면 초기 생성 (구조적 에러 방지)
+                            # admin 키가 아예 없다면 초기 생성
                             supabase.table("user_api_keys").insert({
                                 "username": "admin", 
                                 "rtms_key": "", 
@@ -88,85 +88,49 @@ if not st.session_state.logged_in:
                     st.error(f"시스템 데이터베이스 통신 장애: {str(e)}")
     st.stop()
 
-# --- [4. 로그인 성공 후 프레임워크 가동 (Top Menu 구조)] ---
+# --- [4. 로그인 성공 후 프레임워크 가동 (Left Menu 구조)] ---
 
-# 상단 여백 축소 및 콤팩트한 UI를 위한 CSS 주입
-st.markdown("""
-<style>
-    .block-container { padding-top: 1.5rem !important; padding-bottom: 1rem !important; }
-    .user-text { text-align: right; font-size: 14px; margin-top: 8px; color: #4e5968; font-weight: 500; }
-</style>
-""", unsafe_allow_html=True)
-
-# 버튼 상태 식별
-is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
-is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
-is_api_view = st.session_state.current_view == "api_settings"
-
-# Admin 여부에 따른 다이내믹 컬럼 분기 (화면 잘림 완벽 방지)
-if st.session_state.username == "admin":
-    # 텍스트 대신 앙증맞은 아이콘 버튼 사용
-    cols = st.columns([0.6, 0.6, 6.4, 1.2, 0.6, 0.6])
+# 좌측 사이드바 (Left Menu) 영역 구성
+with st.sidebar:
+    st.markdown(f"### 👤 {st.session_state.username}님")
+    st.caption("내부 투자 자산 데스크")
+    st.divider()
     
-    with cols[0]:
-        if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
-            st.session_state.current_menu = "quant"
-            st.session_state.current_view = "main"
-            st.rerun()
-            
-    with cols[1]:
-        if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
-            st.session_state.current_menu = "real_estate"
-            st.session_state.current_view = "main"
-            st.rerun()
-            
-    with cols[3]:
-        st.markdown(f"<div class='user-text'>👤 {st.session_state.username}님</div>", unsafe_allow_html=True)
+    # 퀀트 메뉴 버튼
+    is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
+    if st.button("📈 주식 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
+        st.session_state.current_menu = "quant"
+        st.session_state.current_view = "main"
+        st.rerun()
         
-    with cols[4]:
-        if st.button("⚙️", help="API 자산 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
-            st.session_state.current_view = "api_settings" if not is_api_view else "main"
-            st.rerun()
-            
-    with cols[5]:
-        if st.button("🔓", help="시스템 로그아웃", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = None
-            st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-            st.session_state.current_view = "main"
-            st.rerun()
-
-else:
-    # 일반 사용자 화면 레이아웃
-    cols = st.columns([0.6, 0.6, 7.0, 1.2, 0.6])
-    
-    with cols[0]:
-        if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
-            st.session_state.current_menu = "quant"
-            st.session_state.current_view = "main"
-            st.rerun()
-            
-    with cols[1]:
-        if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
-            st.session_state.current_menu = "real_estate"
-            st.session_state.current_view = "main"
-            st.rerun()
-            
-    with cols[3]:
-        st.markdown(f"<div class='user-text'>👤 {st.session_state.username}님</div>", unsafe_allow_html=True)
+    # 부동산 메뉴 버튼
+    is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
+    if st.button("🏢 부동산 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
+        st.session_state.current_menu = "real_estate"
+        st.session_state.current_view = "main"
+        st.rerun()
         
-    with cols[4]:
-        if st.button("🔓", help="시스템 로그아웃", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = None
-            st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-            st.session_state.current_view = "main"
+    # Admin 계정일 경우에만 API 설정 노출
+    if st.session_state.username == "admin":
+        st.divider()
+        is_api_view = st.session_state.current_view == "api_settings"
+        if st.button("⚙️ API 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
+            st.session_state.current_view = "api_settings"
             st.rerun()
+            
+    st.divider()
+    # 로그아웃 버튼
+    if st.button("🔓 로그아웃", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.username = None
+        st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+        st.session_state.current_view = "main"
+        st.rerun()
 
-st.divider()
 
 # --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
 
+# 메인 콘텐츠 영역 (사이드바 우측 넓은 공간)
 if st.session_state.current_view == "api_settings" and st.session_state.username == "admin":
     # API 키 자산 설정 (Admin 전용 공통 키 관리)
     st.title("⚙️ 시스템 공통 API 크레덴셜 관리")
@@ -195,7 +159,7 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
             st.error(f"저장 실패: {str(e)}")
 
 else:
-    # Top Menu의 버튼 선택(상태)에 따라 화면 렌더링 분기
+    # Left Menu 버튼 선택(상태)에 따라 해당 모듈만 깔끔하게 렌더링
     if st.session_state.current_menu == "quant":
         stock_quant.run_stock_quant_page(supabase, st.session_state.username)
     elif st.session_state.current_menu == "real_estate":
