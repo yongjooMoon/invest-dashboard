@@ -289,13 +289,14 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     if factor_score is None: factor_score = sel.get('factor_score', 0)
     total_pass = sel.get('total_pass', sum([1 for g in gates.values() if g['pass']]) if gates else 0)
 
+    # [UI 수정] 배치 당시의 캐시와 실시간 조회의 차이를 명확하게 알 수 있도록 안내 문구 보강
     c_header, c_gauge = st.columns([3, 2])
     with c_header:
         st.markdown("### ⚡ Quant Scores")
         c1, c2 = st.columns(2)
-        c1.metric("종합 랭킹 스코어", f"{factor_score:.2f}점")
-        c2.metric("생존 필터 통과", f"{total_pass} / 6")
-        st.info("💡 실시간 퀀트 데이터에 기반하여 생성된 리포트입니다.")
+        c1.metric("실시간 랭킹 스코어", f"{factor_score:.2f}점")
+        c2.metric("현재시점 생존 필터", f"{total_pass} / 6")
+        st.info("💡 과거 배치(Cron) 시점엔 6/6 통과였어도, **현재 실시간 주가 변동**에 따라 지표가 하락(5/6 등)할 수 있습니다.")
 
     with c_gauge:
         render_single_gauge(factor_score)
