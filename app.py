@@ -44,27 +44,57 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- [2. 세션 상태 초기화] ---
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = None
-if "api_keys" not in st.session_state:
-    st.session_state.api_keys = {
-        "rtms_key": "", 
-        "app_key": "", 
-        "app_secret": "", 
-        "naver_id": "", 
-        "naver_secret": ""
+
+# --- [2. 글로벌 세션 (서버 재시작 전까지 영구 유지) 설정] ---
+@st.cache_resource
+def get_global_session():
+    # 서버 메모리에 상주하는 글로벌 딕셔너리입니다. (새로고침, 탭 닫힘 방어)
+    return {
+        "logged_in": False,
+        "username": None,
+        "api_keys": {
+            "rtms_key": "", 
+            "app_key": "", 
+            "app_secret": "", 
+            "naver_id": "", 
+            "naver_secret": ""
+        }
     }
+
+global_session = get_global_session()
+
+# Streamlit의 휘발성 session_state가 초기화되었더라도, 글로벌 세션에서 값을 복구해 옵니다.
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = global_session["logged_in"]
+if "username" not in st.session_state:
+    st.session_state.username = global_session["username"]
+if "api_keys" not in st.session_state:
+    st.session_state.api_keys = global_session["api_keys"]
 if "current_view" not in st.session_state:
     st.session_state.current_view = "main"
 if "current_menu" not in st.session_state:
     st.session_state.current_menu = "quant"
 
+# 헬퍼 함수: 로그인/로그아웃 시 휘발성 세션과 서버 영구 세션을 동시에 업데이트
+def update_auth_state(is_logged_in, username, api_keys=None):
+    st.session_state.logged_in = is_logged_in
+    global_session["logged_in"] = is_logged_in
+    
+    st.session_state.username = username
+    global_session["username"] = username
+    
+    if api_keys:
+        st.session_state.api_keys = api_keys
+        global_session["api_keys"] = api_keys
+    else:
+        empty_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+        st.session_state.api_keys = empty_keys
+        global_session["api_keys"] = empty_keys
+
+
 # --- [3. 로그인 전용 단일 UI] ---
 if not st.session_state.logged_in:
-    # 로그인 창 타이틀 원복 (메인 화면에서만 지우고 여기선 보여줌)
+    # 로그인 창 타이틀
     st.title("✨ 투자 자산 대시보드")
     st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
     
@@ -87,15 +117,12 @@ if not st.session_state.logged_in:
                     user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", login_pw).execute()
                     
                     if user_query.data:
-                        st.session_state.logged_in = True
-                        st.session_state.username = login_username
-                        st.session_state.current_view = "main"
-                        st.session_state.current_menu = "quant"
-                        
                         # 개별 유저 키가 아닌 'admin' 공통 마스터 API 크레덴셜 정보 로드
                         admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+                        
+                        keys_to_save = {}
                         if admin_keys.data:
-                            st.session_state.api_keys = {
+                            keys_to_save = {
                                 "rtms_key": admin_keys.data[0].get("rtms_key", ""),
                                 "app_key": admin_keys.data[0].get("app_key", ""),
                                 "app_secret": admin_keys.data[0].get("app_secret", ""),
@@ -106,12 +133,14 @@ if not st.session_state.logged_in:
                             # admin 키가 아예 없다면 초기 생성
                             supabase.table("user_api_keys").insert({
                                 "username": "admin", 
-                                "rtms_key": "", 
-                                "app_key": "", 
-                                "app_secret": "",
-                                "naver_id": "",
-                                "naver_secret": ""
+                                "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
                             }).execute()
+                            keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+                        
+                        # [핵심] 로그인 성공 시 글로벌 세션까지 튼튼하게 기록
+                        update_auth_state(True, login_username, keys_to_save)
+                        st.session_state.current_view = "main"
+                        st.session_state.current_menu = "quant"
                         
                         st.rerun()
                     else:
@@ -119,6 +148,7 @@ if not st.session_state.logged_in:
                 except Exception as e:
                     st.error(f"시스템 데이터베이스 통신 장애: {str(e)}")
     st.stop()
+
 
 # --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
 
@@ -153,11 +183,10 @@ with st.sidebar:
     # 하단으로 버튼을 밀어내기 위한 빈 공간 확보
     st.markdown("<div style='height: 50vh;'></div>", unsafe_allow_html=True)
     
-    # 4. 로그아웃 버튼 (접속자 아이디 툴팁 포함)
+    # 4. 로그아웃 버튼
     if st.button("🔓", help=f"현재 접속자: {st.session_state.username}님\n(클릭 시 로그아웃)", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.username = None
-        st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+        # [핵심] 로그아웃 시 글로벌 세션까지 깨끗하게 삭제
+        update_auth_state(False, None)
         st.session_state.current_view = "main"
         st.rerun()
 
@@ -187,7 +216,12 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
                 "naver_id": n_id,
                 "naver_secret": n_sec
             }).execute()
-            st.session_state.api_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
+            
+            # 업데이트 시 글로벌 세션 최신화
+            updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
+            st.session_state.api_keys = updated_keys
+            global_session["api_keys"] = updated_keys
+            
             st.success("✅ 마스터 5대 보안 자산 데이터가 시스템에 무결점 반영되었습니다.")
         except Exception as e:
             st.error(f"저장 실패: {str(e)}")
