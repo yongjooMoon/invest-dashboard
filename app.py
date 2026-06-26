@@ -10,60 +10,22 @@ SUPABASE_URL = "https://unvcqrjzvtgtjovfyvow.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVudmNxcmp6dnRndGpvdmZ5dm93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1NDM5MjEsImV4cCI6MjA5NjExOTkyMX0.XWhOYvFlO3z0lVU57tIjQDbGVUFyHTv3niLsV2ZUeJ4"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 초기 사이드바 상태를 확장으로 두되, CSS로 너비를 강제 축소
-st.set_page_config(page_title="토스 스타일 퀀트 대시보드", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
+# 초기 설정
+st.set_page_config(page_title="EVAN TRADERS", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
-# --- 슬림형 사이드바(Left Menu)를 위한 전역 CSS 주입 ---
-st.markdown("""
-<style>
-    /* 사이드바의 너비를 아주 얇게 강제 고정 (아이콘 전용 사이즈) */
-    section[data-testid="stSidebar"] {
-        width: 80px !important;
-        min-width: 80px !important;
-        max-width: 80px !important;
-        background-color: #f8f9fa; /* 약간의 배경색 */
-    }
-    
-    /* 사이드바 내부 여백 제거하여 버튼을 중앙으로 */
-    section[data-testid="stSidebar"] .block-container {
-        padding: 2rem 0.5rem !important;
-    }
-    
-    /* 버튼 텍스트(이모지) 크기 조절 */
-    section[data-testid="stSidebar"] .stButton > button {
-        font-size: 22px !important;
-        height: 50px !important;
-        padding: 0 !important;
-        border-radius: 12px !important;
-    }
-    
-    /* 상단 빈 여백 축소 */
-    .block-container {
-        padding-top: 1.5rem !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
-# --- [2. 글로벌 세션 (서버 재시작 전까지 영구 유지) 설정] ---
+# --- [2. 글로벌 세션 (서버 영구 유지) 설정] ---
 @st.cache_resource
 def get_global_session():
-    # 서버 메모리에 상주하는 글로벌 딕셔너리입니다. (새로고침, 탭 닫힘 방어)
     return {
         "logged_in": False,
         "username": None,
         "api_keys": {
-            "rtms_key": "", 
-            "app_key": "", 
-            "app_secret": "", 
-            "naver_id": "", 
-            "naver_secret": ""
+            "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
         }
     }
 
 global_session = get_global_session()
 
-# Streamlit의 휘발성 session_state가 초기화되었더라도, 글로벌 세션에서 값을 복구해 옵니다.
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = global_session["logged_in"]
 if "username" not in st.session_state:
@@ -75,11 +37,9 @@ if "current_view" not in st.session_state:
 if "current_menu" not in st.session_state:
     st.session_state.current_menu = "quant"
 
-# 헬퍼 함수: 로그인/로그아웃 시 휘발성 세션과 서버 영구 세션을 동시에 업데이트
 def update_auth_state(is_logged_in, username, api_keys=None):
     st.session_state.logged_in = is_logged_in
     global_session["logged_in"] = is_logged_in
-    
     st.session_state.username = username
     global_session["username"] = username
     
@@ -91,35 +51,192 @@ def update_auth_state(is_logged_in, username, api_keys=None):
         st.session_state.api_keys = empty_keys
         global_session["api_keys"] = empty_keys
 
-
-# --- [3. 로그인 전용 단일 UI] ---
+# --- [3. 로그인 화면 (트렌디 & 모던 UI)] ---
 if not st.session_state.logged_in:
-    # 로그인 창 타이틀
-    st.title("✨ 투자 자산 대시보드")
-    st.markdown("인증된 계정만 접근 가능한 내부 투자 자산 관리 데스크입니다.")
+    # 로그인 화면 전용 커스텀 CSS 강제 주입
+    st.markdown("""
+    <style>
+    /* 배경 화면 아주 어두운 톤으로 */
+    .stApp {
+        background-color: #0B0E14 !important;
+    }
     
-    # st.form을 사용하여 엔터(Enter) 키로 로그인(Submit) 가능하도록 구현
-    with st.form("login_form"):
-        login_username = st.text_input("아이디", key="login_id")
-        login_pw = st.text_input("비밀번호", type="password")
+    /* 기존 헤더, 사이드바 숨김 */
+    [data-testid="stSidebar"], [data-testid="stHeader"] {
+        display: none !important;
+    }
+
+    /* 화면 가운데 완벽 정렬 */
+    [data-testid="stAppViewContainer"] {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 0 !important;
+    }
+    .block-container {
+        padding: 0 !important;
+        max-width: 100% !important;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+    }
+
+    /* 폼 전체 래퍼 박스 설정 (이미지처럼 깔끔한 모서리와 입체감) */
+    [data-testid="stForm"] {
+        background-color: #12151A !important;
+        border: 1px solid #1E2329 !important;
+        border-radius: 12px !important;
+        padding: 2.5rem 3rem 1.5rem 3rem !important;
+        width: 360px !important;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9) !important;
+        position: relative;
+        z-index: 10;
+        margin: 0 auto;
+    }
+
+    /* 입력창 라벨 (USERNAME, PASSWORD) */
+    .stTextInput label p {
+        color: #6A7381 !important;
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        letter-spacing: 1px;
+    }
+
+    /* 입력창 디자인 */
+    .stTextInput input {
+        background-color: #1A1F26 !important;
+        color: #FFFFFF !important;
+        border: 1px solid #2A313C !important;
+        border-radius: 6px !important;
+        padding: 0.8rem 1rem !important;
+    }
+    .stTextInput input:focus {
+        border-color: #20C997 !important;
+        box-shadow: 0 0 0 1px #20C997 !important;
+    }
+
+    /* 로그인 버튼 */
+    [data-testid="stFormSubmitButton"] button {
+        background-color: #20C997 !important;
+        color: #000000 !important;
+        font-weight: 800 !important;
+        letter-spacing: 1px !important;
+        border-radius: 6px !important;
+        border: none !important;
+        margin-top: 1.5rem !important;
+        padding: 0.6rem !important;
+        transition: all 0.3s ease !important;
+    }
+    [data-testid="stFormSubmitButton"] button:hover {
+        background-color: #18A87D !important;
+        box-shadow: 0 0 15px rgba(32, 201, 151, 0.4) !important;
+    }
+    [data-testid="stFormSubmitButton"] button p {
+        font-size: 13px !important;
+    }
+
+    /* 로고 컨테이너 (EVAN TRADERS) */
+    .logo-container {
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .logo-box {
+        width: 64px;
+        height: 64px;
+        margin: 0 auto 15px auto;
+        border: 2px solid #E2E8F0;
+        border-radius: 12px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        color: #E2E8F0;
+        background-color: #161A20;
+    }
+    .logo-box .top { font-family: 'Arial Black', sans-serif; font-size: 26px; line-height: 1; letter-spacing: -2px; margin-top: 5px; }
+    .logo-box .bottom { font-family: 'Arial', sans-serif; font-size: 7px; font-weight: bold; letter-spacing: 1px; margin-top: -2px; }
+    
+    .logo-title {
+        color: #FFFFFF;
+        font-size: 16px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        margin: 0 0 5px 0;
+    }
+    .logo-subtitle {
+        color: #20C997;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        margin: 0;
+    }
+
+    /* 카피라이트 텍스트 */
+    .copyright-text {
+        text-align: center;
+        color: #3B4252;
+        font-size: 9px;
+        margin-top: 1.5rem;
+        letter-spacing: 0.5px;
+    }
+
+    /* 하단 애니메이션 웨이브 (기하학적 네온 라인) */
+    .neon-wave {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 200vw;
+        height: 40vh;
+        background-image: url("data:image/svg+xml,%3Csvg width='1440' height='300' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 150 L 300 130 L 700 240 L 1100 160 L 1440 140' stroke='rgba(32,201,151,0.5)' stroke-width='10' fill='none' style='filter: blur(10px);' /%3E%3Cpath d='M0 150 L 300 130 L 700 240 L 1100 160 L 1440 140' stroke='%2320C997' stroke-width='2' fill='none' /%3E%3Cpath d='M0 150 L 300 130 L 700 240 L 1100 160 L 1440 140 L 1440 300 L 0 300 Z' fill='url(%23grad)' opacity='0.15' /%3E%3Cdefs%3E%3ClinearGradient id='grad' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%2320C997' /%3E%3Cstop offset='100%25' stop-color='%230B0E14' stop-opacity='0' /%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E");
+        background-repeat: repeat-x;
+        background-size: 1440px 100%;
+        animation: moveWave 25s linear infinite;
+        pointer-events: none;
+        z-index: 0;
+    }
+    @keyframes moveWave {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(-1440px); }
+    }
+    </style>
+    
+    <!-- 움직이는 백그라운드 웨이브 주입 -->
+    <div class="neon-wave"></div>
+    """, unsafe_allow_html=True)
+
+    with st.form("login_form", clear_on_submit=True):
+        # 폼 내부에 트렌디한 로고 렌더링
+        st.markdown("""
+        <div class="logo-container">
+            <div class="logo-box">
+                <div class="top">ER</div>
+                <div class="bottom">TRADERS</div>
+            </div>
+            <h3 class="logo-title">EVAN TRADERS</h3>
+            <p class="logo-subtitle">QUANT TRADING SYSTEM</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
+        login_username = st.text_input("USERNAME", key="login_id")
+        login_pw = st.text_input("PASSWORD", type="password")
+        
+        submitted = st.form_submit_button("LOGIN", type="primary", use_container_width=True)
+        
+        # 저작권 텍스트
+        st.markdown("<p class='copyright-text'>© 2024 EVAN TRADERS</p>", unsafe_allow_html=True)
         
         if submitted:
-            # 한글 입력 방지 로직
             if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
                 st.error("🚨 아이디에는 한글을 입력할 수 없습니다. 영문과 숫자만 입력해 주세요.")
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
                 try:
-                    # 커스텀 테이블(custom_users)에서 아이디와 해시 비밀번호가 일치하는지 조회
                     user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", login_pw).execute()
-                    
                     if user_query.data:
-                        # 개별 유저 키가 아닌 'admin' 공통 마스터 API 크레덴셜 정보 로드
                         admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
-                        
                         keys_to_save = {}
                         if admin_keys.data:
                             keys_to_save = {
@@ -130,18 +247,14 @@ if not st.session_state.logged_in:
                                 "naver_secret": admin_keys.data[0].get("naver_secret", "")
                             }
                         else:
-                            # admin 키가 아예 없다면 초기 생성
                             supabase.table("user_api_keys").insert({
-                                "username": "admin", 
-                                "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
+                                "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
                             }).execute()
                             keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
                         
-                        # [핵심] 로그인 성공 시 글로벌 세션까지 튼튼하게 기록
                         update_auth_state(True, login_username, keys_to_save)
                         st.session_state.current_view = "main"
                         st.session_state.current_menu = "quant"
-                        
                         st.rerun()
                     else:
                         st.error("❌ 등록되지 않은 계정이거나 비밀번호가 일치하지 않습니다.")
@@ -152,50 +265,64 @@ if not st.session_state.logged_in:
 
 # --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
 
-# 글자 없이 이모지와 툴팁(help)만 사용하는 슬림한 사이드바
+st.markdown("""
+<style>
+    /* 메인 화면 슬림 사이드바 CSS */
+    section[data-testid="stSidebar"] {
+        width: 80px !important;
+        min-width: 80px !important;
+        max-width: 80px !important;
+        background-color: #f8f9fa;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding: 2rem 0.5rem !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button {
+        font-size: 22px !important;
+        height: 50px !important;
+        padding: 0 !important;
+        border-radius: 12px !important;
+    }
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
-    st.write("") # 상단 여백
+    st.write("") 
     
-    # 1. 퀀트 메뉴 버튼
     is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
     if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
         st.session_state.current_menu = "quant"
         st.session_state.current_view = "main"
         st.rerun()
         
-    st.write("") # 간격 띄우기
+    st.write("") 
     
-    # 2. 부동산 메뉴 버튼
     is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
     if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
         st.session_state.current_menu = "real_estate"
         st.session_state.current_view = "main"
         st.rerun()
         
-    # 3. Admin 계정일 경우에만 API 설정 아이콘 노출
     if st.session_state.username == "admin":
-        st.write("") # 간격 띄우기
+        st.write("")
         is_api_view = st.session_state.current_view == "api_settings"
         if st.button("⚙️", help="시스템 공통 API 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
             st.session_state.current_view = "api_settings"
             st.rerun()
             
-    # 하단으로 버튼을 밀어내기 위한 빈 공간 확보
     st.markdown("<div style='height: 50vh;'></div>", unsafe_allow_html=True)
     
-    # 4. 로그아웃 버튼
     if st.button("🔓", help=f"현재 접속자: {st.session_state.username}님\n(클릭 시 로그아웃)", use_container_width=True):
-        # [핵심] 로그아웃 시 글로벌 세션까지 깨끗하게 삭제
         update_auth_state(False, None)
         st.session_state.current_view = "main"
         st.rerun()
 
-
 # --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
 
-# 메인 콘텐츠 영역 (사이드바 우측 넓은 공간)
 if st.session_state.current_view == "api_settings" and st.session_state.username == "admin":
-    # API 키 자산 설정 (Admin 전용 공통 키 관리)
     st.title("⚙️ 시스템 공통 API 크레덴셜 관리")
     st.markdown("전체 시스템이 공통으로 사용하는 마스터 API 키를 설정합니다. (**Admin 전용**)")
     
@@ -207,7 +334,6 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
     
     if st.button("마스터 크레덴셜 업데이트", type="primary"):
         try:
-            # 개별 username이 아닌 'admin' 공통 원장에 반영
             supabase.table("user_api_keys").upsert({
                 "username": "admin",
                 "rtms_key": rtms,
@@ -217,7 +343,6 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
                 "naver_secret": n_sec
             }).execute()
             
-            # 업데이트 시 글로벌 세션 최신화
             updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
             st.session_state.api_keys = updated_keys
             global_session["api_keys"] = updated_keys
@@ -227,7 +352,6 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
             st.error(f"저장 실패: {str(e)}")
 
 else:
-    # Left Menu 버튼 선택(상태)에 따라 해당 모듈만 깔끔하게 렌더링
     if st.session_state.current_menu == "quant":
         stock_quant.run_stock_quant_page(supabase, st.session_state.username)
     elif st.session_state.current_menu == "real_estate":
