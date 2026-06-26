@@ -103,7 +103,7 @@ def get_ui_financial_extras(symbol, fund):
         if fund.get('marcap_억') is None:
             marcap_elem = soup.select_one("#_market_sum")
             if marcap_elem:
-                txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
+                txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n')
                 if '조' in txt:
                     parts = txt.split('조')
                     jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
@@ -289,7 +289,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     if factor_score is None: factor_score = sel.get('factor_score', 0)
     total_pass = sel.get('total_pass', sum([1 for g in gates.values() if g['pass']]) if gates else 0)
 
-    # [UI 수정] 배치 당시의 캐시와 실시간 조회의 차이를 명확하게 알 수 있도록 안내 문구 보강
     c_header, c_gauge = st.columns([3, 2])
     with c_header:
         st.markdown("### ⚡ Quant Scores")
@@ -443,6 +442,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     <style>
     .grid-header { font-size: 13px; font-weight: bold; color: #8B95A1; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 8px; }
     .grid-row { padding-top: 10px; padding-bottom: 10px; font-size: 14px; border-bottom: 1px solid #1E2329; display: flex; align-items: center;}
+    .popover-btn > button { padding: 0 !important; background: none !important; border: none !important; color: #AEC1D4 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -450,12 +450,43 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # 탭 1: 포트폴리오
     # ────────────────────────────────────────────────────────
     with tab_port:
-        total_capital = sum([h.get("current_price", 0) for h in holdings])
         with st.container(border=True):
-            st.caption("현재 포트폴리오 보유종목 1주 기준 평가 합산액")
-            st.markdown(f"## {total_capital:,.0f} 원")
+            if holdings:
+                # 동일비중 최소 시드 계산 (가장 비싼 주식 가격 기준 * 보유종목 수)
+                max_price = max([h.get("current_price", 0) for h in holdings])
+                total_stocks = len(holdings)
+                total_seed = max_price * total_stocks
+                
+                st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
+                st.markdown(f"## {total_seed:,.0f} 원")
+                st.caption(f"종목당 {max_price:,.0f}원 기준 × {total_stocks}종목")
+            else:
+                st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
+                st.markdown("## 0 원")
+                st.caption("보유 중인 종목이 없습니다.")
 
-        st.markdown(f"#### Holdings ({len(holdings)})")
+        # Holdings 타이틀 및 퀀트 설명 팝오버 (i 아이콘)
+        col_title, col_info = st.columns([1.8, 8.2])
+        with col_title:
+            st.markdown(f"<h4 style='margin-bottom:0;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
+        with col_info:
+            with st.popover("ℹ️ 퀀트 원리 보기"):
+                st.markdown("""
+                **🚀 주식을 사는 조건 (추격매수)**
+                1. **성장성**: 작년보다 돈을 더 잘 벌고 있는가?
+                2. **방어력**: 최근 심하게 넘어진(폭락한) 적이 없는가?
+                3. **유동성**: 시장에서 사람들이 많이 찾는 인기 주식인가?
+                4. **오르막길**: 주가가 계단(정배열)을 오르고 있는가?
+                5. **신기록**: 최근 3달 내 최고 기록을 깼는가? (돌파)
+                6. **관중폭발**: 갑자기 사는 사람들이 우르르 몰렸는가?
+
+                **🚨 주식을 파는 조건 (이탈/매도)**
+                1. **안전장치**: 너무 떨어지면 다치기 전에 자동 탈출 (동적 손절)
+                2. **미끄럼틀**: 오르막길이 끝나고 꺾이면 탈출 (추세붕괴)
+                3. **축하파티**: 수익이 +40% 나면 기분 좋게 챙기기 (익절)
+                """)
+
+        st.write("") # 약간의 간격 확보
 
         if holdings:
             c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
