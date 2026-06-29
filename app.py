@@ -228,22 +228,22 @@ if not st.session_state.logged_in:
         transform-box: fill-box; /* SVG 요소 기준 관절(축) 고정 핵심 속성 */
     }
     
-    /* 기본 상태: 아래에 숨어 있음 (비율 계산된 px 값) */
+    /* 기본 상태: 아래에 숨어 있음 (-93px 로 정확히 양쪽 눈을 덮을 수 있도록 X축 당김) */
     #yeti-wrap .armL {
         transform-origin: top left;
-        transform: translate(-65px, 154px) rotate(105deg);
+        transform: translate(-93px, 180px) rotate(105deg);
     }
     #yeti-wrap .armR {
         transform-origin: top right;
-        transform: translate(-65px, 154px) rotate(-105deg);
+        transform: translate(-93px, 180px) rotate(-105deg);
     }
     
     /* 눈 가리기 상태 (비밀번호 포커스) */
     #yeti-wrap.yeti-hide .armL {
-        transform: translate(-65px, 7px) rotate(0deg);
+        transform: translate(-93px, 10px) rotate(0deg);
     }
     #yeti-wrap.yeti-hide .armR {
-        transform: translate(-65px, 7px) rotate(0deg);
+        transform: translate(-93px, 10px) rotate(0deg);
         transition-delay: 0.05s; /* 오른쪽 손이 살짝 늦게 올라오는 디테일 */
     }
 
@@ -256,7 +256,7 @@ if not st.session_state.logged_in:
     
     /* 지울 때 손가락 사이로 까꿍 (Peeking) */
     #yeti-wrap.yeti-peek .twoFingers {
-        transform: translate(-6px, -1px) rotate(30deg);
+        transform: translate(-9px, -2px) rotate(30deg);
     }
 
     /* 🔥 타이틀 색상 가독성 극대화 (화이트 + 빛나는 네온 효과) 🔥 */
