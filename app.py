@@ -68,7 +68,7 @@ if not st.session_state.logged_in:
         display: none !important;
     }
 
-    /* 화면 가운데 정렬 */
+    /* 화면 가운데 정렬 베이스 */
     .block-container {
         padding: 0 !important;
         max-width: 100% !important;
@@ -119,7 +119,7 @@ if not st.session_state.logged_in:
         100% { transform: translate(0, 0) scale(1) rotate(0deg); }
     }
 
-    /* 💎 글래스모피즘 로그인 박스 💎 */
+    /* 💎 글래스모피즘 로그인 박스 (완벽한 중앙 배치 적용) 💎 */
     [data-testid="stForm"] {
         background: rgba(15, 23, 42, 0.4) !important;
         backdrop-filter: blur(30px) !important;
@@ -128,10 +128,16 @@ if not st.session_state.logged_in:
         border-radius: 24px !important;
         padding: 3rem 3rem 2.5rem 3rem !important;
         width: 400px !important;
+        max-width: 90vw !important; /* 모바일 대응 */
         box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1) !important;
-        position: relative;
+        
+        /* 🔥 화면 정중앙(세로/가로) 고정 🔥 */
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
         z-index: 10;
-        margin: 0 auto;
+        margin: 0 !important;
     }
 
     /* 폼 내부 텍스트 및 라벨 (USERNAME, PASSWORD) */
@@ -290,7 +296,7 @@ if not st.session_state.logged_in:
                 except Exception as e:
                     st.error(f"시스템 장애: {str(e)}")
 
-    # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작
+    # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어
     components.html("""
     <script>
     function initYetiAnimation() {
@@ -325,6 +331,17 @@ if not st.session_state.logged_in:
                 eyeL.style.transform = `translateX(0px)`;
                 eyeR.style.transform = `translateX(0px)`;
             });
+
+            // 3. 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출을 차단하고 포커스만 이동
+            idInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    if (pwInput && pwInput.value.trim() === '') {
+                        e.preventDefault(); // 기본 폼 제출 방지
+                        e.stopPropagation(); // Streamlit에 이벤트 전달되는 것 차단
+                        pwInput.focus();     // 비밀번호 칸으로 자연스럽게 커서 이동
+                    }
+                }
+            }, true); // 캡처링 단계에서 가장 먼저 실행
         }
     }
     // Streamlit 컴포넌트가 확실히 렌더링 된 후 JS가 바인딩되도록 딜레이 실행
@@ -364,6 +381,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# 🚪 로그아웃 Confirm을 위한 모달 다이얼로그 (트렌디한 방식)
+@st.dialog("🚪 시스템 로그아웃")
+def logout_confirm_dialog():
+    st.markdown("정말로 로그아웃 하시겠습니까?")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("로그아웃", use_container_width=True, type="primary"):
+            update_auth_state(False, None)
+            st.session_state.current_view = "main"
+            st.rerun()
+    with c2:
+        if st.button("취소", use_container_width=True):
+            st.rerun()
+
 with st.sidebar:
     st.write("") 
     
@@ -390,10 +421,9 @@ with st.sidebar:
             
     st.markdown("<div style='height: 50vh;'></div>", unsafe_allow_html=True)
     
+    # 클릭 시 다이얼로그 함수 호출로 Confirm 창 띄우기
     if st.button("🔓", help=f"현재 접속자: {st.session_state.username}님\n(클릭 시 로그아웃)", use_container_width=True):
-        update_auth_state(False, None)
-        st.session_state.current_view = "main"
-        st.rerun()
+        logout_confirm_dialog()
 
 # --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
 
