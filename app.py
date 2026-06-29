@@ -63,9 +63,55 @@ if not st.session_state.logged_in:
         overflow: hidden !important;
     }
     
-    /* 기존 헤더, 사이드바 완전 숨김 */
-    [data-testid="stSidebar"], [data-testid="stHeader"] {
+    /* 기존 헤더, 사이드바, 푸터 완전 숨김 */
+    [data-testid="stSidebar"], [data-testid="stHeader"], footer {
         display: none !important;
+    }
+
+    /* 🔥 Flexbox를 활용한 완벽한 세로/가로 정중앙 정렬 🔥 */
+    [data-testid="stAppViewContainer"] {
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        width: 100vw !important;
+        height: 100vh !important;
+    }
+    
+    [data-testid="stMain"] {
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        width: 100% !important;
+        height: 100% !important;
+    }
+
+    /* Streamlit 기본 여백 초기화 및 중앙 정렬 */
+    .block-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        align-items: center !important;
+    }
+    
+    [data-testid="stVerticalBlock"] {
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        align-items: center !important;
+        gap: 0 !important;
+    }
+    
+    /* 보이지 않는 JS/HTML 컴포넌트가 세로 정렬을 방해하지 못하도록 공간 차지 무효화 */
+    div[data-testid="stHtml"] {
+        position: absolute !important;
+        width: 0 !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        margin: 0 !important;
+        padding: 0 !important;
     }
 
     /* 🌟 오로라 메쉬 그라디언트 애니메이션 🌟 */
@@ -108,7 +154,7 @@ if not st.session_state.logged_in:
         100% { transform: translate(0, 0) scale(1) rotate(0deg); }
     }
 
-    /* 💎 글래스모피즘 로그인 박스 (크기 고정 & 완벽한 정중앙 배치) 💎 */
+    /* 💎 글래스모피즘 로그인 박스 (Flexbox를 통한 완벽한 정중앙 배치) 💎 */
     [data-testid="stForm"] {
         background: rgba(15, 23, 42, 0.4) !important;
         backdrop-filter: blur(30px) !important;
@@ -117,20 +163,13 @@ if not st.session_state.logged_in:
         border-radius: 24px !important;
         padding: 3rem 3rem 2.5rem 3rem !important;
         
-        /* 박스가 화면 전체로 늘어나는 현상 방지 (크기 강제 고정) */
         width: 360px !important;
         min-width: 360px !important;
         max-width: 360px !important;
         
         box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1) !important;
-        
-        /* 🔥 화면 정중앙(세로/가로) 고정 🔥 */
-        position: fixed !important;
-        top: 50% !important;
-        left: 50% !important;
-        transform: translate(-50%, -50%) !important;
         z-index: 10;
-        margin: 0 !important;
+        margin: auto !important; /* Flex 항목으로서 자동 중앙 마진 */
     }
 
     /* 폼 내부 텍스트 및 라벨 (USERNAME, PASSWORD) */
