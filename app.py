@@ -1,16 +1,49 @@
 import streamlit as st
 import streamlit.components.v1 as components
 from supabase import create_client, Client
-import hashlib
 import re
 import real_estate
 import stock_quant
 
-# --- [1. Supabase 연동 설정] ---
-# st.secrets를 통해 secrets.toml 또는 스트림릿 클라우드 환경변수에서 안전하게 키를 불러옵니다.
+# 🛡️ 강력한 보안 암호화 라이브러리 추가
+import bcrypt
+from cryptography.fernet import Fernet
+
+# --- [1. Supabase & 암호화 연동 설정] ---
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# 대칭키 암호화 (API Key 보관용) 마스터 키 세팅
+if "ENCRYPTION_KEY" in st.secrets:
+    FERNET_KEY = st.secrets["ENCRYPTION_KEY"].encode()
+else:
+    # 안전을 위한 임시 Fallback 키 (경고: 실제 운영시 반드시 secrets.toml에 고정 키를 넣어야 복호화가 유지됨)
+    FERNET_KEY = b'vS-1_z0qL18r-58lXb0jVwFwJpPZ_X-6N1xG8Zk1w0c='
+cipher_suite = Fernet(FERNET_KEY)
+
+# 🔐 암복호화 도우미 함수
+def encrypt_text(text: str) -> str:
+    """API 키 등을 DB에 저장할 때 사용하는 암호화 함수"""
+    if not text: return ""
+    return cipher_suite.encrypt(text.encode('utf-8')).decode('utf-8')
+
+def decrypt_text(encrypted_text: str) -> str:
+    """DB에서 꺼내올 때 메모리 위에서만 해제하는 복호화 함수"""
+    if not encrypted_text: return ""
+    try:
+        return cipher_suite.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
+    except:
+        # 기존에 암호화되지 않고 평문으로 저장되었던 데이터 호환 처리
+        return encrypted_text
+
+def verify_password(plain_pw: str, hashed_pw: str) -> bool:
+    """사용자가 입력한 비밀번호와 DB의 bcrypt 해시를 검증"""
+    try:
+        return bcrypt.checkpw(plain_pw.encode('utf-8'), hashed_pw.encode('utf-8'))
+    except:
+        return False
+
 
 # 초기 설정
 st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
@@ -390,28 +423,45 @@ if not st.session_state.logged_in:
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
                 try:
-                    user_query = supabase.table("custom_users").select("*").eq("username", login_username).eq("password_hash", login_pw).execute()
+                    user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
                     if user_query.data:
-                        admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
-                        keys_to_save = {}
-                        if admin_keys.data:
-                            keys_to_save = {
-                                "rtms_key": admin_keys.data[0].get("rtms_key", ""),
-                                "app_key": admin_keys.data[0].get("app_key", ""),
-                                "app_secret": admin_keys.data[0].get("app_secret", ""),
-                                "naver_id": admin_keys.data[0].get("naver_id", ""),
-                                "naver_secret": admin_keys.data[0].get("naver_secret", "")
-                            }
-                        else:
-                            supabase.table("user_api_keys").insert({
-                                "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
-                            }).execute()
-                            keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+                        stored_hash = user_query.data[0].get("password_hash", "")
                         
-                        update_auth_state(True, login_username, keys_to_save)
-                        st.session_state.current_view = "main"
-                        st.session_state.current_menu = "quant"
-                        st.rerun()
+                        login_success = False
+                        # 1. 🛡️ bcrypt 해시 암호 검증
+                        if verify_password(login_pw, stored_hash):
+                            login_success = True
+                        # 2. 🪄 기존 사용자 평문 -> bcrypt 자동 마이그레이션
+                        elif login_pw == stored_hash:
+                            login_success = True
+                            # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
+                            new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                            supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
+                            
+                        if login_success:
+                            admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+                            keys_to_save = {}
+                            if admin_keys.data:
+                                # DB에서 가져올 때 복호화하여 세션에 할당 (안전한 평문)
+                                keys_to_save = {
+                                    "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
+                                    "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
+                                    "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
+                                    "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
+                                    "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
+                                }
+                            else:
+                                supabase.table("user_api_keys").insert({
+                                    "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
+                                }).execute()
+                                keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+                            
+                            update_auth_state(True, login_username, keys_to_save)
+                            st.session_state.current_view = "main"
+                            st.session_state.current_menu = "quant"
+                            st.rerun()
+                        else:
+                            st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                     else:
                         st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                 except Exception as e:
@@ -614,6 +664,7 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
     st.title("⚙️ 시스템 공통 API 크레덴셜 관리")
     st.markdown("전체 시스템이 공통으로 사용하는 마스터 API 키를 설정합니다. (**Admin 전용**)")
     
+    # st.text_input의 기본값에 암호화되지 않은 세션키를 그대로 넘겨 수정 가능하게 합니다.
     rtms = st.text_input("1. 국토교통부 실거래 API Key (Decoding)", value=st.session_state.api_keys["rtms_key"], type="password")
     a_key = st.text_input("2. 한국투자증권 오픈 API App Key (시세/수급용)", value=st.session_state.api_keys["app_key"])
     a_sec = st.text_input("3. 한국투자증권 오픈 API App Secret (시세/수급용)", value=st.session_state.api_keys["app_secret"], type="password")
@@ -622,20 +673,22 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
     
     if st.button("마스터 크레덴셜 업데이트", type="primary"):
         try:
+            # 🛡️ DB 저장 시에는 강력한 대칭키 암호화(Fernet) 처리
             supabase.table("user_api_keys").upsert({
                 "username": "admin",
-                "rtms_key": rtms,
-                "app_key": a_key,
-                "app_secret": a_sec,
-                "naver_id": n_id,
-                "naver_secret": n_sec
+                "rtms_key": encrypt_text(rtms),
+                "app_key": encrypt_text(a_key),
+                "app_secret": encrypt_text(a_sec),
+                "naver_id": encrypt_text(n_id),
+                "naver_secret": encrypt_text(n_sec)
             }).execute()
             
+            # 세션 메모리에는 원래 평문(Plain text)을 그대로 보관하여 앱 내부에서 정상 작동하게 함
             updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
             st.session_state.api_keys = updated_keys
             global_session["api_keys"] = updated_keys
             
-            st.success("✅ 마스터 5대 보안 자산 데이터가 시스템에 무결점 반영되었습니다.")
+            st.success("✅ 마스터 5대 보안 자산 데이터가 암호화되어 무결점 반영되었습니다.")
         except Exception as e:
             st.error(f"저장 실패: {str(e)}")
 
