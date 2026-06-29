@@ -11,3 +11,4 @@ statsmodels
 scipy
 scikit-learn
 schedule
+cryptography
