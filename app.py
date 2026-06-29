@@ -278,12 +278,23 @@ if not st.session_state.logged_in:
         text-shadow: 0 0 5px rgba(32, 201, 151, 0.5) !important;
     }
     
-    /* 오류/경고 메시지 배경 투명화 */
+    /* 🚨 오류/경고 메시지 박스 - 글래스모피즘 테마에 어울리는 톤으로 수정 🚨 */
     [data-testid="stAlert"] {
-        background: rgba(0,0,0,0.4) !important;
-        border: 1px solid rgba(255,255,255,0.1) !important;
-        backdrop-filter: blur(10px);
-        color: white !important;
+        background: rgba(239, 68, 68, 0.1) !important; /* 투명한 붉은 유리 느낌 */
+        border: 1px solid rgba(239, 68, 68, 0.4) !important;
+        backdrop-filter: blur(10px) !important;
+        -webkit-backdrop-filter: blur(10px) !important;
+        border-radius: 12px !important;
+        color: #FECACA !important; /* 밝은 핑크빛 텍스트 */
+        margin-top: 1rem !important;
+    }
+    [data-testid="stAlert"] p {
+        color: #FECACA !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+    }
+    [data-testid="stAlert"] svg {
+        fill: #FCA5A5 !important; /* 아이콘 색상도 맞춤 */
     }
     </style>
     
@@ -295,8 +306,8 @@ if not st.session_state.logged_in:
     </div>
     """, unsafe_allow_html=True)
 
-    # 폼 영역
-    with st.form("login_form", clear_on_submit=True):
+    # 폼 영역 (clear_on_submit=False 로 변경하여 실패 시에도 입력값 유지)
+    with st.form("login_form", clear_on_submit=False):
         # 🙈 원본 코드를 그대로 활용한 찐 털복숭이 설인(Yeti) SVG
         st.markdown(
             '<div class="logo-container" id="yeti-wrap">'
