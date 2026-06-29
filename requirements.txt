@@ -12,3 +12,4 @@ scipy
 scikit-learn
 schedule
 cryptography
+bcrypt
