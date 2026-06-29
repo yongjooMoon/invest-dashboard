@@ -222,12 +222,12 @@ if not st.session_state.logged_in:
         position: relative;
     }
     
-    /* 🙈 설인(Yeti) CSS 애니메이션 처리 🙈 */
+    /* 🙈 진짜 털복숭이 설인(Yeti) CSS 애니메이션 처리 🙈 */
     #yeti-wrap.yeti-hide .paw-l {
-        transform: translate(40px, -65px) scale(1.1);
+        transform: translate(45px, -65px) scale(1.1) rotate(15deg);
     }
     #yeti-wrap.yeti-hide .paw-r {
-        transform: translate(-40px, -65px) scale(1.1);
+        transform: translate(-45px, -65px) scale(1.1) rotate(-15deg);
     }
     #yeti-wrap.yeti-hide #eye-l, #yeti-wrap.yeti-hide #eye-r {
         opacity: 0.3; /* 손으로 가릴 때 눈이 살짝 어두워짐 */
@@ -268,20 +268,33 @@ if not st.session_state.logged_in:
 
     # 폼 영역
     with st.form("login_form", clear_on_submit=True):
-        # 🙈 설인(Yeti) SVG 애니메이션 마크다운 
-        # (Streamlit이 Markdown 코드 블록으로 잘못 해석하지 않도록 한 줄의 긴 문자열로 병합 처리)
+        # 🙈 로봇 느낌 완벽 탈피! 진짜 털복숭이 설인(Yeti) SVG
         st.markdown(
             '<div class="logo-container" id="yeti-wrap">'
-            '<svg id="yeti" viewBox="0 0 200 200" width="110" height="110" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">'
-            '<path d="M 40 100 C 40 10, 160 10, 160 100 L 160 200 L 40 200 Z" fill="#F8FAFC" />'
-            '<path d="M 70 25 Q 100 -10 130 25" fill="none" stroke="#F8FAFC" stroke-width="25" stroke-linecap="round"/>'
-            '<path d="M 85 15 Q 100 -20 115 15" fill="none" stroke="#F8FAFC" stroke-width="20" stroke-linecap="round"/>'
-            '<rect x="60" y="70" width="80" height="55" rx="27" fill="#0F172A" />'
-            '<circle cx="85" cy="95" r="7" fill="#20C997" id="eye-l" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
-            '<circle cx="115" cy="95" r="7" fill="#20C997" id="eye-r" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
-            '<path d="M 95 110 Q 100 115 105 110" fill="none" stroke="#64748B" stroke-width="3" stroke-linecap="round" />'
-            '<circle cx="45" cy="160" r="22" fill="#E2E8F0" class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />'
-            '<circle cx="155" cy="160" r="22" fill="#E2E8F0" class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />'
+            '<svg id="yeti" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="120" height="120" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">'
+            '<!-- 털 복숭이 몸통 (Fluffy Body) -->'
+            '<path d="M100,20 C140,20 160,40 170,70 C185,75 195,85 190,105 C185,120 175,125 170,130 C175,145 170,165 150,175 C140,180 120,180 100,180 C80,180 60,180 50,175 C30,165 25,145 30,130 C25,125 15,120 10,105 C5,85 15,75 30,70 C40,40 60,20 100,20 Z" fill="#F8FAFC" />'
+            '<!-- 머리 삐죽 털 -->'
+            '<path d="M85,25 Q100,0 115,25" fill="none" stroke="#F8FAFC" stroke-width="15" stroke-linecap="round" />'
+            '<!-- 얼굴 배경 (다크 톤) -->'
+            '<path d="M60,80 C60,55 140,55 140,80 C140,115 115,130 100,130 C85,130 60,115 60,80 Z" fill="#0F172A" />'
+            '<!-- 눈 (민트색) -->'
+            '<circle cx="85" cy="85" r="6" fill="#20C997" id="eye-l" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
+            '<circle cx="115" cy="85" r="6" fill="#20C997" id="eye-r" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
+            '<!-- 볼터치 -->'
+            '<ellipse cx="70" cy="95" rx="5" ry="3" fill="#FF7979" opacity="0.3" />'
+            '<ellipse cx="130" cy="95" rx="5" ry="3" fill="#FF7979" opacity="0.3" />'
+            '<!-- 입 -->'
+            '<path d="M 92 105 Q 100 115 108 105" fill="none" stroke="#64748B" stroke-width="3" stroke-linecap="round" />'
+            '<!-- 팔/손 (기본 위치 아래, PW 입력시 얼굴로 회전하며 올라옴) -->'
+            '<g class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: 40px 160px;">'
+            '<circle cx="40" cy="150" r="18" fill="#E2E8F0" />'
+            '<path d="M33 145 L33 155 M40 145 L40 155 M47 145 L47 155" stroke="#94A3B8" stroke-width="2" stroke-linecap="round" />'
+            '</g>'
+            '<g class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: 160px 160px;">'
+            '<circle cx="160" cy="150" r="18" fill="#E2E8F0" />'
+            '<path d="M153 145 L153 155 M160 145 L160 155 M167 145 L167 155" stroke="#94A3B8" stroke-width="2" stroke-linecap="round" />'
+            '</g>'
             '</svg>'
             '<h2 class="logo-title">QUANT DESK</h2>'
             '<p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>'
@@ -333,11 +346,10 @@ if not st.session_state.logged_in:
     <script>
     function initYetiAnimation() {
         const parent = window.parent.document;
-        // Streamlit의 DOM 엘리먼트 가져오기
         const pwInput = parent.querySelector('input[type="password"]');
         const idInputs = parent.querySelectorAll('input[type="text"]');
         let idInput = null;
-        if(idInputs.length > 0) { idInput = idInputs[0]; } // 첫번째 텍스트 인풋이 아이디
+        if(idInputs.length > 0) { idInput = idInputs[0]; }
         
         const yetiWrap = parent.getElementById('yeti-wrap');
         const eyeL = parent.getElementById('eye-l');
@@ -353,7 +365,7 @@ if not st.session_state.logged_in:
         if (idInput && eyeL && eyeR) {
             const trackEyes = (e) => {
                 let len = Math.min(e.target.value.length, 25);
-                let moveX = (len / 25) * 14 - 7; // -7px 부터 +7px 까지 눈동자 이동
+                let moveX = (len / 25) * 14 - 7;
                 eyeL.style.transform = `translateX(${moveX}px)`;
                 eyeR.style.transform = `translateX(${moveX}px)`;
             };
@@ -364,19 +376,18 @@ if not st.session_state.logged_in:
                 eyeR.style.transform = `translateX(0px)`;
             });
 
-            // 3. 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출을 차단하고 포커스만 이동
+            // 3. 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출 차단하고 포커스 이동
             idInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') {
                     if (pwInput && pwInput.value.trim() === '') {
-                        e.preventDefault(); // 기본 폼 제출 방지
-                        e.stopPropagation(); // Streamlit에 이벤트 전달되는 것 차단
-                        pwInput.focus();     // 비밀번호 칸으로 자연스럽게 커서 이동
+                        e.preventDefault();
+                        e.stopPropagation();
+                        pwInput.focus();
                     }
                 }
-            }, true); // 캡처링 단계에서 가장 먼저 실행
+            }, true);
         }
     }
-    // Streamlit 컴포넌트가 확실히 렌더링 된 후 JS가 바인딩되도록 딜레이 실행
     setTimeout(initYetiAnimation, 300);
     setTimeout(initYetiAnimation, 1000);
     </script>
@@ -386,8 +397,6 @@ if not st.session_state.logged_in:
 
 
 # --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
-# 로그인 성공 시, 위의 몽환적인 다크 테마/오로라 배경은 렌더링되지 않으므로 
-# 자연스럽게 원래 원하시던 '깔끔한 흰색 배경'의 대시보드로 돌아옵니다.
 
 st.markdown("""
 <style>
