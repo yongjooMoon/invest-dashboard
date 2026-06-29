@@ -230,35 +230,26 @@ if not st.session_state.logged_in:
 
     # 폼 영역
     with st.form("login_form", clear_on_submit=True):
-        # 🙈 설인(Yeti) SVG 애니메이션 마크다운 (들여쓰기 제거하여 코드로 인식 방지)
-        st.markdown("""
-<div class="logo-container" id="yeti-wrap">
-    <svg id="yeti" viewBox="0 0 200 200" width="110" height="110" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">
-        <!-- Yeti Body -->
-        <path d="M 40 100 C 40 10, 160 10, 160 100 L 160 200 L 40 200 Z" fill="#F8FAFC" />
-        
-        <!-- Fluffy hair on top -->
-        <path d="M 70 25 Q 100 -10 130 25" fill="none" stroke="#F8FAFC" stroke-width="25" stroke-linecap="round"/>
-        <path d="M 85 15 Q 100 -20 115 15" fill="none" stroke="#F8FAFC" stroke-width="20" stroke-linecap="round"/>
-        
-        <!-- Face (다크테마에 맞춰 진한 네이비 톤) -->
-        <rect x="60" y="70" width="80" height="55" rx="27" fill="#0F172A" />
-        
-        <!-- Eyes (포인트 컬러인 민트색) -->
-        <circle cx="85" cy="95" r="7" fill="#20C997" id="eye-l" style="transition: transform 0.1s ease, opacity 0.3s ease;" />
-        <circle cx="115" cy="95" r="7" fill="#20C997" id="eye-r" style="transition: transform 0.1s ease, opacity 0.3s ease;" />
-        
-        <!-- Mouth -->
-        <path d="M 95 110 Q 100 115 105 110" fill="none" stroke="#64748B" stroke-width="3" stroke-linecap="round" />
-        
-        <!-- Paws (기본 위치는 밑, PW입력시 올라옴) -->
-        <circle cx="45" cy="160" r="22" fill="#E2E8F0" class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />
-        <circle cx="155" cy="160" r="22" fill="#E2E8F0" class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />
-    </svg>
-    <h2 class="logo-title">QUANT DESK</h2>
-    <p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>
-</div>
-        """, unsafe_allow_html=True)
+        # 🙈 설인(Yeti) SVG 애니메이션 마크다운 
+        # (Streamlit이 Markdown 코드 블록으로 잘못 해석하지 않도록 한 줄의 긴 문자열로 병합 처리)
+        st.markdown(
+            '<div class="logo-container" id="yeti-wrap">'
+            '<svg id="yeti" viewBox="0 0 200 200" width="110" height="110" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">'
+            '<path d="M 40 100 C 40 10, 160 10, 160 100 L 160 200 L 40 200 Z" fill="#F8FAFC" />'
+            '<path d="M 70 25 Q 100 -10 130 25" fill="none" stroke="#F8FAFC" stroke-width="25" stroke-linecap="round"/>'
+            '<path d="M 85 15 Q 100 -20 115 15" fill="none" stroke="#F8FAFC" stroke-width="20" stroke-linecap="round"/>'
+            '<rect x="60" y="70" width="80" height="55" rx="27" fill="#0F172A" />'
+            '<circle cx="85" cy="95" r="7" fill="#20C997" id="eye-l" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
+            '<circle cx="115" cy="95" r="7" fill="#20C997" id="eye-r" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
+            '<path d="M 95 110 Q 100 115 105 110" fill="none" stroke="#64748B" stroke-width="3" stroke-linecap="round" />'
+            '<circle cx="45" cy="160" r="22" fill="#E2E8F0" class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />'
+            '<circle cx="155" cy="160" r="22" fill="#E2E8F0" class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />'
+            '</svg>'
+            '<h2 class="logo-title">QUANT DESK</h2>'
+            '<p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>'
+            '</div>', 
+            unsafe_allow_html=True
+        )
         
         login_username = st.text_input("USERNAME", key="login_id")
         login_pw = st.text_input("PASSWORD", type="password")
