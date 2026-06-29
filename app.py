@@ -7,8 +7,9 @@ import real_estate
 import stock_quant
 
 # --- [1. Supabase 연동 설정] ---
-SUPABASE_URL = "https://unvcqrjzvtgtjovfyvow.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVudmNxcmp6dnRndGpvdmZ5dm93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1NDM5MjEsImV4cCI6MjA5NjExOTkyMX0.XWhOYvFlO3z0lVU57tIjQDbGVUFyHTv3niLsV2ZUeJ4"
+# st.secrets를 통해 secrets.toml 또는 스트림릿 클라우드 환경변수에서 안전하게 키를 불러옵니다.
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 초기 설정
