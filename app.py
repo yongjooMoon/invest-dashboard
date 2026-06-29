@@ -416,77 +416,119 @@ if not st.session_state.logged_in:
                 except Exception as e:
                     st.error(f"시스템 장애: {str(e)}")
 
-    # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어 + 까꿍
+    # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어 + 까꿍 + 암호 보이기
     components.html("""
     <script>
     function initYetiAnimation() {
         const parent = window.parent.document;
-        const pwInput = parent.querySelector('input[type="password"]');
-        const idInputs = parent.querySelectorAll('input[type="text"]');
-        let idInput = null;
-        if(idInputs.length > 0) { idInput = idInputs[0]; }
+        // Streamlit에서 렌더링한 인풋 필드들 모두 가져오기
+        const textInputs = parent.querySelectorAll('.stTextInput input');
+        if (textInputs.length < 2) return;
+        
+        const idInput = textInputs[0];
+        const pwInput = textInputs[1];
         
         const yetiWrap = parent.getElementById('yeti-wrap');
         const eyes = parent.getElementById('eyes');
+        if (!yetiWrap || !eyes) return;
         
         let pwLength = 0;
         let peekTimeout;
 
-        // 1. Password 포커스 시: 양쪽 털복숭이 손이 올라와 눈 가리기
-        if (pwInput && yetiWrap) {
-            pwInput.addEventListener('focus', () => {
-                yetiWrap.classList.add('yeti-hide');
-                pwLength = pwInput.value.length; // 포커스 될 때 길이 저장
-            });
-            pwInput.addEventListener('blur', () => {
-                yetiWrap.classList.remove('yeti-hide');
-                yetiWrap.classList.remove('yeti-peek'); // 까꿍 상태도 해제
-            });
-            
-            // 💡 비밀번호 지울 때 '까꿍(Peeking)' 로직 추가
-            pwInput.addEventListener('input', (e) => {
+        // 1. 눈동자가 입력된 텍스트 길이에 따라 움직이는 공통 함수
+        const trackEyes = (e) => {
+            let len = Math.min(e.target.value.length, 25);
+            let moveX = (len / 25) * 12 - 6; // 눈동자가 더 시원하게 좌우로 이동 (-6px ~ +6px)
+            eyes.style.transform = `translateX(${moveX}px)`;
+        };
+
+        // 2. ID 필드 이벤트
+        idInput.addEventListener('input', trackEyes);
+        idInput.addEventListener('focus', trackEyes);
+        idInput.addEventListener('blur', () => {
+            eyes.style.transform = `translateX(0px)`;
+        });
+
+        // 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출 차단하고 포커스 이동
+        idInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (pwInput && pwInput.value.trim() === '') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    pwInput.focus();
+                }
+            }
+        }, true);
+
+        // 3. Password 필드 상태 및 텍스트/패스워드 노출 판단 함수
+        const handlePwState = () => {
+            if (parent.activeElement === pwInput) {
+                // 타입이 'password'이면 눈을 가린다
+                if (pwInput.type === 'password') {
+                    yetiWrap.classList.add('yeti-hide');
+                    eyes.style.transform = `translateX(0px)`; // 눈동자는 중앙으로
+                } 
+                // 타입이 'text'(비밀번호 노출버튼 눌림)이면 손을 치우고 글자를 쳐다본다
+                else {
+                    yetiWrap.classList.remove('yeti-hide');
+                    yetiWrap.classList.remove('yeti-peek');
+                    trackEyes({target: pwInput}); // 글자 길이에 맞춰 눈동자 이동
+                }
+            }
+        };
+
+        // 패스워드 필드 포커스/아웃
+        pwInput.addEventListener('focus', () => {
+            pwLength = pwInput.value.length;
+            handlePwState();
+        });
+        pwInput.addEventListener('blur', () => {
+            yetiWrap.classList.remove('yeti-hide');
+            yetiWrap.classList.remove('yeti-peek'); // 까꿍 상태도 해제
+            eyes.style.transform = `translateX(0px)`;
+        });
+        
+        // 💡 비밀번호 타이핑 중 '까꿍(Peeking)' 로직 및 눈동자 트래킹 통합
+        pwInput.addEventListener('input', (e) => {
+            // 눈 모양 아이콘이 활성화되어 텍스트가 노출되는 상태면 눈동자를 굴림
+            if (pwInput.type === 'text') {
+                trackEyes(e);
+            } 
+            // 가려진 상태일 때는 지울 때 까꿍 애니메이션 재생
+            else {
                 const currentLength = e.target.value.length;
                 if (currentLength < pwLength) {
                     // 글자를 지우는 중 -> 손가락을 벌려 까꿍!
                     yetiWrap.classList.add('yeti-peek');
                     clearTimeout(peekTimeout);
-                    // 1.2초 뒤에 다시 가리기
+                    // 1.2초 뒤에 포커스가 유지중이고 여전히 암호모드면 다시 가리기
                     peekTimeout = setTimeout(() => {
-                        yetiWrap.classList.remove('yeti-peek');
+                        if (parent.activeElement === pwInput && pwInput.type === 'password') {
+                            yetiWrap.classList.remove('yeti-peek');
+                        }
                     }, 1200);
                 } else {
                     // 글자를 입력하는 중 -> 손가락 닫고 철저히 가리기!
                     yetiWrap.classList.remove('yeti-peek');
                 }
                 pwLength = currentLength;
-            });
-        }
-        
-        // 2. Username 타이핑 시: 글자 길이에 맞춰 눈동자가 따라가는 애니메이션
-        if (idInput && eyes) {
-            const trackEyes = (e) => {
-                let len = Math.min(e.target.value.length, 25);
-                let moveX = (len / 25) * 12 - 6; // 눈동자가 더 시원하게 좌우로 이동
-                eyes.style.transform = `translateX(${moveX}px)`;
-            };
-            idInput.addEventListener('input', trackEyes);
-            idInput.addEventListener('focus', trackEyes);
-            idInput.addEventListener('blur', () => {
-                eyes.style.transform = `translateX(0px)`;
-            });
+            }
+        });
 
-            // 3. 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출 차단하고 포커스 이동
-            idInput.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    if (pwInput && pwInput.value.trim() === '') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        pwInput.focus();
-                    }
-                }
-            }, true);
+        // 4. 우측 눈 모양 아이콘(비밀번호 노출 버튼) 클릭 감지
+        // Streamlit의 눈 아이콘은 input 컨테이너 안에 존재하므로 부모 컨테이너에 클릭 이벤트를 위임
+        const pwContainer = pwInput.closest('[data-baseweb="input"]');
+        if (pwContainer) {
+            pwContainer.addEventListener('click', () => {
+                // Streamlit이 클릭 이벤트를 받아 type='text'로 전환하는 짧은 시간을 기다렸다가 상태 판단
+                setTimeout(() => {
+                    handlePwState();
+                }, 50);
+            });
         }
     }
+    
+    // 컴포넌트 렌더링 딜레이를 고려하여 두 번 초기화 시도
     setTimeout(initYetiAnimation, 300);
     setTimeout(initYetiAnimation, 1000);
     </script>
