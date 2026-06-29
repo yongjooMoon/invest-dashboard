@@ -225,36 +225,38 @@ if not st.session_state.logged_in:
     /* 🙈 오리지널 털복숭이 두 손(양팔) 애니메이션 및 까꿍(Peeking) 🙈 */
     #yeti-wrap .armL, #yeti-wrap .armR {
         transition: transform 0.45s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        transform-box: fill-box; /* SVG 요소 기준 관절(축) 고정 핵심 속성 */
     }
     
-    /* 기본 상태: 아래에 숨어 있음 */
+    /* 기본 상태: 아래에 숨어 있음 (비율 계산된 px 값) */
     #yeti-wrap .armL {
-        transform-origin: 20% 0%; /* top left */
-        transform: translate(-93px, 220px) rotate(105deg);
+        transform-origin: top left;
+        transform: translate(-65px, 154px) rotate(105deg);
     }
     #yeti-wrap .armR {
-        transform-origin: 80% 0%; /* top right */
-        transform: translate(-93px, 220px) rotate(-105deg);
+        transform-origin: top right;
+        transform: translate(-65px, 154px) rotate(-105deg);
     }
     
     /* 눈 가리기 상태 (비밀번호 포커스) */
     #yeti-wrap.yeti-hide .armL {
-        transform: translate(-93px, 10px) rotate(0deg);
+        transform: translate(-65px, 7px) rotate(0deg);
     }
     #yeti-wrap.yeti-hide .armR {
-        transform: translate(-93px, 10px) rotate(0deg);
-        transition-delay: 0.1s; /* 오른쪽 손이 살짝 늦게 올라오는 디테일 */
+        transform: translate(-65px, 7px) rotate(0deg);
+        transition-delay: 0.05s; /* 오른쪽 손이 살짝 늦게 올라오는 디테일 */
     }
 
     /* 두 손가락(까꿍용) */
     #yeti-wrap .twoFingers {
-        transform-origin: 0% 100%; /* bottom left */
-        transition: transform 0.35s ease-in-out;
+        transform-origin: bottom left;
+        transform-box: fill-box;
+        transition: transform 0.3s ease-in-out;
     }
     
     /* 지울 때 손가락 사이로 까꿍 (Peeking) */
     #yeti-wrap.yeti-peek .twoFingers {
-        transform: translate(-9px, -2px) rotate(30deg);
+        transform: translate(-6px, -1px) rotate(30deg);
     }
 
     /* 🔥 타이틀 색상 가독성 극대화 (화이트 + 빛나는 네온 효과) 🔥 */
