@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 import hashlib
 import re
@@ -51,7 +52,7 @@ def update_auth_state(is_logged_in, username, api_keys=None):
         st.session_state.api_keys = empty_keys
         global_session["api_keys"] = empty_keys
 
-# --- [3. 로그인 화면 (오로라 글래스모피즘 UI)] ---
+# --- [3. 로그인 화면 (오로라 글래스모피즘 + Yeti 애니메이션 UI)] ---
 if not st.session_state.logged_in:
     # 로그인 화면에만 적용되는 최신 트렌드 CSS 강제 주입
     st.markdown("""
@@ -125,7 +126,7 @@ if not st.session_state.logged_in:
         -webkit-backdrop-filter: blur(30px) !important;
         border: 1px solid rgba(255, 255, 255, 0.1) !important;
         border-radius: 24px !important;
-        padding: 3.5rem 3rem 2.5rem 3rem !important;
+        padding: 3rem 3rem 2.5rem 3rem !important;
         width: 400px !important;
         box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1) !important;
         position: relative;
@@ -176,22 +177,24 @@ if not st.session_state.logged_in:
         box-shadow: 0 15px 30px rgba(32, 201, 151, 0.4) !important;
     }
 
-    /* 모던 로고 타이포그래피 */
+    /* 모던 로고 및 Yeti 타이포그래피 */
     .logo-container {
         text-align: center;
-        margin-bottom: 2.5rem;
+        margin-bottom: 2rem;
+        position: relative;
     }
-    .glass-icon {
-        font-size: 32px;
-        line-height: 1;
-        margin-bottom: 15px;
-        display: inline-block;
-        padding: 16px;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 18px;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+    
+    /* 🙈 설인(Yeti) CSS 애니메이션 처리 🙈 */
+    #yeti-wrap.yeti-hide .paw-l {
+        transform: translate(40px, -65px) scale(1.1);
     }
+    #yeti-wrap.yeti-hide .paw-r {
+        transform: translate(-40px, -65px) scale(1.1);
+    }
+    #yeti-wrap.yeti-hide #eye-l, #yeti-wrap.yeti-hide #eye-r {
+        opacity: 0.3; /* 손으로 가릴 때 눈이 살짝 어두워짐 */
+    }
+
     .logo-title {
         color: #FFFFFF;
         font-size: 24px;
@@ -227,10 +230,31 @@ if not st.session_state.logged_in:
 
     # 폼 영역
     with st.form("login_form", clear_on_submit=True):
-        # 트렌디한 로고 렌더링
+        # 🙈 설인(Yeti) SVG 애니메이션 마크다운
         st.markdown("""
-        <div class="logo-container">
-            <div class="glass-icon">✨</div>
+        <div class="logo-container" id="yeti-wrap">
+            <svg id="yeti" viewBox="0 0 200 200" width="110" height="110" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">
+                <!-- Yeti Body -->
+                <path d="M 40 100 C 40 10, 160 10, 160 100 L 160 200 L 40 200 Z" fill="#F8FAFC" />
+                
+                <!-- Fluffy hair on top -->
+                <path d="M 70 25 Q 100 -10 130 25" fill="none" stroke="#F8FAFC" stroke-width="25" stroke-linecap="round"/>
+                <path d="M 85 15 Q 100 -20 115 15" fill="none" stroke="#F8FAFC" stroke-width="20" stroke-linecap="round"/>
+                
+                <!-- Face (다크테마에 맞춰 진한 네이비 톤) -->
+                <rect x="60" y="70" width="80" height="55" rx="27" fill="#0F172A" />
+                
+                <!-- Eyes (포인트 컬러인 민트색) -->
+                <circle cx="85" cy="95" r="7" fill="#20C997" id="eye-l" style="transition: transform 0.1s ease, opacity 0.3s ease;" />
+                <circle cx="115" cy="95" r="7" fill="#20C997" id="eye-r" style="transition: transform 0.1s ease, opacity 0.3s ease;" />
+                
+                <!-- Mouth -->
+                <path d="M 95 110 Q 100 115 105 110" fill="none" stroke="#64748B" stroke-width="3" stroke-linecap="round" />
+                
+                <!-- Paws (기본 위치는 밑, PW입력시 올라옴) -->
+                <circle cx="45" cy="160" r="22" fill="#E2E8F0" class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />
+                <circle cx="155" cy="160" r="22" fill="#E2E8F0" class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: center;" />
+            </svg>
             <h2 class="logo-title">QUANT DESK</h2>
             <p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>
         </div>
@@ -274,6 +298,50 @@ if not st.session_state.logged_in:
                         st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                 except Exception as e:
                     st.error(f"시스템 장애: {str(e)}")
+
+    # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작
+    components.html("""
+    <script>
+    function initYetiAnimation() {
+        const parent = window.parent.document;
+        // Streamlit의 DOM 엘리먼트 가져오기
+        const pwInput = parent.querySelector('input[type="password"]');
+        const idInputs = parent.querySelectorAll('input[type="text"]');
+        let idInput = null;
+        if(idInputs.length > 0) { idInput = idInputs[0]; } // 첫번째 텍스트 인풋이 아이디
+        
+        const yetiWrap = parent.getElementById('yeti-wrap');
+        const eyeL = parent.getElementById('eye-l');
+        const eyeR = parent.getElementById('eye-r');
+        
+        // 1. Password 포커스 시: 앞발로 눈 가리기
+        if (pwInput && yetiWrap) {
+            pwInput.addEventListener('focus', () => yetiWrap.classList.add('yeti-hide'));
+            pwInput.addEventListener('blur', () => yetiWrap.classList.remove('yeti-hide'));
+        }
+        
+        // 2. Username 타이핑 시: 글자 길이에 맞춰 눈동자가 따라가는 애니메이션
+        if (idInput && eyeL && eyeR) {
+            const trackEyes = (e) => {
+                let len = Math.min(e.target.value.length, 25);
+                let moveX = (len / 25) * 14 - 7; // -7px 부터 +7px 까지 눈동자 이동
+                eyeL.style.transform = `translateX(${moveX}px)`;
+                eyeR.style.transform = `translateX(${moveX}px)`;
+            };
+            idInput.addEventListener('input', trackEyes);
+            idInput.addEventListener('focus', trackEyes);
+            idInput.addEventListener('blur', () => {
+                eyeL.style.transform = `translateX(0px)`;
+                eyeR.style.transform = `translateX(0px)`;
+            });
+        }
+    }
+    // Streamlit 컴포넌트가 확실히 렌더링 된 후 JS가 바인딩되도록 딜레이 실행
+    setTimeout(initYetiAnimation, 300);
+    setTimeout(initYetiAnimation, 1000);
+    </script>
+    """, height=0, width=0)
+
     st.stop()
 
 
