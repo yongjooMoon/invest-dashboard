@@ -68,17 +68,6 @@ if not st.session_state.logged_in:
         display: none !important;
     }
 
-    /* 화면 가운데 정렬 베이스 */
-    .block-container {
-        padding: 0 !important;
-        max-width: 100% !important;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
-    }
-
     /* 🌟 오로라 메쉬 그라디언트 애니메이션 🌟 */
     .aurora-bg {
         position: fixed;
@@ -119,7 +108,7 @@ if not st.session_state.logged_in:
         100% { transform: translate(0, 0) scale(1) rotate(0deg); }
     }
 
-    /* 💎 글래스모피즘 로그인 박스 (완벽한 중앙 배치 적용) 💎 */
+    /* 💎 글래스모피즘 로그인 박스 (크기 고정 & 완벽한 정중앙 배치) 💎 */
     [data-testid="stForm"] {
         background: rgba(15, 23, 42, 0.4) !important;
         backdrop-filter: blur(30px) !important;
@@ -127,8 +116,12 @@ if not st.session_state.logged_in:
         border: 1px solid rgba(255, 255, 255, 0.1) !important;
         border-radius: 24px !important;
         padding: 3rem 3rem 2.5rem 3rem !important;
-        width: 400px !important;
-        max-width: 90vw !important; /* 모바일 대응 */
+        
+        /* 박스가 화면 전체로 늘어나는 현상 방지 (크기 강제 고정) */
+        width: 360px !important;
+        min-width: 360px !important;
+        max-width: 360px !important;
+        
         box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1) !important;
         
         /* 🔥 화면 정중앙(세로/가로) 고정 🔥 */
