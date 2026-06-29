@@ -224,29 +224,32 @@ if not st.session_state.logged_in:
     
     /* 🙈 진짜 털복숭이 설인(Yeti) CSS 애니메이션 처리 🙈 */
     #yeti-wrap.yeti-hide .paw-l {
-        transform: translate(45px, -65px) scale(1.1) rotate(15deg);
+        transform: translate(45px, 15px) !important;
     }
     #yeti-wrap.yeti-hide .paw-r {
-        transform: translate(-45px, -65px) scale(1.1) rotate(-15deg);
+        transform: translate(-45px, 15px) !important;
     }
-    #yeti-wrap.yeti-hide #eye-l, #yeti-wrap.yeti-hide #eye-r {
-        opacity: 0.3; /* 손으로 가릴 때 눈이 살짝 어두워짐 */
+    #yeti-wrap.yeti-hide #eye-l, #yeti-wrap.yeti-hide #eye-r,
+    #yeti-wrap.yeti-hide #eye-catch-l, #yeti-wrap.yeti-hide #eye-catch-r {
+        transform: translateY(3px) !important; /* 가릴때 눈이 살짝 내려감 */
     }
 
+    /* 🔥 타이틀 색상 묻힘 현상 완벽 방지 🔥 */
     .logo-title {
-        color: #FFFFFF;
-        font-size: 24px;
-        font-weight: 900;
-        letter-spacing: 3px;
-        margin: 0 0 8px 0;
-        font-family: 'Arial Black', sans-serif;
+        color: #FFFFFF !important;
+        font-size: 28px !important;
+        font-weight: 900 !important;
+        letter-spacing: 4px !important;
+        margin: 10px 0 8px 0 !important;
+        font-family: 'Arial Black', sans-serif !important;
+        text-shadow: 0 2px 10px rgba(0,0,0,0.5) !important;
     }
     .logo-subtitle {
-        color: #20C997;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 4px;
-        margin: 0;
+        color: #20C997 !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        letter-spacing: 4px !important;
+        margin: 0 !important;
     }
     
     /* 오류/경고 메시지 배경 투명화 */
@@ -268,32 +271,41 @@ if not st.session_state.logged_in:
 
     # 폼 영역
     with st.form("login_form", clear_on_submit=True):
-        # 🙈 로봇 느낌 완벽 탈피! 진짜 털복숭이 설인(Yeti) SVG
+        # 🙈 로봇 느낌 완벽 탈피! 진짜 귀여운 털복숭이 설인(Yeti) SVG
         st.markdown(
             '<div class="logo-container" id="yeti-wrap">'
-            '<svg id="yeti" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="120" height="120" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">'
-            '<!-- 털 복숭이 몸통 (Fluffy Body) -->'
-            '<path d="M100,20 C140,20 160,40 170,70 C185,75 195,85 190,105 C185,120 175,125 170,130 C175,145 170,165 150,175 C140,180 120,180 100,180 C80,180 60,180 50,175 C30,165 25,145 30,130 C25,125 15,120 10,105 C5,85 15,75 30,70 C40,40 60,20 100,20 Z" fill="#F8FAFC" />'
-            '<!-- 머리 삐죽 털 -->'
-            '<path d="M85,25 Q100,0 115,25" fill="none" stroke="#F8FAFC" stroke-width="15" stroke-linecap="round" />'
-            '<!-- 얼굴 배경 (다크 톤) -->'
-            '<path d="M60,80 C60,55 140,55 140,80 C140,115 115,130 100,130 C85,130 60,115 60,80 Z" fill="#0F172A" />'
-            '<!-- 눈 (민트색) -->'
-            '<circle cx="85" cy="85" r="6" fill="#20C997" id="eye-l" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
-            '<circle cx="115" cy="85" r="6" fill="#20C997" id="eye-r" style="transition: transform 0.1s ease, opacity 0.3s ease;" />'
-            '<!-- 볼터치 -->'
-            '<ellipse cx="70" cy="95" rx="5" ry="3" fill="#FF7979" opacity="0.3" />'
-            '<ellipse cx="130" cy="95" rx="5" ry="3" fill="#FF7979" opacity="0.3" />'
-            '<!-- 입 -->'
-            '<path d="M 92 105 Q 100 115 108 105" fill="none" stroke="#64748B" stroke-width="3" stroke-linecap="round" />'
-            '<!-- 팔/손 (기본 위치 아래, PW 입력시 얼굴로 회전하며 올라옴) -->'
-            '<g class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: 40px 160px;">'
-            '<circle cx="40" cy="150" r="18" fill="#E2E8F0" />'
-            '<path d="M33 145 L33 155 M40 145 L40 155 M47 145 L47 155" stroke="#94A3B8" stroke-width="2" stroke-linecap="round" />'
+            '<svg id="yeti" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="130" height="130" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">'
+            '<!-- 눈 덮인 원형 배경 -->'
+            '<circle cx="100" cy="100" r="95" fill="#E0F2FE" />'
+            '<!-- 털복숭이 몸통 -->'
+            '<path d="M 50,180 C 30,140 40,80 100,50 C 160,80 170,140 150,180 Z" fill="#FFFFFF" stroke="#94A3B8" stroke-width="3" />'
+            '<!-- 머리 위 삐죽거리는 털 -->'
+            '<path d="M 80,60 L 90,40 L 100,55 L 110,40 L 120,60" fill="#FFFFFF" stroke="#94A3B8" stroke-width="3" stroke-linejoin="round" />'
+            '<!-- 얼굴 부위 -->'
+            '<ellipse cx="100" cy="120" rx="40" ry="30" fill="#F1F5F9" />'
+            '<!-- 큰 눈 베이스 -->'
+            '<circle cx="85" cy="115" r="12" fill="#FFFFFF" />'
+            '<circle cx="115" cy="115" r="12" fill="#FFFFFF" />'
+            '<!-- 까만 눈동자 (움직이는 대상) -->'
+            '<circle cx="85" cy="115" r="6" fill="#1E293B" id="eye-l" style="transition: transform 0.1s ease;" />'
+            '<circle cx="115" cy="115" r="6" fill="#1E293B" id="eye-r" style="transition: transform 0.1s ease;" />'
+            '<!-- 눈동자 안의 반짝이는 형광 민트 캐치라이트 -->'
+            '<circle cx="87" cy="113" r="2.5" fill="#20C997" id="eye-catch-l" style="transition: transform 0.1s ease;" />'
+            '<circle cx="117" cy="113" r="2.5" fill="#20C997" id="eye-catch-r" style="transition: transform 0.1s ease;" />'
+            '<!-- 코 -->'
+            '<path d="M 96,125 L 104,125 L 100,130 Z" fill="#475569" />'
+            '<!-- 입 (귀엽게 벌리고 있는 모습) -->'
+            '<path d="M 90,135 C 90,145 110,145 110,135 Z" fill="#EF4444" stroke="#475569" stroke-width="2" />'
+            '<rect x="95" y="135" width="10" height="4" fill="#FFFFFF" />'
+            '<!-- 왼쪽 앞발 (눈을 가릴 때 올라옴) -->'
+            '<g class="paw-l" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform: translate(-15px, 70px);">'
+            '<path d="M -10,120 L 60,120 L 50,110 L 60,100 L 50,90 L 60,80 L -10,80 Z" fill="#FFFFFF" stroke="#94A3B8" stroke-width="3" stroke-linejoin="round" />'
+            '<path d="M 60,90 L 40,90 M 60,100 L 40,100 M 60,110 L 40,110" stroke="#94A3B8" stroke-width="3" stroke-linecap="round" />'
             '</g>'
-            '<g class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: 160px 160px;">'
-            '<circle cx="160" cy="150" r="18" fill="#E2E8F0" />'
-            '<path d="M153 145 L153 155 M160 145 L160 155 M167 145 L167 155" stroke="#94A3B8" stroke-width="2" stroke-linecap="round" />'
+            '<!-- 오른쪽 앞발 (눈을 가릴 때 올라옴) -->'
+            '<g class="paw-r" style="transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); transform: translate(15px, 70px);">'
+            '<path d="M 210,120 L 140,120 L 150,110 L 140,100 L 150,90 L 140,80 L 210,80 Z" fill="#FFFFFF" stroke="#94A3B8" stroke-width="3" stroke-linejoin="round" />'
+            '<path d="M 140,90 L 160,90 M 140,100 L 160,100 M 140,110 L 160,110" stroke="#94A3B8" stroke-width="3" stroke-linecap="round" />'
             '</g>'
             '</svg>'
             '<h2 class="logo-title">QUANT DESK</h2>'
@@ -354,26 +366,33 @@ if not st.session_state.logged_in:
         const yetiWrap = parent.getElementById('yeti-wrap');
         const eyeL = parent.getElementById('eye-l');
         const eyeR = parent.getElementById('eye-r');
+        const eyeCatchL = parent.getElementById('eye-catch-l');
+        const eyeCatchR = parent.getElementById('eye-catch-r');
         
-        // 1. Password 포커스 시: 앞발로 눈 가리기
+        // 1. Password 포커스 시: 양쪽 털복숭이 손이 올라와 눈 가리기
         if (pwInput && yetiWrap) {
             pwInput.addEventListener('focus', () => yetiWrap.classList.add('yeti-hide'));
             pwInput.addEventListener('blur', () => yetiWrap.classList.remove('yeti-hide'));
         }
         
-        // 2. Username 타이핑 시: 글자 길이에 맞춰 눈동자가 따라가는 애니메이션
+        // 2. Username 타이핑 시: 글자 길이에 맞춰 눈동자가 따라가는 애니메이션 (움직임 반경 확장)
         if (idInput && eyeL && eyeR) {
             const trackEyes = (e) => {
                 let len = Math.min(e.target.value.length, 25);
-                let moveX = (len / 25) * 14 - 7;
+                let moveX = (len / 25) * 12 - 6; // 눈동자가 좌우로 넓게 움직이게 폭 증가 (-6px ~ +6px)
+                
                 eyeL.style.transform = `translateX(${moveX}px)`;
                 eyeR.style.transform = `translateX(${moveX}px)`;
+                if(eyeCatchL) eyeCatchL.style.transform = `translateX(${moveX}px)`;
+                if(eyeCatchR) eyeCatchR.style.transform = `translateX(${moveX}px)`;
             };
             idInput.addEventListener('input', trackEyes);
             idInput.addEventListener('focus', trackEyes);
             idInput.addEventListener('blur', () => {
                 eyeL.style.transform = `translateX(0px)`;
                 eyeR.style.transform = `translateX(0px)`;
+                if(eyeCatchL) eyeCatchL.style.transform = `translateX(0px)`;
+                if(eyeCatchR) eyeCatchR.style.transform = `translateX(0px)`;
             });
 
             // 3. 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출 차단하고 포커스 이동
