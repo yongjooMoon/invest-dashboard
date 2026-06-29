@@ -11,7 +11,7 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 초기 설정
-st.set_page_config(page_title="EVAN TRADERS", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
 
 # --- [2. 글로벌 세션 (서버 영구 유지) 설정] ---
 @st.cache_resource
@@ -51,185 +51,199 @@ def update_auth_state(is_logged_in, username, api_keys=None):
         st.session_state.api_keys = empty_keys
         global_session["api_keys"] = empty_keys
 
-# --- [3. 로그인 화면 (트렌디 & 모던 UI)] ---
+# --- [3. 로그인 화면 (오로라 글래스모피즘 UI)] ---
 if not st.session_state.logged_in:
-    # 로그인 화면 전용 커스텀 CSS 강제 주입
+    # 로그인 화면에만 적용되는 최신 트렌드 CSS 강제 주입
     st.markdown("""
     <style>
-    /* 배경 화면 아주 어두운 톤으로 */
+    /* 전체 배경: 칠흑 같은 우주 공간 */
     .stApp {
-        background-color: #0B0E14 !important;
+        background-color: #030712 !important;
+        overflow: hidden !important;
     }
     
-    /* 기존 헤더, 사이드바 숨김 */
+    /* 기존 헤더, 사이드바 완전 숨김 */
     [data-testid="stSidebar"], [data-testid="stHeader"] {
         display: none !important;
     }
 
-    /* 화면 가운데 완벽 정렬 */
-    [data-testid="stAppViewContainer"] {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 100vh;
-        padding: 0 !important;
-    }
+    /* 화면 가운데 정렬 */
     .block-container {
         padding: 0 !important;
         max-width: 100% !important;
         display: flex;
+        flex-direction: column;
         justify-content: center;
         align-items: center;
-        width: 100%;
+        min-height: 100vh;
     }
 
-    /* 폼 전체 래퍼 박스 설정 (이미지처럼 깔끔한 모서리와 입체감) */
+    /* 🌟 오로라 메쉬 그라디언트 애니메이션 🌟 */
+    .aurora-bg {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 0;
+        overflow: hidden;
+        background-color: #030712;
+    }
+    .orb {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(100px);
+        opacity: 0.6;
+        animation: float 20s infinite ease-in-out alternate;
+    }
+    .orb-1 {
+        width: 50vw; height: 50vw;
+        background: #20C997; /* 몽환적인 민트 */
+        top: -20%; left: -10%;
+        animation-delay: 0s;
+    }
+    .orb-2 {
+        width: 40vw; height: 40vw;
+        background: #3B82F6; /* 깊은 블루 */
+        bottom: -20%; right: -10%;
+        animation-delay: -5s;
+    }
+    .orb-3 {
+        width: 40vw; height: 40vw;
+        background: #8B5CF6; /* 신비로운 퍼플 */
+        top: 30%; left: 40%;
+        animation-delay: -10s;
+    }
+    @keyframes float {
+        0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+        33% { transform: translate(5vw, -5vh) scale(1.1) rotate(10deg); }
+        66% { transform: translate(-5vw, 5vh) scale(0.9) rotate(-10deg); }
+        100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+    }
+
+    /* 💎 글래스모피즘 로그인 박스 💎 */
     [data-testid="stForm"] {
-        background-color: #12151A !important;
-        border: 1px solid #1E2329 !important;
-        border-radius: 12px !important;
-        padding: 2.5rem 3rem 1.5rem 3rem !important;
-        width: 360px !important;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9) !important;
+        background: rgba(15, 23, 42, 0.4) !important;
+        backdrop-filter: blur(30px) !important;
+        -webkit-backdrop-filter: blur(30px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 24px !important;
+        padding: 3.5rem 3rem 2.5rem 3rem !important;
+        width: 400px !important;
+        box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1) !important;
         position: relative;
         z-index: 10;
         margin: 0 auto;
     }
 
-    /* 입력창 라벨 (USERNAME, PASSWORD) */
+    /* 폼 내부 텍스트 및 라벨 (USERNAME, PASSWORD) */
     .stTextInput label p {
-        color: #6A7381 !important;
-        font-size: 10px !important;
+        color: #94A3B8 !important;
+        font-size: 11px !important;
         font-weight: 700 !important;
-        letter-spacing: 1px;
+        letter-spacing: 2px !important;
+        text-transform: uppercase !important;
     }
 
-    /* 입력창 디자인 */
+    /* 입력창 디자인 (투명한 유리 느낌) */
     .stTextInput input {
-        background-color: #1A1F26 !important;
+        background-color: rgba(0, 0, 0, 0.25) !important;
         color: #FFFFFF !important;
-        border: 1px solid #2A313C !important;
-        border-radius: 6px !important;
-        padding: 0.8rem 1rem !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 12px !important;
+        padding: 0.9rem 1.2rem !important;
+        transition: all 0.3s ease !important;
     }
     .stTextInput input:focus {
         border-color: #20C997 !important;
-        box-shadow: 0 0 0 1px #20C997 !important;
+        background-color: rgba(0, 0, 0, 0.4) !important;
+        box-shadow: 0 0 0 1px rgba(32, 201, 151, 0.5) !important;
     }
 
-    /* 로그인 버튼 */
+    /* 트렌디한 그라디언트 로그인 버튼 */
     [data-testid="stFormSubmitButton"] button {
-        background-color: #20C997 !important;
-        color: #000000 !important;
+        background: linear-gradient(135deg, #20C997 0%, #007BFF 100%) !important;
+        color: #ffffff !important;
+        font-size: 14px !important;
         font-weight: 800 !important;
-        letter-spacing: 1px !important;
-        border-radius: 6px !important;
+        letter-spacing: 3px !important;
+        border-radius: 12px !important;
         border: none !important;
-        margin-top: 1.5rem !important;
-        padding: 0.6rem !important;
+        margin-top: 2rem !important;
+        padding: 0.8rem !important;
         transition: all 0.3s ease !important;
+        box-shadow: 0 10px 20px rgba(32, 201, 151, 0.25) !important;
     }
     [data-testid="stFormSubmitButton"] button:hover {
-        background-color: #18A87D !important;
-        box-shadow: 0 0 15px rgba(32, 201, 151, 0.4) !important;
-    }
-    [data-testid="stFormSubmitButton"] button p {
-        font-size: 13px !important;
+        transform: translateY(-2px);
+        box-shadow: 0 15px 30px rgba(32, 201, 151, 0.4) !important;
     }
 
-    /* 로고 컨테이너 (EVAN TRADERS) */
+    /* 모던 로고 타이포그래피 */
     .logo-container {
         text-align: center;
-        margin-bottom: 2rem;
+        margin-bottom: 2.5rem;
     }
-    .logo-box {
-        width: 64px;
-        height: 64px;
-        margin: 0 auto 15px auto;
-        border: 2px solid #E2E8F0;
-        border-radius: 12px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        color: #E2E8F0;
-        background-color: #161A20;
+    .glass-icon {
+        font-size: 32px;
+        line-height: 1;
+        margin-bottom: 15px;
+        display: inline-block;
+        padding: 16px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
     }
-    .logo-box .top { font-family: 'Arial Black', sans-serif; font-size: 26px; line-height: 1; letter-spacing: -2px; margin-top: 5px; }
-    .logo-box .bottom { font-family: 'Arial', sans-serif; font-size: 7px; font-weight: bold; letter-spacing: 1px; margin-top: -2px; }
-    
     .logo-title {
         color: #FFFFFF;
-        font-size: 16px;
-        font-weight: 800;
-        letter-spacing: 1px;
-        margin: 0 0 5px 0;
+        font-size: 24px;
+        font-weight: 900;
+        letter-spacing: 3px;
+        margin: 0 0 8px 0;
+        font-family: 'Arial Black', sans-serif;
     }
     .logo-subtitle {
         color: #20C997;
-        font-size: 9px;
-        font-weight: 700;
-        letter-spacing: 1.5px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 4px;
         margin: 0;
     }
-
-    /* 카피라이트 텍스트 */
-    .copyright-text {
-        text-align: center;
-        color: #3B4252;
-        font-size: 9px;
-        margin-top: 1.5rem;
-        letter-spacing: 0.5px;
-    }
-
-    /* 하단 애니메이션 웨이브 (기하학적 네온 라인) */
-    .neon-wave {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 200vw;
-        height: 40vh;
-        background-image: url("data:image/svg+xml,%3Csvg width='1440' height='300' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 150 L 300 130 L 700 240 L 1100 160 L 1440 140' stroke='rgba(32,201,151,0.5)' stroke-width='10' fill='none' style='filter: blur(10px);' /%3E%3Cpath d='M0 150 L 300 130 L 700 240 L 1100 160 L 1440 140' stroke='%2320C997' stroke-width='2' fill='none' /%3E%3Cpath d='M0 150 L 300 130 L 700 240 L 1100 160 L 1440 140 L 1440 300 L 0 300 Z' fill='url(%23grad)' opacity='0.15' /%3E%3Cdefs%3E%3ClinearGradient id='grad' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%2320C997' /%3E%3Cstop offset='100%25' stop-color='%230B0E14' stop-opacity='0' /%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E");
-        background-repeat: repeat-x;
-        background-size: 1440px 100%;
-        animation: moveWave 25s linear infinite;
-        pointer-events: none;
-        z-index: 0;
-    }
-    @keyframes moveWave {
-        0% { transform: translateX(0); }
-        100% { transform: translateX(-1440px); }
+    
+    /* 오류/경고 메시지 배경 투명화 */
+    [data-testid="stAlert"] {
+        background: rgba(0,0,0,0.4) !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        backdrop-filter: blur(10px);
+        color: white !important;
     }
     </style>
     
-    <!-- 움직이는 백그라운드 웨이브 주입 -->
-    <div class="neon-wave"></div>
+    <!-- 움직이는 오로라 백그라운드 HTML 주입 -->
+    <div class="aurora-bg">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
     """, unsafe_allow_html=True)
 
+    # 폼 영역
     with st.form("login_form", clear_on_submit=True):
-        # 폼 내부에 트렌디한 로고 렌더링
+        # 트렌디한 로고 렌더링
         st.markdown("""
         <div class="logo-container">
-            <div class="logo-box">
-                <div class="top">ER</div>
-                <div class="bottom">TRADERS</div>
-            </div>
-            <h3 class="logo-title">EVAN TRADERS</h3>
-            <p class="logo-subtitle">QUANT TRADING SYSTEM</p>
+            <div class="glass-icon">✨</div>
+            <h2 class="logo-title">QUANT DESK</h2>
+            <p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>
         </div>
         """, unsafe_allow_html=True)
         
         login_username = st.text_input("USERNAME", key="login_id")
         login_pw = st.text_input("PASSWORD", type="password")
         
-        submitted = st.form_submit_button("LOGIN", type="primary", use_container_width=True)
-        
-        # 저작권 텍스트
-        st.markdown("<p class='copyright-text'>© 2024 EVAN TRADERS</p>", unsafe_allow_html=True)
+        submitted = st.form_submit_button("ENTER SYSTEM", type="primary", use_container_width=True)
         
         if submitted:
             if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
-                st.error("🚨 아이디에는 한글을 입력할 수 없습니다. 영문과 숫자만 입력해 주세요.")
+                st.error("🚨 영문과 숫자만 입력해 주세요.")
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
@@ -257,13 +271,15 @@ if not st.session_state.logged_in:
                         st.session_state.current_menu = "quant"
                         st.rerun()
                     else:
-                        st.error("❌ 등록되지 않은 계정이거나 비밀번호가 일치하지 않습니다.")
+                        st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                 except Exception as e:
-                    st.error(f"시스템 데이터베이스 통신 장애: {str(e)}")
+                    st.error(f"시스템 장애: {str(e)}")
     st.stop()
 
 
 # --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
+# 로그인 성공 시, 위의 몽환적인 다크 테마/오로라 배경은 렌더링되지 않으므로 
+# 자연스럽게 원래 원하시던 '깔끔한 흰색 배경'의 대시보드로 돌아옵니다.
 
 st.markdown("""
 <style>
