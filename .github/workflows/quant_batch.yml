@@ -1,0 +1,39 @@
+name: Daily Quant Batch
+
+on:
+  schedule:
+    # 🌍 GitHub 서버는 UTC(영국) 시간 기준입니다.
+    # 한국 14:30 KST = UTC 05:30 입니다.
+    # 평일(월~금)에만 동작하도록 1-5로 지정합니다.
+    - cron: '30 5 * * 1-5'
+  
+  # 원할 때 GitHub 페이지에서 버튼을 눌러 수동 실행할 수 있게 해줍니다.
+  workflow_dispatch: 
+
+jobs:
+  run-quant-batch:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      # (주의) 프로젝트 폴더에 requirements.txt가 있어야 합니다!
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Run Quant Batch Script
+      # GitHub 저장소 보안 탭에 등록한 암호들을 환경변수로 주입합니다.
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+        DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      run: |
+        python quant_cron.py
