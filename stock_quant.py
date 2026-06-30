@@ -56,18 +56,24 @@ def calculate_exit_risk(curr, entry, stop):
     return max(0, min(100, int(risk)))
 
 def format_marcap(marcap_100m):
-    if marcap_100m is None or pd.isna(marcap_100m) or marcap_100m == 0:
+    if marcap_100m is None or pd.isna(marcap_100m):
         return "N/A"
     try:
-        marcap_100m = float(marcap_100m)
-        if marcap_100m >= 10000:
-            jo = int(marcap_100m // 10000)
-            eok = int(marcap_100m % 10000)
+        val = float(marcap_100m)
+        if val == 0: return "0억"
+        
+        is_negative = val < 0
+        abs_val = abs(val)
+        
+        if abs_val >= 10000:
+            jo = int(abs_val // 10000)
+            eok = int(abs_val % 10000)
+            sign = "-" if is_negative else ""
             if eok > 0:
-                return f"{jo}조 {eok:,}억"
-            return f"{jo}조"
+                return f"{sign}{jo}조 {eok:,}억"
+            return f"{sign}{jo}조"
         else:
-            return f"{int(marcap_100m):,}억"
+            return f"{int(val):,}억"
     except:
         return "N/A"
 
@@ -90,7 +96,7 @@ def get_ui_financial_extras(symbol, fund):
                     clean = re.sub(r"[^\d.\-]", "", td.text)
                     if clean and clean != '-': vals.append(float(clean))
                     else: vals.append(None)
-
+                
                 valid_vals = [v for v in vals if v is not None]
                 if not valid_vals: continue
                 recent_val = valid_vals[-1]
@@ -124,21 +130,21 @@ def live_evaluate_stock(supabase, symbol, name=""):
     # 1. DB에서 캐싱된 펀더멘털 데이터 조회
     fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
-
+    
     # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목)
     required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억']
     needs_update = not fund or any(fund.get(k) is None for k in required_keys)
-
+    
     # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
     if needs_update:
         scraped_fund = fetch_naver_fundamental(symbol) # core 원본 함수 호출
         for k, v in scraped_fund.items():
             if v is not None:
                 fund[k] = v
-
+        
         # UI 리포트에 보여주기 위한 전용 데이터 보완 스크래핑
         fund = get_ui_financial_extras(symbol, fund)
-
+    
         if fund:
             try:
                 save_fundamental_to_db(supabase, symbol, name, fund)
@@ -150,7 +156,7 @@ def live_evaluate_stock(supabase, symbol, name=""):
     p_net = fund.get('net_income_prev')
     if c_net is not None and p_net is not None and p_net != 0:
         fund['net_income_yoy'] = ((c_net - p_net) / abs(p_net)) * 100
-
+        
     c_rev = fund.get('revenue_cur')
     p_rev = fund.get('revenue_prev')
     if c_rev is not None and p_rev is not None and p_rev != 0:
@@ -162,7 +168,7 @@ def live_evaluate_stock(supabase, symbol, name=""):
 
     # 4. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
     metrics = calc_quant_metrics(df, fund)
-
+    
     if "ma20" not in metrics or metrics.get("ma20", 0) == 0:
         return df, fund, 0, {}
 
@@ -186,7 +192,7 @@ def live_evaluate_stock(supabase, symbol, name=""):
     }
 
     pass_count = sum([1 for g in gates.values() if g['pass']])
-
+    
     # 6. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
     mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
     net_yoy = metrics.get("net_yoy", 0)
@@ -287,17 +293,17 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     st.divider()
 
     if factor_score is None: factor_score = sel.get('factor_score', 0)
-
+    
     # ── [버그 수정: 과거 캐시가 아닌, 화면에 그릴 진짜 gates 데이터를 먼저 확정합니다] ──
     if gates is None:
         gates_data = sel.get("filter_details", {})
         if not gates_data or "Growth Composite" not in gates_data:
             gates = {
-                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'},
+                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'}, 
                 'B': {'name': 'Dynamic MDD', 'pass': False, 'reason': '-'},
-                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'},
+                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'}, 
                 'D': {'name': 'Trend Alignment', 'pass': False, 'reason': '-'},
-                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'},
+                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'}, 
                 'F': {'name': 'Volume Surge', 'pass': False, 'reason': '-'}
             }
         else:
@@ -351,7 +357,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
         try:
             val = float(val)
             if is_pct: return f"{val:+.2f}%" if val < 0 else f"{val:.2f}%"
-            if is_eok: return f"{val:,.0f}억"
+            if is_eok: return format_marcap(val)
             return f"{val:,.2f}"
         except: return "N/A"
 
@@ -385,29 +391,10 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     else:
         st.info("가격 데이터가 로드되지 않았습니다.")
 
-
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner("캐시된 데이터를 불러오는 중입니다..."):
-
-        # 💡 [핵심 추가] 포트폴리오(id=11) 종목이라서 디테일 데이터가 비어있다면?
-        # 1순위: 스크리닝 캐시(id=1, 2)에서 복사, 2순위: 펀더멘털 DB에서 복사해옵니다!
-        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
-            c_list, w_list, _ = load_screening_result(supabase)
-            found = False
-            for item in c_list + w_list:
-                if item['symbol'] == sel['symbol']:
-                    # 스크리닝 쪽에 있는 풍부한 데이터를 포트폴리오 객체(sel)에 덮어씌움
-                    sel.update(item)
-                    found = True
-                    break
-
-            # 만약 시간이 지나 스크리닝 리스트에서 탈락한 보유 종목이라면? DB에서 재무 정보라도 가져옴
-            if not found:
-                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
-                if fund_db:
-                    sel.update(fund_db)
-
+        # [수정] 무조건 캐시 우선! 실시간 재조회(live_evaluate_stock) 완벽 차단
         original_score = sel.get('factor_score', 0)
 
         # 차트를 그리기 위한 가격 데이터만 DB에서 빠르고 조용하게 가져옵니다 (API 미호출)
@@ -417,10 +404,9 @@ def show_detail_dialog(sel, supabase):
 
         if 'ret_1m' not in sel or sel['ret_1m'] == 0:
             if df_price is not None and len(df_price) >= 21:
-                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[
-                    -21] * 100
+                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    # 꽉 채워진 sel 데이터를 넘겨줍니다.
+    # 캐시된 sel 안의 'filter_details'를 그대로 넘겨서 화면에 고정 출력 (gates=None으로 넘기면 알아서 파싱)
     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
 
@@ -464,7 +450,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 max_price = max([h.get("current_price", 0) for h in holdings])
                 total_stocks = len(holdings)
                 total_seed = max_price * total_stocks
-
+                
                 st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
                 st.markdown(f"## {total_seed:,.0f} 원")
                 st.caption(f"종목당 {max_price:,.0f}원 기준 × {total_stocks}종목")
@@ -684,7 +670,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     df_price = load_price_from_db(supabase, search_query)
                     if df_price.empty:
                         df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-
+                    
                     if 'ret_1m' not in sel or sel['ret_1m'] == 0:
                         if df_price is not None and len(df_price) >= 21:
                             sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
@@ -709,7 +695,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     }
                     if live_fund: sel.update(live_fund)
                     render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
-
+                    
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
@@ -744,9 +730,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         > **"관중들이 우르르 몰려오며 환호하고 있는가?"**
         * 단순히 가격만 슬금슬금 오르는 게 아니라, 평소(60일 평균)보다 거래량이 1.5배 이상 '빵!' 터지는 순간이어야 합니다. 시장의 거대한 자금이 쏠리면서 모멘텀이 터졌다는 강력한 증거입니다.
         """)
-
+        
         st.divider()
-
+        
         st.markdown("### 🚨 생존 매도 3대 원칙 (Exit Signals)")
         st.markdown("""
         **1. Trailing Stop (ATR 기반 동적 손절)**
