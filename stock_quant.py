@@ -287,20 +287,8 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     st.divider()
 
     if factor_score is None: factor_score = sel.get('factor_score', 0)
-    total_pass = sel.get('total_pass', sum([1 for g in gates.values() if g['pass']]) if gates else 0)
-
-    c_header, c_gauge = st.columns([3, 2])
-    with c_header:
-        st.markdown("### ⚡ Quant Scores")
-        c1, c2 = st.columns(2)
-        c1.metric("실시간 랭킹 스코어", f"{factor_score:.2f}점")
-        c2.metric("현재시점 생존 필터", f"{total_pass} / 6")
-        st.info("💡 과거 배치(Cron) 시점엔 6/6 통과였어도, **현재 실시간 주가 변동**에 따라 지표가 하락(5/6 등)할 수 있습니다.")
-
-    with c_gauge:
-        render_single_gauge(factor_score)
-
-    st.markdown("##### Entry Gates (6 conditions)")
+    
+    # ── [버그 수정: 과거 캐시가 아닌, 화면에 그릴 진짜 gates 데이터를 먼저 확정합니다] ──
     if gates is None:
         gates_data = sel.get("filter_details", {})
         if not gates_data or "Growth Composite" not in gates_data:
@@ -322,6 +310,21 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
                 'F': {'name': 'Volume Surge', 'pass': gates_data.get("Volume Surge", {}).get("pass", False), 'reason': gates_data.get("Volume Surge", {}).get("reason", "-")}
             }
 
+    # [수정] 무조건 현재 확정된 gates 변수 안의 True 개수를 직접 셉니다.
+    total_pass = sum([1 for g in gates.values() if g['pass']])
+
+    c_header, c_gauge = st.columns([3, 2])
+    with c_header:
+        st.markdown("### ⚡ Quant Scores")
+        c1, c2 = st.columns(2)
+        c1.metric("실시간 랭킹 스코어", f"{factor_score:.2f}점")
+        c2.metric("현재시점 생존 필터", f"{total_pass} / 6")
+        st.info("💡 과거 배치(Cron) 시점엔 6/6 통과였어도, **현재 실시간 주가 변동**에 따라 지표가 하락(5/6 등)할 수 있습니다.")
+
+    with c_gauge:
+        render_single_gauge(factor_score)
+
+    st.markdown("##### Entry Gates (6 conditions)")
     cols = st.columns(6)
     labels = ['A', 'B', 'C', 'D', 'E', 'F']
     for idx, (col, key) in enumerate(zip(cols, gates.keys())):
