@@ -9,6 +9,7 @@ quant_core.py
 3. 스코어(Ranking)는 생존 종목들의 상대평가용으로만 사용
 4. 펀더멘털(Fundamental) 스크래퍼 강화 및 빈값 통과 버그(>=0) 차단
 5. [수정] 현실적 진입가(Entry Price) 적용: 과거 이동평균(5MA)이 아닌 종가 돌파 시점(curr_price) 사용
+6. [추가] UI 리포트용 지표(PER, PBR, ROA, 영업이익률 등) 캐시 저장 추가
 """
 
 import json, re, time
@@ -144,8 +145,14 @@ def fetch_dart_financial(corp_code: str, dart_api_key: str, year: int = None) ->
     return result
 
 def fetch_naver_fundamental(symbol: str) -> dict:
-    """네이버 펀더멘털 종합 수집 (누락 방지)"""
-    fund = {"roe": None, "debt_ratio": None, "op_profit_cur": None, "op_profit_prev": None, "net_income_cur": None, "net_income_prev": None, "revenue_cur": None, "revenue_prev": None}
+    """네이버 펀더멘털 종합 수집 (누락 방지) - UI 리포트용 추가 필드 수집 기능 포함"""
+    fund = {
+        "roe": None, "debt_ratio": None, 
+        "op_profit_cur": None, "op_profit_prev": None, 
+        "net_income_cur": None, "net_income_prev": None, 
+        "revenue_cur": None, "revenue_prev": None,
+        "op_margin": None, "roa": None, "per": None, "pbr": None
+    }
     try:
         url = f"https://finance.naver.com/item/main.naver?code={symbol}"
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
@@ -178,8 +185,12 @@ def fetch_naver_fundamental(symbol: str) -> dict:
                 elif "당기순이익" in label or ("순이익" in label and "순이익률" not in label):
                     fund['net_income_cur'] = recent_val
                     fund['net_income_prev'] = prev_val
+                elif "영업이익률" in label: fund['op_margin'] = recent_val
                 elif "ROE" in label: fund['roe'] = recent_val
+                elif "ROA" in label: fund['roa'] = recent_val
                 elif "부채비율" in label: fund['debt_ratio'] = recent_val
+                elif "PER" in label: fund['per'] = recent_val
+                elif "PBR" in label: fund['pbr'] = recent_val
 
     except: pass
     return fund
@@ -192,15 +203,24 @@ def load_fundamental_from_db(supabase, symbol: str) -> dict | None:
     return None
 
 def save_fundamental_to_db(supabase, symbol: str, name: str, data: dict):
-    supabase.table(TBL_FUNDA).upsert({
+    payload = {
         "symbol": symbol, "name": name,
         "roe": data.get("roe"), "debt_ratio": data.get("debt_ratio"),
         "op_profit_cur": data.get("op_profit_cur"), "op_profit_prev": data.get("op_profit_prev"),
         "net_income_cur": data.get("net_income_cur"), "net_income_prev": data.get("net_income_prev"),
         "revenue_cur": data.get("revenue_cur"), "revenue_prev": data.get("revenue_prev"),
         "foreign_net_buy": data.get("foreign_net_buy"), "institute_net_buy": data.get("institute_net_buy"),
+        "op_margin": data.get("op_margin"),
+        "roa": data.get("roa"),
+        "per": data.get("per"),
+        "pbr": data.get("pbr"),
         "updated_at": now_kst_str(),
-    }).execute()
+    }
+    try:
+        supabase.table(TBL_FUNDA).upsert(payload).execute()
+    except Exception as e:
+        # DB 컬럼이 없어서 저장에 실패하더라도 JSON 캐시에는 들어가므로 무시하고 진행
+        print(f"  [!] DB 저장 오류 (신규 컬럼 누락 시 무시): {e}")
 
 def get_fundamental(supabase, symbol: str, name: str, dart_api_key: str = "", dart_corp_map: dict = None) -> dict:
     cached = load_fundamental_from_db(supabase, symbol)
@@ -303,9 +323,23 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
             continue
 
         # [수정] 추격매수는 돌파한 시점의 '현재 가격(종가)'으로 진입하는 것이 가장 현실적입니다. 
-        # 기존의 과거 5평선 평균으로 잡으면 백테스트 수익률은 높게 나오지만 현실과 괴리가 생깁니다.
         entry_price = curr_price
 
+        # 성장률 YoY 및 영업이익률 UI 보고용 사전 계산
+        c_net = fund.get('net_income_cur')
+        p_net = fund.get('net_income_prev')
+        net_yoy = ((c_net - p_net) / abs(p_net) * 100) if c_net is not None and p_net is not None and p_net != 0 else None
+
+        c_rev = fund.get('revenue_cur')
+        p_rev = fund.get('revenue_prev')
+        rev_yoy = ((c_rev - p_rev) / abs(p_rev) * 100) if c_rev is not None and p_rev is not None and p_rev != 0 else None
+        
+        c_op = fund.get('op_profit_cur')
+        op_margin = fund.get('op_margin')
+        if op_margin is None and c_op is not None and c_rev:
+            op_margin = (c_op / c_rev) * 100
+
+        # UI에서 N/A 방지를 위해 캐시 JSON 내부에 모든 펀더멘털 데이터를 꽉꽉 채워 넣습니다!
         candidates.append({
             "symbol": symbol, "name": name, "market": row.get("Market", "-"),
             "marcap_억": round(row.get("Marcap", 0) / 1e8, 0),
@@ -313,6 +347,16 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
             "ret_1m": round(float((curr_price - df["Close"].iloc[-21]) / df["Close"].iloc[-21] * 100) if len(df) >= 21 else 0.0, 2),
             "metrics": metrics, "pass_count": pass_count,
             "roe": fund.get("roe"),
+            "debt_ratio": fund.get("debt_ratio"),
+            "op_margin": op_margin,
+            "roa": fund.get("roa"),
+            "per": fund.get("per"),
+            "pbr": fund.get("pbr"),
+            "revenue_cur": fund.get("revenue_cur"),
+            "op_profit_cur": fund.get("op_profit_cur"),
+            "net_income_cur": fund.get("net_income_cur"),
+            "revenue_yoy": rev_yoy,
+            "net_income_yoy": net_yoy,
             "filter_details": {
                 "Growth Composite": {"pass": f_growth, "reason": f"Comp {metrics['growth_composite']:+.1f}%"},
                 "Dynamic MDD": {"pass": f_mdd, "reason": f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
@@ -340,7 +384,8 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
     confirmed, watchlist = [], []
     for i, c in enumerate(candidates):
         c["factor_score"] = round(factor_score.iloc[i], 2)
-        c["net_income_yoy"] = round(c["metrics"]["net_yoy"], 2)
+        if c.get("net_income_yoy") is None:
+            c["net_income_yoy"] = round(c["metrics"]["net_yoy"], 2)
         c["momentum_score"] = round(((c["current_price"] - c["metrics"]["ma60"]) / c["metrics"]["ma60"]) * 100, 2)
         c["screened_at"] = now_kst_str()
         c["total_pass"] = c["pass_count"]
