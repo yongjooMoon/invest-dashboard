@@ -597,7 +597,8 @@ st.markdown("""
         width: 80px !important;
         min-width: 80px !important;
         max-width: 80px !important;
-        background-color: #f8f9fa;
+        /* 다크모드/라이트모드 자동 대응을 위해 하드코딩된 색상 제거 후 변수 사용 */
+        background-color: var(--secondary-background-color) !important;
     }
     section[data-testid="stSidebar"] .block-container {
         padding: 2rem 0.5rem !important;
