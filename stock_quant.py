@@ -394,7 +394,25 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner("캐시된 데이터를 불러오는 중입니다..."):
-        # [수정] 무조건 캐시 우선! 실시간 재조회(live_evaluate_stock) 완벽 차단
+        
+        # 💡 [핵심 추가] 포트폴리오(id=11) 종목이라서 디테일 데이터가 비어있다면?
+        # 1순위: 스크리닝 캐시(id=1, 2)에서 복사, 2순위: 펀더멘털 DB에서 복사해옵니다!
+        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
+            c_list, w_list, _ = load_screening_result(supabase)
+            found = False
+            for item in c_list + w_list:
+                if item['symbol'] == sel['symbol']:
+                    # 스크리닝 쪽에 있는 풍부한 데이터를 포트폴리오 객체(sel)에 덮어씌움
+                    sel.update(item)
+                    found = True
+                    break
+            
+            # 만약 시간이 지나 스크리닝 리스트에서 탈락한 보유 종목이라면? DB에서 재무 정보라도 가져옴
+            if not found:
+                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
+                if fund_db:
+                    sel.update(fund_db)
+
         original_score = sel.get('factor_score', 0)
 
         # 차트를 그리기 위한 가격 데이터만 DB에서 빠르고 조용하게 가져옵니다 (API 미호출)
@@ -406,9 +424,8 @@ def show_detail_dialog(sel, supabase):
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    # 캐시된 sel 안의 'filter_details'를 그대로 넘겨서 화면에 고정 출력 (gates=None으로 넘기면 알아서 파싱)
+    # 꽉 채워진 sel 데이터를 넘겨줍니다.
     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
-
 
 # ══════════════════════════════════════════
 # [Main Entry Point]
@@ -617,17 +634,47 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # 탭 3: 매도 히스토리
     # ────────────────────────────────────────────────────────
     with tab_hist:
-        st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리")
+        st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리 & 성과 지표")
 
         sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
         if sell_trades:
+            # --- [추가된 타율 및 손익비 계산 로직] ---
+            wins = [t for t in sell_trades if t.get('return_rate', 0) > 0]
+            losses = [t for t in sell_trades if t.get('return_rate', 0) <= 0]
+            
+            win_rate = (len(wins) / len(sell_trades)) * 100
+            
+            avg_win_pct = sum([t.get('return_rate', 0) for t in wins]) / len(wins) if wins else 0.0
+            avg_loss_pct = sum([t.get('return_rate', 0) for t in losses]) / len(losses) if losses else 0.0
+            
+            # 손익비 = 평균수익 / 평균손실(절대값)
+            rr_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else (99.99 if avg_win_pct > 0 else 0)
+
+            # 지표 UI 출력
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("총 매도 횟수", f"{len(sell_trades)}회", f"승 {len(wins)} / 패 {len(losses)}")
+            m2.metric("🎯 승률 (타율)", f"{win_rate:.1f}%")
+            m3.metric("⚖️ 손익비 (RR Ratio)", f"{rr_ratio:.2f}", f"평균수익 {avg_win_pct:+.2f}% / 평균손실 {avg_loss_pct:+.2f}%")
+            
+            # 총 누적 실현 수익금 계산 준비
+            total_profit_amt = 0
+            
             for t in sell_trades:
                 trade_p = t.get('trade_price', 0)
                 ret_pct = t.get('return_rate', 0.0)
                 entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
                 t['entry_price'] = entry
-                t['profit_amount'] = trade_p - entry
+                
+                # 임의의 시드(예: 1주씩 샀다고 가정)로 손익금 계산 (실제 투자금이 적용 안된 상태이므로 주당 손익금 합산)
+                profit = trade_p - entry 
+                t['profit_amount'] = profit
+                total_profit_amt += profit
 
+            m4.metric("💰 주당 누적 실현손익금", f"{total_profit_amt:,.0f}원")
+            
+            st.divider()
+            
+            # --- [기존 데이터프레임 출력 유지] ---
             t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
             t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
 
@@ -636,7 +683,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
             st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
-            st.info("최근 매도(이탈) 이력이 없습니다.")
+            st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
     # 탭 4: Stock Search (주식 조회)
