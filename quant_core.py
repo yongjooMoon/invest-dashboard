@@ -147,18 +147,24 @@ def fetch_dart_financial(corp_code: str, dart_api_key: str, year: int = None) ->
 def fetch_naver_fundamental(symbol: str) -> dict:
     """네이버 펀더멘털 종합 수집 (누락 방지) - UI 리포트용 모든 필드 포함"""
     fund = {
-        "roe": None, "debt_ratio": None,
-        "op_profit_cur": None, "op_profit_prev": None,
-        "net_income_cur": None, "net_income_prev": None,
+        "roe": None, "debt_ratio": None, 
+        "op_profit_cur": None, "op_profit_prev": None, 
+        "net_income_cur": None, "net_income_prev": None, 
         "revenue_cur": None, "revenue_prev": None,
-        "op_margin": None, "net_margin": None, "roa": None,
+        "op_margin": None, "net_margin": None, "roa": None, 
         "per": None, "pbr": None, "eps_cur": None, "eps_prev": None,
-        "dividend_yield": None, "marcap_억": None
+        "dividend_yield": None, "marcap_억": None,
+        "sector": None
     }
     try:
         url = f"https://finance.naver.com/item/main.naver?code={symbol}"
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
+
+        # 💡 [추가] 섹터(업종) 추출
+        upjong_elem = soup.select_one("a[href*='type=upjong']")
+        if upjong_elem:
+            fund['sector'] = upjong_elem.text.strip()
 
         # 시가총액 (marcap_억) 추출
         marcap_elem = soup.select_one("#_market_sum")
@@ -208,10 +214,10 @@ def fetch_naver_fundamental(symbol: str) -> dict:
                 elif "부채비율" in label: fund['debt_ratio'] = recent_val
                 elif "PER" in label: fund['per'] = recent_val
                 elif "PBR" in label: fund['pbr'] = recent_val
-                elif "EPS" in label:
+                elif "EPS" in label: 
                     fund['eps_cur'] = recent_val
                     fund['eps_prev'] = prev_val
-                elif "배당수익률" in label or "시가배당률" in label:
+                elif "배당수익률" in label or "시가배당률" in label: 
                     fund['dividend_yield'] = recent_val
 
     except: pass
@@ -232,7 +238,7 @@ def save_fundamental_to_db(supabase, symbol: str, name: str, data: dict):
         "net_income_cur": data.get("net_income_cur"), "net_income_prev": data.get("net_income_prev"),
         "revenue_cur": data.get("revenue_cur"), "revenue_prev": data.get("revenue_prev"),
         # [수정] 수급이 0일 때 업데이트가 무시되어 NULL이 박히는 현상을 방지하고자 기본값 0을 세팅
-        "foreign_net_buy": data.get("foreign_net_buy", 0),
+        "foreign_net_buy": data.get("foreign_net_buy", 0), 
         "institute_net_buy": data.get("institute_net_buy", 0),
         "op_margin": data.get("op_margin"),
         "net_margin": data.get("net_margin"),
@@ -243,6 +249,7 @@ def save_fundamental_to_db(supabase, symbol: str, name: str, data: dict):
         "eps_prev": data.get("eps_prev"),
         "dividend_yield": data.get("dividend_yield"),
         "marcap_억": data.get("marcap_억"),
+        "sector": data.get("sector"),
         "updated_at": now_kst_str(),
     }
     try:
@@ -360,7 +367,7 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
         c_rev = fund.get('revenue_cur')
         p_rev = fund.get('revenue_prev')
         rev_yoy = ((c_rev - p_rev) / abs(p_rev) * 100) if c_rev is not None and p_rev is not None and p_rev != 0 else None
-
+        
         c_op = fund.get('op_profit_cur')
         op_margin = fund.get('op_margin')
         if op_margin is None and c_op is not None and c_rev:
@@ -369,6 +376,7 @@ def run_screening_from_db(supabase, universe_df: pd.DataFrame, log_fn=print) -> 
         # UI에서 N/A 방지를 위해 캐시 JSON 내부에 모든 펀더멘털 데이터를 꽉꽉 채워 넣습니다!
         candidates.append({
             "symbol": symbol, "name": name, "market": row.get("Market", "-"),
+            "sector": fund.get("sector"),
             "marcap_억": fund.get("marcap_억", round(row.get("Marcap", 0) / 1e8, 0)),
             "current_price": curr_price, "entry_price": entry_price,
             "ret_1m": round(float((curr_price - df["Close"].iloc[-21]) / df["Close"].iloc[-21] * 100) if len(df) >= 21 else 0.0, 2),
