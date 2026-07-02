@@ -8,6 +8,7 @@ import stock_quant
 # 🛡️ 강력한 보안 암호화 라이브러리 추가
 import bcrypt
 from cryptography.fernet import Fernet
+import time  # ⏳ 토큰 만료 시간 계산용 추가
 
 # 초기 설정 (가장 먼저 실행되어야 함)
 st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
@@ -33,28 +34,42 @@ cipher_suite = Fernet(FERNET_KEY)
 
 # 🔐 암복호화 도우미 함수
 def encrypt_text(text: str) -> str:
-    """API 키 등을 DB에 저장할 때 사용하는 암호화 함수"""
     if not text: return ""
     return cipher_suite.encrypt(text.encode('utf-8')).decode('utf-8')
 
 def decrypt_text(encrypted_text: str) -> str:
-    """DB에서 꺼내올 때 메모리 위에서만 해제하는 복호화 함수"""
     if not encrypted_text: return ""
     try:
         return cipher_suite.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
     except:
-        # 기존에 암호화되지 않고 평문으로 저장되었던 데이터 호환 처리
         return encrypted_text
 
 def verify_password(plain_pw: str, hashed_pw: str) -> bool:
-    """사용자가 입력한 비밀번호와 DB의 bcrypt 해시를 검증"""
     try:
         return bcrypt.checkpw(plain_pw.encode('utf-8'), hashed_pw.encode('utf-8'))
     except:
         return False
 
+# 🌟 [새로고침 방어] 6시간 유지되는 URL 세션 토큰 생성기
+def create_auth_token(username: str, hours: int = 6) -> str:
+    expires_at = int(time.time()) + (hours * 3600)
+    payload = f"{username}::{expires_at}"
+    # 토큰 자체를 Fernet으로 강력하게 암호화하여 유저가 URL을 조작할 수 없게 만듭니다.
+    return cipher_suite.encrypt(payload.encode('utf-8')).decode('utf-8')
+
+def verify_auth_token(token: str) -> str:
+    if not token: return None
+    try:
+        decrypted = cipher_suite.decrypt(token.encode('utf-8')).decode('utf-8')
+        username, exp_str = decrypted.split("::")
+        if int(time.time()) < int(exp_str):  # 만료시간이 안 지났으면 유저명 반환
+            return username
+    except:
+        pass
+    return None
+
+
 # --- [2. 100% 안전한 브라우저 독립형 세션 (무한 리다이렉트 방지)] ---
-# 불안정했던 global_session 코드를 모두 삭제하고, 오직 session_state만 사용합니다.
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -69,11 +84,35 @@ if "current_menu" not in st.session_state:
 def update_auth_state(is_logged_in, username, api_keys=None):
     st.session_state.logged_in = is_logged_in
     st.session_state.username = username
-    
     if api_keys:
         st.session_state.api_keys = api_keys
     else:
         st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+
+# 🚀 [핵심] 앱 시작 시 URL에 남겨둔 '보안 토큰'을 확인하여 F5(새로고침) 시 세션 자동 복구
+if not st.session_state.logged_in and "auth_token" in st.query_params:
+    token_username = verify_auth_token(st.query_params["auth_token"])
+    
+    if token_username:
+        try:
+            # 토큰이 유효하면 DB에서 API 키를 가져와 세션을 조용히 살려냅니다.
+            admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+            keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+            if admin_keys.data:
+                keys_to_save = {
+                    "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
+                    "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
+                    "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
+                    "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
+                    "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
+                }
+            update_auth_state(True, token_username, keys_to_save)
+        except:
+            pass
+    else:
+        # 토큰이 6시간이 지났거나 누군가 임의로 조작했다면 가차 없이 URL에서 파기
+        del st.query_params["auth_token"]
+
 
 # --- [3. 로그인 화면 (오로라 글래스모피즘 + 찐 설인 애니메이션 UI)] ---
 if not st.session_state.logged_in:
@@ -427,6 +466,9 @@ if not st.session_state.logged_in:
                             supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
                             
                         if login_success:
+                            # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
+                            st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
+
                             admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
                             keys_to_save = {}
                             if admin_keys.data:
@@ -610,6 +652,9 @@ def logout_confirm_dialog():
     c1, c2 = st.columns(2)
     with c1:
         if st.button("로그아웃", use_container_width=True, type="primary"):
+            # 🌟 [추가] 로그아웃 시 토큰 파기
+            if "auth_token" in st.query_params:
+                del st.query_params["auth_token"]
             update_auth_state(False, None)
             st.session_state.current_view = "main"
             st.rerun()
@@ -675,7 +720,6 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
             # 세션 메모리에는 원래 평문(Plain text)을 그대로 보관하여 앱 내부에서 정상 작동하게 함
             updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
             st.session_state.api_keys = updated_keys
-            # global_session["api_keys"] = updated_keys 삭제됨
             
             st.success("✅ 마스터 5대 보안 자산 데이터가 암호화되어 무결점 반영되었습니다.")
         except Exception as e:
