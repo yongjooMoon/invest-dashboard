@@ -9,10 +9,19 @@ import stock_quant
 import bcrypt
 from cryptography.fernet import Fernet
 
-# --- [1. Supabase & 암호화 연동 설정] ---
+# 초기 설정 (가장 먼저 실행되어야 함)
+st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
+
+# --- [1. Supabase & 암호화 연동 설정 (네트워크 안정성 강화)] ---
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# [핵심 최적화] DB 연결을 캐싱하여 Connection Lost(연결 끊김) 원천 차단
+@st.cache_resource
+def init_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase: Client = init_supabase()
 
 # 대칭키 암호화 (API Key 보관용) 마스터 키 세팅
 if "ENCRYPTION_KEY" in st.secrets:
@@ -44,29 +53,14 @@ def verify_password(plain_pw: str, hashed_pw: str) -> bool:
     except:
         return False
 
-
-# 초기 설정
-st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
-
-# --- [2. 글로벌 세션 (서버 영구 유지) 설정] ---
-@st.cache_resource
-def get_global_session():
-    return {
-        "logged_in": False,
-        "username": None,
-        "api_keys": {
-            "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
-        }
-    }
-
-global_session = get_global_session()
-
+# --- [2. 100% 안전한 브라우저 독립형 세션 (무한 리다이렉트 방지)] ---
+# 불안정했던 global_session 코드를 모두 삭제하고, 오직 session_state만 사용합니다.
 if "logged_in" not in st.session_state:
-    st.session_state.logged_in = global_session["logged_in"]
+    st.session_state.logged_in = False
 if "username" not in st.session_state:
-    st.session_state.username = global_session["username"]
+    st.session_state.username = None
 if "api_keys" not in st.session_state:
-    st.session_state.api_keys = global_session["api_keys"]
+    st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
 if "current_view" not in st.session_state:
     st.session_state.current_view = "main"
 if "current_menu" not in st.session_state:
@@ -74,21 +68,15 @@ if "current_menu" not in st.session_state:
 
 def update_auth_state(is_logged_in, username, api_keys=None):
     st.session_state.logged_in = is_logged_in
-    global_session["logged_in"] = is_logged_in
     st.session_state.username = username
-    global_session["username"] = username
     
     if api_keys:
         st.session_state.api_keys = api_keys
-        global_session["api_keys"] = api_keys
     else:
-        empty_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-        st.session_state.api_keys = empty_keys
-        global_session["api_keys"] = empty_keys
+        st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
 
 # --- [3. 로그인 화면 (오로라 글래스모피즘 + 찐 설인 애니메이션 UI)] ---
 if not st.session_state.logged_in:
-    # 로그인 화면에만 적용되는 최신 트렌드 CSS 강제 주입
     st.markdown("""
     <style>
     /* 전체 배경: 칠흑 같은 우주 공간 */
@@ -687,7 +675,7 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
             # 세션 메모리에는 원래 평문(Plain text)을 그대로 보관하여 앱 내부에서 정상 작동하게 함
             updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
             st.session_state.api_keys = updated_keys
-            global_session["api_keys"] = updated_keys
+            # global_session["api_keys"] = updated_keys 삭제됨
             
             st.success("✅ 마스터 5대 보안 자산 데이터가 암호화되어 무결점 반영되었습니다.")
         except Exception as e:
