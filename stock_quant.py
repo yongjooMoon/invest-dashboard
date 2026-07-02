@@ -84,6 +84,12 @@ def get_ui_financial_extras(symbol, fund):
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
 
+        # 💡 [추가] 섹터 정보 수집
+        if fund.get('sector') is None:
+            upjong_elem = soup.select_one("a[href*='type=upjong']")
+            if upjong_elem:
+                fund['sector'] = upjong_elem.text.strip()
+
         table = soup.select_one("div.cop_analysis table")
         if table:
             for tr in table.select("tbody tr"):
@@ -130,11 +136,11 @@ def live_evaluate_stock(supabase, symbol, name=""):
     # 1. DB에서 캐싱된 펀더멘털 데이터 조회
     fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
-    
-    # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목)
-    required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억']
+
+    # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목) - sector 추가!
+    required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억', 'sector']
     needs_update = not fund or any(fund.get(k) is None for k in required_keys)
-    
+
     # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
     if needs_update:
         scraped_fund = fetch_naver_fundamental(symbol) # core 원본 함수 호출
@@ -288,7 +294,10 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     curr = sel.get('current_price', 0)
     ret_1m = sel.get('ret_1m', 0)
 
-    st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('market', 'KOSPI')}</span>", unsafe_allow_html=True)
+    # 💡 [추가] 섹터 정보가 있으면 노란색 파이프(|)와 함께 추가
+    sector_str = f" &nbsp;|&nbsp; <span style='color:#F8B12A;'>{sel.get('sector')}</span>" if sel.get('sector') else ""
+
+    st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('market', 'KOSPI')}{sector_str}</span>", unsafe_allow_html=True)
     st.markdown(f"<h1>{curr:,.0f} 원 <span style='font-size:20px; color:{'#F04452' if ret_1m>0 else '#3182F6'};'>{ret_1m:+.2f}% (1M)</span></h1>", unsafe_allow_html=True)
     st.divider()
 
