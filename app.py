@@ -449,26 +449,18 @@ if not st.session_state.logged_in:
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
-                # 🌟 [UI 업데이트] 화면 정중앙 전체 블러 로딩 오버레이 띄우기
+                # 🌟 [UI 업데이트] 화면 정중앙 전체 블러 + 로딩 애니메이션 통합 (Z-index 겹침 버그 완전 해결)
                 loading_overlay = st.empty()
                 loading_overlay.markdown("""
                 <style>
-                /* 배경 전체를 어둡게 블러 처리하여 클릭 원천 차단 */
-                .stApp::after {
-                    content: '';
+                /* 블러 배경막과 로딩 애니메이션을 하나의 컨테이너로 묶어서 최상단으로 강제 배치 */
+                .custom-overlay {
                     position: fixed;
                     top: 0; left: 0; width: 100vw; height: 100vh;
                     background: rgba(3, 7, 18, 0.75);
                     backdrop-filter: blur(12px);
                     -webkit-backdrop-filter: blur(12px);
-                    z-index: 9999998;
-                }
-                /* 화면 정중앙 애니메이션 스피너 컨테이너 */
-                .auth-loader-container {
-                    position: fixed;
-                    top: 50%; left: 50%;
-                    transform: translate(-50%, -50%);
-                    z-index: 9999999;
+                    z-index: 9999999; /* Streamlit의 어떤 요소보다도 무조건 위에 배치 */
                     display: flex;
                     flex-direction: column;
                     align-items: center;
@@ -496,7 +488,7 @@ if not st.session_state.logged_in:
                     color: #20C997; font-size: 14px; font-weight: 600; letter-spacing: 1.5px; margin: 0;
                 }
                 </style>
-                <div class="auth-loader-container">
+                <div class="custom-overlay">
                     <div class="auth-spinner"></div>
                     <div class="auth-title">AUTHENTICATING</div>
                     <div class="auth-desc">보안 시스템 접속 및 인증 중입니다 🔐</div>
