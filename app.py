@@ -367,6 +367,9 @@ if not st.session_state.logged_in:
     </div>
     """, unsafe_allow_html=True)
 
+    # 🌟 [수정] 폼 내부 레이어 갇힘 버그를 해결하기 위해, 로딩용 도화지를 폼 바깥(위)에 미리 선언합니다!
+    loading_overlay = st.empty()
+
     # 폼 영역 (clear_on_submit=False 로 변경하여 실패 시에도 입력값 유지)
     with st.form("login_form", clear_on_submit=False):
         # 🙈 원본 코드를 그대로 활용한 찐 털복숭이 설인(Yeti) SVG
@@ -449,43 +452,50 @@ if not st.session_state.logged_in:
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
-                # 🌟 [UI 업데이트] 화면 정중앙 전체 블러 + 로딩 애니메이션 통합 (Z-index 겹침 버그 완전 해결)
-                loading_overlay = st.empty()
+                # 🌟 [UI 업데이트] 화면 정중앙 전체 블러를 위해 CSS 강제 우선순위(!important)를 부여하여 렌더링
                 loading_overlay.markdown("""
                 <style>
-                /* 블러 배경막과 로딩 애니메이션을 하나의 컨테이너로 묶어서 최상단으로 강제 배치 */
+                /* 블러 배경막과 로딩 애니메이션을 하나의 컨테이너로 묶어서 뷰포트 최상단으로 강제 배치 */
                 .custom-overlay {
-                    position: fixed;
-                    top: 0; left: 0; width: 100vw; height: 100vh;
-                    background: rgba(3, 7, 18, 0.75);
-                    backdrop-filter: blur(12px);
-                    -webkit-backdrop-filter: blur(12px);
-                    z-index: 9999999; /* Streamlit의 어떤 요소보다도 무조건 위에 배치 */
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
+                    position: fixed !important;
+                    top: 0px !important; 
+                    left: 0px !important;
+                    right: 0px !important;
+                    bottom: 0px !important;
+                    width: 100vw !important; 
+                    height: 100vh !important;
+                    background: rgba(3, 7, 18, 0.75) !important;
+                    backdrop-filter: blur(12px) !important;
+                    -webkit-backdrop-filter: blur(12px) !important;
+                    z-index: 9999999 !important; /* Streamlit의 어떤 요소보다도 무조건 위에 배치 */
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: center !important;
+                    justify-content: center !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    pointer-events: all !important; /* 배경 클릭 원천 차단 */
                 }
                 /* 트렌디한 네온 민트 로딩링 */
                 .auth-spinner {
-                    width: 70px; height: 70px;
-                    border: 5px solid rgba(32, 201, 151, 0.1);
-                    border-top-color: #20C997;
-                    border-radius: 50%;
-                    animation: auth-spin 1s linear infinite;
-                    margin-bottom: 25px;
-                    box-shadow: 0 0 20px rgba(32, 201, 151, 0.25);
+                    width: 70px !important; height: 70px !important;
+                    border: 5px solid rgba(32, 201, 151, 0.1) !important;
+                    border-top-color: #20C997 !important;
+                    border-radius: 50% !important;
+                    animation: auth-spin 1s linear infinite !important;
+                    margin-bottom: 25px !important;
+                    box-shadow: 0 0 20px rgba(32, 201, 151, 0.25) !important;
                 }
                 @keyframes auth-spin { 
                     0% { transform: rotate(0deg); } 
                     100% { transform: rotate(360deg); } 
                 }
                 .auth-title {
-                    color: #FFFFFF; font-size: 24px; font-weight: 900; letter-spacing: 5px; margin: 0 0 10px 0;
-                    text-shadow: 0 0 15px rgba(255,255,255,0.3);
+                    color: #FFFFFF !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 5px !important; margin: 0 0 10px 0 !important;
+                    text-shadow: 0 0 15px rgba(255,255,255,0.3) !important;
                 }
                 .auth-desc {
-                    color: #20C997; font-size: 14px; font-weight: 600; letter-spacing: 1.5px; margin: 0;
+                    color: #20C997 !important; font-size: 14px !important; font-weight: 600 !important; letter-spacing: 1.5px !important; margin: 0 !important;
                 }
                 </style>
                 <div class="custom-overlay">
