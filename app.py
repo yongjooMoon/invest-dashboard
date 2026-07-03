@@ -449,53 +449,56 @@ if not st.session_state.logged_in:
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
-                try:
-                    user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
-                    if user_query.data:
-                        stored_hash = user_query.data[0].get("password_hash", "")
-                        
-                        login_success = False
-                        # 1. 🛡️ bcrypt 해시 암호 검증
-                        if verify_password(login_pw, stored_hash):
-                            login_success = True
-                        # 2. 🪄 기존 사용자 평문 -> bcrypt 자동 마이그레이션
-                        elif login_pw == stored_hash:
-                            login_success = True
-                            # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
-                            new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                            supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
+                # 💡 [핵심 추가] 엔터를 치는 순간 폼 내부에 즉시 로딩 바(스피너)를 그려줍니다.
+                with st.spinner("보안 시스템 접속 및 사용자 인증 중입니다... 🔐"):
+                    time.sleep(0.5) # 체감되는 속도를 맞추어 스피너가 최소한 한바퀴 돌도록 UX 지연 추가
+                    try:
+                        user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
+                        if user_query.data:
+                            stored_hash = user_query.data[0].get("password_hash", "")
                             
-                        if login_success:
-                            # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
-                            st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
+                            login_success = False
+                            # 1. 🛡️ bcrypt 해시 암호 검증
+                            if verify_password(login_pw, stored_hash):
+                                login_success = True
+                            # 2. 🪄 기존 사용자 평문 -> bcrypt 자동 마이그레이션
+                            elif login_pw == stored_hash:
+                                login_success = True
+                                # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
+                                new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                                supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
+                                
+                            if login_success:
+                                # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
+                                st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
 
-                            admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
-                            keys_to_save = {}
-                            if admin_keys.data:
-                                # DB에서 가져올 때 복호화하여 세션에 할당 (안전한 평문)
-                                keys_to_save = {
-                                    "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
-                                    "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
-                                    "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
-                                    "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
-                                    "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
-                                }
+                                admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+                                keys_to_save = {}
+                                if admin_keys.data:
+                                    # DB에서 가져올 때 복호화하여 세션에 할당 (안전한 평문)
+                                    keys_to_save = {
+                                        "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
+                                        "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
+                                        "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
+                                        "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
+                                        "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
+                                    }
+                                else:
+                                    supabase.table("user_api_keys").insert({
+                                        "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
+                                    }).execute()
+                                    keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+                                
+                                update_auth_state(True, login_username, keys_to_save)
+                                st.session_state.current_view = "main"
+                                st.session_state.current_menu = "quant"
+                                st.rerun()
                             else:
-                                supabase.table("user_api_keys").insert({
-                                    "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
-                                }).execute()
-                                keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-                            
-                            update_auth_state(True, login_username, keys_to_save)
-                            st.session_state.current_view = "main"
-                            st.session_state.current_menu = "quant"
-                            st.rerun()
+                                st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                         else:
                             st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
-                    else:
-                        st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
-                except Exception as e:
-                    st.error(f"시스템 장애: {str(e)}")
+                    except Exception as e:
+                        st.error(f"시스템 장애: {str(e)}")
 
     # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어 + 까꿍 + 암호 보이기
     components.html("""
