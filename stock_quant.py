@@ -452,60 +452,34 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with c3:
         st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
         if st.button("🔄 리프레쉬", use_container_width=True):
-            # 💡 [우상향 차트 애니메이션] 마크다운 인식 오류(코드 노출 현상)를 방지하기 위해 들여쓰기를 완벽히 제거했습니다.
+            # 💡 [우상향 차트 애니메이션] 스트림릿이 코드로 인식하지 않도록 공백/들여쓰기를 완벽히 제거한 1줄짜리 문자열로 압축합니다.
             loading_overlay = st.empty()
-            overlay_html = """
-<style>
-.custom-overlay {
-    position: fixed !important; top: 0px !important; left: 0px !important; right: 0px !important; bottom: 0px !important; width: 100vw !important; height: 100vh !important;
-    background: rgba(3, 7, 18, 0.8) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important;
-    z-index: 9999999 !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important;
-    pointer-events: all !important;
-}
-.chart-box {
-    position: relative; width: 160px; height: 130px; margin-bottom: 25px;
-}
-.chart-line {
-    fill: none; stroke: #F04452; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round;
-    stroke-dasharray: 400; stroke-dashoffset: 400;
-    animation: drawLine 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-    filter: drop-shadow(0px 0px 8px rgba(240, 68, 82, 0.7));
-}
-.chart-point {
-    fill: #F04452; opacity: 0;
-    animation: fadeIn 0.3s ease-out 1.1s forwards;
-    filter: drop-shadow(0px 0px 12px rgba(240, 68, 82, 1));
-}
-.chart-grid { stroke: rgba(255,255,255,0.08); stroke-width: 1.5; stroke-dasharray: 4 6; }
-
-@keyframes drawLine { to { stroke-dashoffset: 0; } }
-@keyframes fadeIn { to { opacity: 1; } }
-
-.refresh-title {
-    color: #FFFFFF !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 5px !important; margin: 0 0 10px 0 !important;
-    text-shadow: 0 0 15px rgba(255,255,255,0.3) !important;
-}
-.refresh-desc { color: #F04452 !important; font-size: 14px !important; font-weight: 600 !important; letter-spacing: 1.5px !important; margin: 0 !important; }
-</style>
-<div class="custom-overlay">
-    <div class="chart-box">
-        <svg viewBox="0 0 160 130" style="width:100%; height:100%; overflow:visible;">
-            <!-- Grid Lines -->
-            <line x1="0" y1="35" x2="160" y2="35" class="chart-grid" />
-            <line x1="0" y1="85" x2="160" y2="85" class="chart-grid" />
-            <line x1="0" y1="130" x2="160" y2="130" class="chart-grid" />
-            
-            <!-- Upward Trend Line (Korean Market Up = Red #F04452) -->
-            <path d="M 0,120 L 35,90 L 70,105 L 115,45 L 155,10" class="chart-line" />
-            
-            <!-- Glowing Final Point -->
-            <circle cx="155" cy="10" r="7" class="chart-point" />
-        </svg>
-    </div>
-    <div class="refresh-title">SYNCHRONIZING</div>
-    <div class="refresh-desc">최신 시장 데이터를 퀀트 엔진에 반영 중입니다 🚀</div>
-</div>
-"""
+            overlay_html = (
+                "<style>"
+                ".custom-overlay { position: fixed !important; top: 0px !important; left: 0px !important; right: 0px !important; bottom: 0px !important; width: 100vw !important; height: 100vh !important; background: rgba(3, 7, 18, 0.8) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important; z-index: 9999999 !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; pointer-events: all !important; }"
+                ".chart-box { position: relative; width: 160px; height: 130px; margin-bottom: 25px; }"
+                ".chart-line { fill: none; stroke: #F04452; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 400; stroke-dashoffset: 400; animation: drawLine 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards; filter: drop-shadow(0px 0px 8px rgba(240, 68, 82, 0.7)); }"
+                ".chart-point { fill: #F04452; opacity: 0; animation: fadeIn 0.3s ease-out 1.1s forwards; filter: drop-shadow(0px 0px 12px rgba(240, 68, 82, 1)); }"
+                ".chart-grid { stroke: rgba(255,255,255,0.08); stroke-width: 1.5; stroke-dasharray: 4 6; }"
+                "@keyframes drawLine { to { stroke-dashoffset: 0; } }"
+                "@keyframes fadeIn { to { opacity: 1; } }"
+                ".refresh-title { color: #FFFFFF !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 5px !important; margin: 0 0 10px 0 !important; text-shadow: 0 0 15px rgba(255,255,255,0.3) !important; }"
+                ".refresh-desc { color: #F04452 !important; font-size: 14px !important; font-weight: 600 !important; letter-spacing: 1.5px !important; margin: 0 !important; }"
+                "</style>"
+                "<div class='custom-overlay'>"
+                "<div class='chart-box'>"
+                "<svg viewBox='0 0 160 130' style='width:100%; height:100%; overflow:visible;'>"
+                "<line x1='0' y1='35' x2='160' y2='35' class='chart-grid' />"
+                "<line x1='0' y1='85' x2='160' y2='85' class='chart-grid' />"
+                "<line x1='0' y1='130' x2='160' y2='130' class='chart-grid' />"
+                "<path d='M 0,120 L 35,90 L 70,105 L 115,45 L 155,10' class='chart-line' />"
+                "<circle cx='155' cy='10' r='7' class='chart-point' />"
+                "</svg>"
+                "</div>"
+                "<div class='refresh-title'>SYNCHRONIZING</div>"
+                "<div class='refresh-desc'>최신 시장 데이터를 퀀트 엔진에 반영 중입니다 🚀</div>"
+                "</div>"
+            )
             loading_overlay.markdown(overlay_html, unsafe_allow_html=True)
             
             # 애니메이션 타이머 시작
