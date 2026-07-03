@@ -451,7 +451,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.title("📡 퀀트투자")
     with c3:
         st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 리프레쉬", use_container_width=True):
+        if st.button("🔄 Refresh", use_container_width=True):
             # 💡 [우상향 차트 애니메이션] 스트림릿이 코드로 인식하지 않도록 공백/들여쓰기를 완벽히 제거한 1줄짜리 문자열로 압축합니다.
             loading_overlay = st.empty()
             overlay_html = (
