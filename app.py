@@ -367,7 +367,7 @@ if not st.session_state.logged_in:
     </div>
     """, unsafe_allow_html=True)
 
-    # 🌟 [수정] 폼 내부 레이어 갇힘 버그를 해결하기 위해, 로딩용 도화지를 폼 바깥(위)에 미리 선언합니다!
+    # 🌟 폼 내부 레이어 갇힘 버그를 해결하기 위해, 로딩용 도화지를 폼 바깥(위)에 미리 선언
     loading_overlay = st.empty()
 
     # 폼 영역 (clear_on_submit=False 로 변경하여 실패 시에도 입력값 유지)
@@ -724,7 +724,8 @@ def logout_confirm_dialog():
             st.rerun()
     with c2:
         if st.button("취소", use_container_width=True):
-            st.rerun()
+            # st.rerun()을 제거하여 취소 시 불필요한 새로고침 없이 팝업만 조용히 닫히게 함
+            pass
 
 with st.sidebar:
     st.write("") 
@@ -733,6 +734,7 @@ with st.sidebar:
     if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
         st.session_state.current_menu = "quant"
         st.session_state.current_view = "main"
+        st.session_state.quant_needs_refresh = True # 강제 리프레시 플래그 추가
         st.rerun()
         
     st.write("") 
