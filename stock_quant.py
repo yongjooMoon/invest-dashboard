@@ -216,7 +216,14 @@ def render_exit_risk_content(h, supabase):
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
 
-    df = load_price_from_db(supabase, h['symbol'])
+    # 💡 [핵심 최적화] 팝업(popover) 렌더링 시마다 DB를 찌르는 현상(수십 번 호출) 방지!
+    if "price_cache" not in st.session_state: 
+        st.session_state.price_cache = {}
+    
+    if h['symbol'] not in st.session_state.price_cache:
+        st.session_state.price_cache[h['symbol']] = load_price_from_db(supabase, h['symbol'])
+        
+    df = st.session_state.price_cache[h['symbol']]
     ts_risk, ma_risk = 0.0, 0.0
 
     if not df.empty and len(df) >= 20:
@@ -404,19 +411,15 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 def show_detail_dialog(sel, supabase):
     with st.spinner("캐시된 데이터를 불러오는 중..."):
         
-        # 💡 [핵심 추가] 포트폴리오(id=11) 종목이라서 디테일 데이터가 비어있다면?
-        # 1순위: 스크리닝 캐시(id=1, 2)에서 복사, 2순위: 펀더멘털 DB에서 복사해옵니다!
         if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
             c_list, w_list, _ = load_screening_result(supabase)
             found = False
             for item in c_list + w_list:
                 if item['symbol'] == sel['symbol']:
-                    # 스크리닝 쪽에 있는 풍부한 데이터를 포트폴리오 객체(sel)에 덮어씌움
                     sel.update(item)
                     found = True
                     break
             
-            # 만약 시간이 지나 스크리닝 리스트에서 탈락한 보유 종목이라면? DB에서 재무 정보라도 가져옴
             if not found:
                 fund_db = load_fundamental_from_db(supabase, sel['symbol'])
                 if fund_db:
@@ -424,65 +427,56 @@ def show_detail_dialog(sel, supabase):
 
         original_score = sel.get('factor_score', 0)
 
-        # 차트를 그리기 위한 가격 데이터만 DB에서 빠르고 조용하게 가져옵니다 (API 미호출)
-        df_price = load_price_from_db(supabase, sel['symbol'])
-        if df_price.empty:
-            df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+        # 💡 [핵심 최적화] 리포트 내 차트용 데이터도 캐싱 적용
+        if "price_cache" not in st.session_state: 
+            st.session_state.price_cache = {}
+        if sel['symbol'] not in st.session_state.price_cache:
+            df_price = load_price_from_db(supabase, sel['symbol'])
+            if df_price.empty:
+                df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+            st.session_state.price_cache[sel['symbol']] = df_price
+            
+        df_price = st.session_state.price_cache[sel['symbol']]
 
         if 'ret_1m' not in sel or sel['ret_1m'] == 0:
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    # 꽉 채워진 sel 데이터를 넘겨줍니다.
     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
 # ══════════════════════════════════════════
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    st.title("📡 퀀트투자")
+    # 🌟 [디자인 원복] 기존의 예쁘고 깔끔했던 기본 탭(Tab) 구조로 되돌림!
+    c1, c2 = st.columns([8, 2])
+    with c1:
+        st.title("📡 퀀트투자")
+    with c2:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        # 배치가 돌고 최신 데이터를 원할 때만 사용자가 능동적으로 캐시를 비울 수 있게 제공
+        if st.button("🔄 최신 데이터 불러오기", use_container_width=True):
+            for key in ["quant_portfolio", "quant_screening", "price_cache"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
 
-    # 💡 [핵심] 로그인 직후 처음 이 화면에 들어왔을 때 딱 한 번만 캐시를 초기화하고 강제 로딩(True)합니다.
-    if "quant_data_cache" not in st.session_state:
-        st.session_state.quant_data_cache = {}
-        st.session_state.quant_needs_refresh = True 
-        
-    if "quant_needs_refresh" not in st.session_state:
-        st.session_state.quant_needs_refresh = False
+    # 💡 [핵심 메모리 캐싱] 로그인 후 처음 진입할 때 딱 1번만 DB 조회 후 세션에 영구저장. 
+    # 이후 화면을 아무리 다시 그리거나 팝업을 열고 닫아도 0초만에 캐시를 재활용합니다!
+    if "quant_portfolio" not in st.session_state:
+        with st.spinner("💼 포트폴리오 데이터를 최초 1회 동기화 중입니다..."):
+            st.session_state.quant_portfolio = load_portfolio_data(supabase)
+            
+    if "quant_screening" not in st.session_state:
+        with st.spinner("👀 스크리닝 데이터를 최초 1회 동기화 중입니다..."):
+            st.session_state.quant_screening = load_screening_result(supabase)
 
-    if "quant_active_tab" not in st.session_state:
-        st.session_state.quant_active_tab = "Portfolio"
+    holdings, trades, history = st.session_state.quant_portfolio
+    confirmed, watchlist, last_updated = st.session_state.quant_screening
 
-    # 🌟 [버그 수정] on_click을 빼고, 버튼이 직접 클릭되었을 때(True를 반환할 때)만 
-    # needs_refresh를 강제로 True로 바꿔서 DB를 조회하게 만듭니다. 
-    # 이렇게 하면 다른 곳(팝업 취소 등)을 눌러서 단순히 화면만 Rerun 될 때는 캐시에서 즉시 불러옵니다!
-    c1, c2, c3, c4, c5 = st.columns(5)
-    
-    tab = st.session_state.quant_active_tab
-    
-    if c1.button("💼 Portfolio", use_container_width=True, type="primary" if tab == "Portfolio" else "secondary"):
-        st.session_state.quant_active_tab = "Portfolio"
-        st.session_state.quant_needs_refresh = True
-        st.rerun()
-        
-    if c2.button("👀 Watchlist", use_container_width=True, type="primary" if tab == "Watchlist" else "secondary"):
-        st.session_state.quant_active_tab = "Watchlist"
-        st.session_state.quant_needs_refresh = True
-        st.rerun()
-        
-    if c3.button("📉 매도 히스토리", use_container_width=True, type="primary" if tab == "History" else "secondary"):
-        st.session_state.quant_active_tab = "History"
-        st.session_state.quant_needs_refresh = True
-        st.rerun()
-        
-    if c4.button("🔍 Stock Search", use_container_width=True, type="primary" if tab == "Search" else "secondary"):
-        st.session_state.quant_active_tab = "Search"
-        st.session_state.quant_needs_refresh = True
-        st.rerun()
-        
-    if c5.button("📖 Algo Whitepaper", use_container_width=True, type="primary" if tab == "Docs" else "secondary"):
-        st.session_state.quant_active_tab = "Docs"
-        st.rerun() # 백서는 불러올 DB가 없으므로 refresh 불필요
+    holding_syms = set([h['symbol'] for h in holdings])
+    filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
+    filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
     st.markdown("""
     <style>
@@ -491,29 +485,22 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     .popover-btn > button { padding: 0 !important; background: none !important; border: none !important; color: #AEC1D4 !important; }
     </style>
     """, unsafe_allow_html=True)
-    st.divider()
 
-    # 클릭으로 세션 탭 이름이 바뀌었을 수 있으므로 다시 가져옵니다
-    tab = st.session_state.quant_active_tab
+    # 예쁘고 친숙한 기본 탭 구성으로 컴백!
+    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
+        f"Portfolio ({len(holdings)})",
+        f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
+        "매도 히스토리 (History)",
+        "🔍 Stock Search",
+        "📖 Algo Whitepaper"
+    ])
 
     # ────────────────────────────────────────────────────────
-    # 메뉴 1: 포트폴리오
+    # 탭 1: 포트폴리오
     # ────────────────────────────────────────────────────────
-    if tab == "Portfolio":
-        # 💡 [핵심] Refresh 플래그가 켜졌거나 캐시가 비어있을 때'만' DB에서 로드!
-        # 다른 액션(취소버튼 등)으로 인해 Rerun이 발생했을 때는 아래 코드가 실행되지 않고 즉시 else문으로 넘어갑니다.
-        if st.session_state.quant_needs_refresh or "portfolio" not in st.session_state.quant_data_cache:
-            with st.spinner("💼 포트폴리오 데이터를 동기화하고 있습니다..."):
-                holdings, trades, history = load_portfolio_data(supabase)
-                st.session_state.quant_data_cache["portfolio"] = (holdings, trades, history)
-                st.session_state.quant_needs_refresh = False  # 조회가 끝났으니 다시 잠금! (이게 F5 방지 핵심)
-        else:
-            # Refresh가 필요 없다면 0.001초 만에 세션 메모리에서 즉시 렌더링
-            holdings, trades, history = st.session_state.quant_data_cache["portfolio"]
-
+    with tab_port:
         with st.container(border=True):
             if holdings:
-                # 동일비중 최소 시드 계산 (가장 비싼 주식 가격 기준 * 보유종목 수)
                 max_price = max([h.get("current_price", 0) for h in holdings])
                 total_stocks = len(holdings)
                 total_seed = max_price * total_stocks
@@ -630,23 +617,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
-    # 메뉴 2: Watchlist & Confirmed
+    # 탭 2: Watchlist & Confirmed
     # ────────────────────────────────────────────────────────
-    elif tab == "Watchlist":
-        if st.session_state.quant_needs_refresh or "watchlist" not in st.session_state.quant_data_cache:
-            with st.spinner("👀 스크리닝 데이터를 동기화하고 있습니다..."):
-                confirmed, watchlist, last_updated = load_screening_result(supabase)
-                holdings, _, _ = load_portfolio_data(supabase)
-                st.session_state.quant_data_cache["watchlist"] = (confirmed, watchlist, last_updated, holdings)
-                st.session_state.quant_needs_refresh = False
-        else:
-            confirmed, watchlist, last_updated, holdings = st.session_state.quant_data_cache["watchlist"]
-
-        holding_syms = set([h['symbol'] for h in holdings])
-        filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
-        filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
-
-        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'} (총 대기 종목: {len(filtered_confirmed) + len(filtered_watchlist)}개)")
+    with tab_watch:
+        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
 
         def render_watchlist_grid(items, title, color_code):
             st.markdown(f"#### {title}")
@@ -688,17 +662,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
-    # 메뉴 3: 매도 히스토리
+    # 탭 3: 매도 히스토리
     # ────────────────────────────────────────────────────────
-    elif tab == "History":
-        if st.session_state.quant_needs_refresh or "history" not in st.session_state.quant_data_cache:
-            with st.spinner("📉 매도 히스토리를 동기화하고 있습니다..."):
-                _, trades, _ = load_portfolio_data(supabase)
-                st.session_state.quant_data_cache["history"] = trades
-                st.session_state.quant_needs_refresh = False
-        else:
-            trades = st.session_state.quant_data_cache["history"]
-
+    with tab_hist:
         st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리 & 성과 지표")
 
         sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
@@ -745,9 +711,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
-    # 메뉴 4: Stock Search (주식 조회)
+    # 탭 4: Stock Search (주식 조회)
     # ────────────────────────────────────────────────────────
-    elif tab == "Search":
+    with tab_search:
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
@@ -768,23 +734,20 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
             stock_name = selected_stock_str.split(" (")[0]
 
-            if st.session_state.quant_needs_refresh or "search_cache" not in st.session_state.quant_data_cache:
-                with st.spinner("캐시 확인 중..."):
-                    holdings, _, _ = load_portfolio_data(supabase)
-                    confirmed, watchlist, _ = load_screening_result(supabase)
-                    st.session_state.quant_data_cache["search_cache"] = (holdings, confirmed, watchlist)
-                    st.session_state.quant_needs_refresh = False
-            else:
-                holdings, confirmed, watchlist = st.session_state.quant_data_cache["search_cache"]
-
             all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
             if search_query in all_cached_stocks:
                 with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
                     sel = all_cached_stocks[search_query]
-                    df_price = load_price_from_db(supabase, search_query)
-                    if df_price.empty:
-                        df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+                    
+                    if "price_cache" not in st.session_state: st.session_state.price_cache = {}
+                    if search_query not in st.session_state.price_cache:
+                        df_price = load_price_from_db(supabase, search_query)
+                        if df_price.empty:
+                            df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+                        st.session_state.price_cache[search_query] = df_price
+                        
+                    df_price = st.session_state.price_cache[search_query]
                     
                     if 'ret_1m' not in sel or sel['ret_1m'] == 0:
                         if df_price is not None and len(df_price) >= 21:
@@ -811,9 +774,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
                     
     # ────────────────────────────────────────────────────────
-    # 메뉴 5: 알고리즘 백서 (Detailed Algorithm Strategy)
+    # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
-    elif tab == "Docs":
+    with tab_docs:
         st.markdown("## 🧠 Chase Momentum Algorithm Whitepaper")
         st.caption("초보자부터 전문가까지 모두가 쉽게 이해할 수 있는 정통 퀀트 추격매수 & 방어 전략 안내서입니다.")
         st.divider()
