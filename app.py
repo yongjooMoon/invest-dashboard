@@ -449,56 +449,115 @@ if not st.session_state.logged_in:
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:            
-                # 💡 [핵심 추가] 엔터를 치는 순간 폼 내부에 즉시 로딩 바(스피너)를 그려줍니다.
-                with st.spinner("보안 시스템 접속 및 사용자 인증 중입니다... 🔐"):
-                    time.sleep(0.5) # 체감되는 속도를 맞추어 스피너가 최소한 한바퀴 돌도록 UX 지연 추가
-                    try:
-                        user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
-                        if user_query.data:
-                            stored_hash = user_query.data[0].get("password_hash", "")
-                            
-                            login_success = False
-                            # 1. 🛡️ bcrypt 해시 암호 검증
-                            if verify_password(login_pw, stored_hash):
-                                login_success = True
-                            # 2. 🪄 기존 사용자 평문 -> bcrypt 자동 마이그레이션
-                            elif login_pw == stored_hash:
-                                login_success = True
-                                # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
-                                new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                                supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
-                                
-                            if login_success:
-                                # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
-                                st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
+                # 🌟 [UI 업데이트] 화면 정중앙 전체 블러 로딩 오버레이 띄우기
+                loading_overlay = st.empty()
+                loading_overlay.markdown("""
+                <style>
+                /* 배경 전체를 어둡게 블러 처리하여 클릭 원천 차단 */
+                .stApp::after {
+                    content: '';
+                    position: fixed;
+                    top: 0; left: 0; width: 100vw; height: 100vh;
+                    background: rgba(3, 7, 18, 0.75);
+                    backdrop-filter: blur(12px);
+                    -webkit-backdrop-filter: blur(12px);
+                    z-index: 9999998;
+                }
+                /* 화면 정중앙 애니메이션 스피너 컨테이너 */
+                .auth-loader-container {
+                    position: fixed;
+                    top: 50%; left: 50%;
+                    transform: translate(-50%, -50%);
+                    z-index: 9999999;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                }
+                /* 트렌디한 네온 민트 로딩링 */
+                .auth-spinner {
+                    width: 70px; height: 70px;
+                    border: 5px solid rgba(32, 201, 151, 0.1);
+                    border-top-color: #20C997;
+                    border-radius: 50%;
+                    animation: auth-spin 1s linear infinite;
+                    margin-bottom: 25px;
+                    box-shadow: 0 0 20px rgba(32, 201, 151, 0.25);
+                }
+                @keyframes auth-spin { 
+                    0% { transform: rotate(0deg); } 
+                    100% { transform: rotate(360deg); } 
+                }
+                .auth-title {
+                    color: #FFFFFF; font-size: 24px; font-weight: 900; letter-spacing: 5px; margin: 0 0 10px 0;
+                    text-shadow: 0 0 15px rgba(255,255,255,0.3);
+                }
+                .auth-desc {
+                    color: #20C997; font-size: 14px; font-weight: 600; letter-spacing: 1.5px; margin: 0;
+                }
+                </style>
+                <div class="auth-loader-container">
+                    <div class="auth-spinner"></div>
+                    <div class="auth-title">AUTHENTICATING</div>
+                    <div class="auth-desc">보안 시스템 접속 및 인증 중입니다 🔐</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # 로딩 애니메이션이 영화처럼 노출되도록 충분한 시간(1.2초) 부여
+                time.sleep(1.2) 
 
-                                admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
-                                keys_to_save = {}
-                                if admin_keys.data:
-                                    # DB에서 가져올 때 복호화하여 세션에 할당 (안전한 평문)
-                                    keys_to_save = {
-                                        "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
-                                        "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
-                                        "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
-                                        "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
-                                        "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
-                                    }
-                                else:
-                                    supabase.table("user_api_keys").insert({
-                                        "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
-                                    }).execute()
-                                    keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-                                
-                                update_auth_state(True, login_username, keys_to_save)
-                                st.session_state.current_view = "main"
-                                st.session_state.current_menu = "quant"
-                                st.rerun()
+                try:
+                    user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
+                    if user_query.data:
+                        stored_hash = user_query.data[0].get("password_hash", "")
+                        
+                        login_success = False
+                        # 1. 🛡️ bcrypt 해시 암호 검증
+                        if verify_password(login_pw, stored_hash):
+                            login_success = True
+                        # 2. 🪄 기존 사용자 평문 -> bcrypt 자동 마이그레이션
+                        elif login_pw == stored_hash:
+                            login_success = True
+                            # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
+                            new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                            supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
+                            
+                        if login_success:
+                            # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
+                            st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
+
+                            admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+                            keys_to_save = {}
+                            if admin_keys.data:
+                                # DB에서 가져올 때 복호화하여 세션에 할당 (안전한 평문)
+                                keys_to_save = {
+                                    "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
+                                    "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
+                                    "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
+                                    "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
+                                    "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
+                                }
                             else:
-                                st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
+                                supabase.table("user_api_keys").insert({
+                                    "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
+                                }).execute()
+                                keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+                            
+                            update_auth_state(True, login_username, keys_to_save)
+                            st.session_state.current_view = "main"
+                            st.session_state.current_menu = "quant"
+                            
+                            # 로그인 성공 시 굳이 overlay.empty()를 안 해도 st.rerun()되면서 알아서 오버레이가 날아감
+                            st.rerun()
                         else:
+                            loading_overlay.empty() # 실패 시 오버레이 화면 해제
                             st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
-                    except Exception as e:
-                        st.error(f"시스템 장애: {str(e)}")
+                    else:
+                        loading_overlay.empty() # 실패 시 오버레이 화면 해제
+                        st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
+                except Exception as e:
+                    loading_overlay.empty() # 실패 시 오버레이 화면 해제
+                    st.error(f"시스템 장애: {str(e)}")
 
     # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어 + 까꿍 + 암호 보이기
     components.html("""
