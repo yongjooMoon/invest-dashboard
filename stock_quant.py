@@ -295,7 +295,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     ret_1m = sel.get('ret_1m', 0)
 
     # 💡 [추가] 섹터 정보가 있으면 노란색 파이프(|)와 함께 추가
-    sector_str = f" &nbsp;|&nbsp; <span style='color:#F8B12A;'>{sel.get('sector')}</span>" if sel.get('sector') else ""
+    sector_str = f" &nbsp;|&nbsp; <span style='color:#F8B12A;'>{sel.get('sector')}</span>" if sel.get('sector') and sel.get('sector') != "미분류" else ""
 
     st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('market', 'KOSPI')}{sector_str}</span>", unsafe_allow_html=True)
     st.markdown(f"<h1>{curr:,.0f} 원 <span style='font-size:20px; color:{'#F04452' if ret_1m>0 else '#3182F6'};'>{ret_1m:+.2f}% (1M)</span></h1>", unsafe_allow_html=True)
@@ -442,21 +442,22 @@ def show_detail_dialog(sel, supabase):
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트투자")
 
-    confirmed, watchlist, last_updated = load_screening_result(supabase)
-    holdings, trades, history = load_portfolio_data(supabase)
+    # 🌟 [핵심 변경] 전체 데이터를 한번에 다 불러오던 비효율 로직 삭제!
+    # 이제 클릭한 메뉴(버튼)에 맞는 데이터만 즉석에서 On-Demand로 불러옵니다.
 
-    holding_syms = set([h['symbol'] for h in holdings])
-    filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
-    filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
+    if "quant_active_tab" not in st.session_state:
+        st.session_state.quant_active_tab = "Portfolio"
 
-    # [핵심] 마지막에 📖 Algo Whitepaper 탭을 추가했습니다.
-    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
-        f"Portfolio ({len(holdings)})",
-        f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
-        "매도 히스토리 (History)",
-        "🔍 Stock Search",
-        "📖 Algo Whitepaper"
-    ])
+    def switch_tab(tab_name):
+        st.session_state.quant_active_tab = tab_name
+
+    # 상단 네비게이션 버튼 (Top Menu)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.button("💼 Portfolio", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Portfolio" else "secondary", on_click=switch_tab, args=("Portfolio",))
+    c2.button("👀 Watchlist", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Watchlist" else "secondary", on_click=switch_tab, args=("Watchlist",))
+    c3.button("📉 매도 히스토리", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "History" else "secondary", on_click=switch_tab, args=("History",))
+    c4.button("🔍 Stock Search", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Search" else "secondary", on_click=switch_tab, args=("Search",))
+    c5.button("📖 Algo Whitepaper", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Docs" else "secondary", on_click=switch_tab, args=("Docs",))
 
     st.markdown("""
     <style>
@@ -465,11 +466,17 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     .popover-btn > button { padding: 0 !important; background: none !important; border: none !important; color: #AEC1D4 !important; }
     </style>
     """, unsafe_allow_html=True)
+    st.divider()
+
+    tab = st.session_state.quant_active_tab
 
     # ────────────────────────────────────────────────────────
-    # 탭 1: 포트폴리오
+    # 메뉴 1: 포트폴리오
     # ────────────────────────────────────────────────────────
-    with tab_port:
+    if tab == "Portfolio":
+        with st.spinner("포트폴리오 데이터를 불러오는 중..."):
+            holdings, trades, history = load_portfolio_data(supabase)
+
         with st.container(border=True):
             if holdings:
                 # 동일비중 최소 시드 계산 (가장 비싼 주식 가격 기준 * 보유종목 수)
@@ -485,7 +492,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 st.markdown("## 0 원")
                 st.caption("보유 중인 종목이 없습니다.")
 
-        # [수정] 불필요한 i 버튼 팝오버를 제거하고 깔끔한 타이틀만 남겼습니다.
         st.markdown(f"<h4 style='margin-bottom:10px; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
 
         if holdings:
@@ -521,7 +527,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 with c6:
                     bc1, bc2 = st.columns(2)
                     with bc1:
-                        # 🚨 완전히 새로워진 네이티브 UI Popover
                         with st.popover("🚨 Risk", use_container_width=True):
                             render_exit_risk_content(h, supabase)
                     with bc2:
@@ -535,9 +540,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
 
-        # ────────────────────────────────────────────────────────
-        # KOSPI 대비 포트폴리오 성과 (Alpha) - 실현수익(SELL) 기준
-        # ────────────────────────────────────────────────────────
         st.divider()
         st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha - 실현수익 기준)")
         st.caption("※ 보유 중인 종목의 미실현 수익은 제외되며, 매도(Exit)가 완료된 종목의 실현 수익률만 차트에 반영됩니다.")
@@ -559,7 +561,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             t_df = pd.DataFrame(sell_trades)
             t_df['date'] = pd.to_datetime(t_df['trade_date']).dt.tz_localize(None)
 
-            # 날짜별 평균 실현수익률 계산 후 누적 합산
             daily_ret = t_df.groupby('date')['return_rate'].mean()
             df_hist = pd.DataFrame({'sold_return': daily_ret})
 
@@ -595,10 +596,18 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
-    # 탭 2: Watchlist & Confirmed
+    # 메뉴 2: Watchlist & Confirmed
     # ────────────────────────────────────────────────────────
-    with tab_watch:
-        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
+    elif tab == "Watchlist":
+        with st.spinner("스크리닝 데이터를 불러오는 중..."):
+            confirmed, watchlist, last_updated = load_screening_result(supabase)
+            holdings, _, _ = load_portfolio_data(supabase)
+
+        holding_syms = set([h['symbol'] for h in holdings])
+        filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
+        filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
+
+        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'} (총 대기 종목: {len(filtered_confirmed) + len(filtered_watchlist)}개)")
 
         def render_watchlist_grid(items, title, color_code):
             st.markdown(f"#### {title}")
@@ -640,14 +649,16 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
-    # 탭 3: 매도 히스토리
+    # 메뉴 3: 매도 히스토리
     # ────────────────────────────────────────────────────────
-    with tab_hist:
+    elif tab == "History":
+        with st.spinner("매도 히스토리 로드 중..."):
+            _, trades, _ = load_portfolio_data(supabase)
+
         st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리 & 성과 지표")
 
         sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
         if sell_trades:
-            # --- [추가된 타율 및 손익비 계산 로직] ---
             wins = [t for t in sell_trades if t.get('return_rate', 0) > 0]
             losses = [t for t in sell_trades if t.get('return_rate', 0) <= 0]
             
@@ -656,16 +667,13 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             avg_win_pct = sum([t.get('return_rate', 0) for t in wins]) / len(wins) if wins else 0.0
             avg_loss_pct = sum([t.get('return_rate', 0) for t in losses]) / len(losses) if losses else 0.0
             
-            # 손익비 = 평균수익 / 평균손실(절대값)
             rr_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else (99.99 if avg_win_pct > 0 else 0)
 
-            # 지표 UI 출력
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("총 매도 횟수", f"{len(sell_trades)}회", f"승 {len(wins)} / 패 {len(losses)}")
             m2.metric("🎯 승률 (타율)", f"{win_rate:.1f}%")
             m3.metric("⚖️ 손익비 (RR Ratio)", f"{rr_ratio:.2f}", f"평균수익 {avg_win_pct:+.2f}% / 평균손실 {avg_loss_pct:+.2f}%")
             
-            # 총 누적 실현 수익금 계산 준비
             total_profit_amt = 0
             
             for t in sell_trades:
@@ -674,7 +682,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
                 t['entry_price'] = entry
                 
-                # 임의의 시드(예: 1주씩 샀다고 가정)로 손익금 계산 (실제 투자금이 적용 안된 상태이므로 주당 손익금 합산)
                 profit = trade_p - entry 
                 t['profit_amount'] = profit
                 total_profit_amt += profit
@@ -683,7 +690,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             
             st.divider()
             
-            # --- [기존 데이터프레임 출력 유지] ---
             t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
             t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
 
@@ -695,13 +701,14 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
-    # 탭 4: Stock Search (주식 조회)
+    # 메뉴 4: Stock Search (주식 조회)
     # ────────────────────────────────────────────────────────
-    with tab_search:
+    elif tab == "Search":
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
-        krx_df = load_krx_list_from_db(supabase)
+        with st.spinner("KRX 종목 마스터 로드 중..."):
+            krx_df = load_krx_list_from_db(supabase)
 
         if krx_df.empty:
             st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
@@ -717,9 +724,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
             stock_name = selected_stock_str.split(" (")[0]
 
-            all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
+            with st.spinner("캐시 확인 중..."):
+                # 💡 검색한 순간에만 꼭 필요한 DB들을 가져와서 캐시 검사
+                holdings, _, _ = load_portfolio_data(supabase)
+                confirmed, watchlist, _ = load_screening_result(supabase)
+                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
-            # [수정] 검색한 종목이 캐시 리스트에 있으면 절대 실시간 API를 치지 않습니다!
             if search_query in all_cached_stocks:
                 with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
                     sel = all_cached_stocks[search_query]
@@ -735,7 +745,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     st.success("✅ 캐시된 퀀트 분석 데이터를 로드했습니다. (API 호출 0)")
                     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=None)
             else:
-                # [수정] 캐시에 없는 완전 새로운 종목일 때만 네이버/API 긁어오기 진행
                 with st.spinner(f"'{selected_stock_str}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
                     df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
 
@@ -753,9 +762,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
                     
     # ────────────────────────────────────────────────────────
-    # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
+    # 메뉴 5: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
-    with tab_docs:
+    elif tab == "Docs":
         st.markdown("## 🧠 Chase Momentum Algorithm Whitepaper")
         st.caption("초보자부터 전문가까지 모두가 쉽게 이해할 수 있는 정통 퀀트 추격매수 & 방어 전략 안내서입니다.")
         st.divider()
