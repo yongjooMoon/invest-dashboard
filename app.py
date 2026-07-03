@@ -735,7 +735,6 @@ with st.sidebar:
     if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
         st.session_state.current_menu = "quant"
         st.session_state.current_view = "main"
-        st.session_state.quant_needs_refresh = True # 강제 리프레시 플래그 추가
         st.rerun()
         
     st.write("") 
