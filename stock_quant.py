@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import FinanceDataReader as fdr
+import time # 로딩 애니메이션 지연용
 
 from quant_core import (
     load_price_from_db, load_screening_result,
@@ -216,7 +217,7 @@ def render_exit_risk_content(h, supabase):
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
 
-    # 💡 [핵심 최적화] 팝업(popover) 렌더링 시마다 DB를 찌르는 현상(수십 번 호출) 방지!
+    # 💡 [핵심 최적화] 가격 데이터 메모리 캐싱으로 팝업 열 때마다 DB 부르는 현상 완벽 차단!
     if "price_cache" not in st.session_state: 
         st.session_state.price_cache = {}
     
@@ -257,7 +258,6 @@ def render_exit_risk_content(h, supabase):
 
     exit_risk = calculate_exit_risk(curr, entry, stop)
 
-    # 100% Native UI (HTML 충돌/에러 방지 및 시원한 가로 너비)
     st.markdown(
         """<style>
         div[data-testid="stPopoverBody"] { min-width: 350px !important; }
@@ -310,7 +310,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 
     if factor_score is None: factor_score = sel.get('factor_score', 0)
     
-    # ── [버그 수정: 과거 캐시가 아닌, 화면에 그릴 진짜 gates 데이터를 먼저 확정합니다] ──
     if gates is None:
         gates_data = sel.get("filter_details", {})
         if not gates_data or "Growth Composite" not in gates_data:
@@ -332,7 +331,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
                 'F': {'name': 'Volume Surge', 'pass': gates_data.get("Volume Surge", {}).get("pass", False), 'reason': gates_data.get("Volume Surge", {}).get("reason", "-")}
             }
 
-    # [수정] 무조건 현재 확정된 gates 변수 안의 True 개수를 직접 셉니다.
     total_pass = sum([1 for g in gates.values() if g['pass']])
 
     c_header, c_gauge = st.columns([3, 2])
@@ -427,7 +425,6 @@ def show_detail_dialog(sel, supabase):
 
         original_score = sel.get('factor_score', 0)
 
-        # 💡 [핵심 최적화] 리포트 내 차트용 데이터도 캐싱 적용
         if "price_cache" not in st.session_state: 
             st.session_state.price_cache = {}
         if sel['symbol'] not in st.session_state.price_cache:
@@ -448,27 +445,96 @@ def show_detail_dialog(sel, supabase):
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    # 🌟 [디자인 원복] 기존의 예쁘고 깔끔했던 기본 탭(Tab) 구조로 되돌림!
-    c1, c2 = st.columns([8, 2])
+    # 🌟 [디자인 원복 & 개선] 기존의 예쁜 기본 탭(Tab) 구조로 되돌리되, 리프레쉬 버튼은 사이즈를 줄여 우측 상단에 배치
+    c1, c2, c3 = st.columns([7.5, 1.3, 1.2]) 
     with c1:
         st.title("📡 퀀트투자")
-    with c2:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-        # 배치가 돌고 최신 데이터를 원할 때만 사용자가 능동적으로 캐시를 비울 수 있게 제공
-        if st.button("🔄 최신 데이터 불러오기", use_container_width=True):
+    with c3:
+        st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 리프레쉬", use_container_width=True):
+            # 💡 [우상향 차트 애니메이션] 버튼을 누르면 화면 중앙에 즉시 띄워줍니다!
+            loading_overlay = st.empty()
+            loading_overlay.markdown("""
+            <style>
+            .custom-overlay {
+                position: fixed !important; top: 0px !important; left: 0px !important; right: 0px !important; bottom: 0px !important; width: 100vw !important; height: 100vh !important;
+                background: rgba(3, 7, 18, 0.8) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important;
+                z-index: 9999999 !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important;
+                pointer-events: all !important;
+            }
+            .chart-box {
+                position: relative; width: 160px; height: 130px; margin-bottom: 25px;
+            }
+            .chart-line {
+                fill: none; stroke: #F04452; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round;
+                stroke-dasharray: 400; stroke-dashoffset: 400;
+                animation: drawLine 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+                filter: drop-shadow(0px 0px 8px rgba(240, 68, 82, 0.7));
+            }
+            .chart-point {
+                fill: #F04452; opacity: 0;
+                animation: fadeIn 0.3s ease-out 1.1s forwards;
+                filter: drop-shadow(0px 0px 12px rgba(240, 68, 82, 1));
+            }
+            .chart-grid { stroke: rgba(255,255,255,0.08); stroke-width: 1.5; stroke-dasharray: 4 6; }
+            
+            @keyframes drawLine { to { stroke-dashoffset: 0; } }
+            @keyframes fadeIn { to { opacity: 1; } }
+            
+            .refresh-title {
+                color: #FFFFFF !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 5px !important; margin: 0 0 10px 0 !important;
+                text-shadow: 0 0 15px rgba(255,255,255,0.3) !important;
+            }
+            .refresh-desc { color: #F04452 !important; font-size: 14px !important; font-weight: 600 !important; letter-spacing: 1.5px !important; margin: 0 !important; }
+            </style>
+            <div class="custom-overlay">
+                <div class="chart-box">
+                    <svg viewBox="0 0 160 130" style="width:100%; height:100%; overflow:visible;">
+                        <!-- Grid Lines -->
+                        <line x1="0" y1="35" x2="160" y2="35" class="chart-grid" />
+                        <line x1="0" y1="85" x2="160" y2="85" class="chart-grid" />
+                        <line x1="0" y1="130" x2="160" y2="130" class="chart-grid" />
+                        
+                        <!-- Upward Trend Line (Korean Market Up = Red #F04452) -->
+                        <path d="M 0,120 L 35,90 L 70,105 L 115,45 L 155,10" class="chart-line" />
+                        
+                        <!-- Glowing Final Point -->
+                        <circle cx="155" cy="10" r="7" class="chart-point" />
+                    </svg>
+                </div>
+                <div class="refresh-title">SYNCHRONIZING</div>
+                <div class="refresh-desc">최신 시장 데이터를 퀀트 엔진에 반영 중입니다 🚀</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 애니메이션 타이머 시작
+            start_time = time.time()
+            
+            # 💡 기존 메모리(캐시) 폭파
             for key in ["quant_portfolio", "quant_screening", "price_cache"]:
                 if key in st.session_state:
                     del st.session_state[key]
+            
+            # 애니메이션이 뒤를 덮고 있는 동안 DB에서 최신 데이터 조용히 호출
+            st.session_state.quant_portfolio = load_portfolio_data(supabase)
+            st.session_state.quant_screening = load_screening_result(supabase)
+            
+            # DB 조회가 너무 빨리 끝났을 경우, 멋진 애니메이션이 끊기지 않도록 최소 1.5초는 보장해 줍니다!
+            elapsed = time.time() - start_time
+            if elapsed < 1.5:
+                time.sleep(1.5 - elapsed)
+            
+            # 애니메이션 완료 후 즉시 화면 다시 그리기 (이때는 캐시가 채워져 있으므로 0.001초 컷)
             st.rerun()
 
     # 💡 [핵심 메모리 캐싱] 로그인 후 처음 진입할 때 딱 1번만 DB 조회 후 세션에 영구저장. 
     # 이후 화면을 아무리 다시 그리거나 팝업을 열고 닫아도 0초만에 캐시를 재활용합니다!
     if "quant_portfolio" not in st.session_state:
-        with st.spinner("💼 포트폴리오 데이터를 최초 1회 동기화 중입니다..."):
+        with st.spinner("💼 포트폴리오 데이터를 최초 1회 로드 중입니다..."):
             st.session_state.quant_portfolio = load_portfolio_data(supabase)
             
     if "quant_screening" not in st.session_state:
-        with st.spinner("👀 스크리닝 데이터를 최초 1회 동기화 중입니다..."):
+        with st.spinner("👀 스크리닝 데이터를 최초 1회 로드 중입니다..."):
             st.session_state.quant_screening = load_screening_result(supabase)
 
     holdings, trades, history = st.session_state.quant_portfolio
