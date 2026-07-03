@@ -217,7 +217,6 @@ def render_exit_risk_content(h, supabase):
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
 
-    # 💡 [핵심 최적화] 가격 데이터 메모리 캐싱으로 팝업 열 때마다 DB 부르는 현상 완벽 차단!
     if "price_cache" not in st.session_state: 
         st.session_state.price_cache = {}
     
@@ -445,14 +444,15 @@ def show_detail_dialog(sel, supabase):
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    # 🌟 [디자인 원복 & 개선] 기존의 예쁜 기본 탭(Tab) 구조로 되돌리되, 리프레쉬 버튼은 사이즈를 줄여 우측 상단에 배치
-    c1, c2, c3 = st.columns([7.5, 1.3, 1.2]) 
+    # 🌟 [버튼 폭&여백 최적화] 비율을 조정해 버튼이 얇아지게 하고, margin-top을 충분히 주어 윗부분 잘림을 방지했습니다.
+    c1, c2, c3 = st.columns([8.2, 0.8, 1.0]) 
     with c1:
         st.title("📡 퀀트투자")
     with c3:
-        st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Refresh", use_container_width=True):
-            # 💡 [우상향 차트 애니메이션] 스트림릿이 코드로 인식하지 않도록 공백/들여쓰기를 완벽히 제거한 1줄짜리 문자열로 압축합니다.
+        # 타이틀 높이와 정확히 맞추고 잘림 현상 방지를 위해 여백을 26px로 확대
+        st.markdown("<div style='margin-top: 26px;'></div>", unsafe_allow_html=True)
+        # 딱딱한 🔄 아이콘을 트렌디하고 귀여운 ✨ 반짝이 마법 이모지로 변경!
+        if st.button("✨ Refresh", use_container_width=True):
             loading_overlay = st.empty()
             overlay_html = (
                 "<style>"
