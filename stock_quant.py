@@ -454,12 +454,13 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         # 딱딱한 🔄 아이콘을 트렌디하고 귀여운 ✨ 반짝이 마법 이모지로 변경!
         if st.button("✨ Refresh", use_container_width=True):
             loading_overlay = st.empty()
+            # 💡 [핵심] CSS 애니메이션 타이밍(0.9s, 0.8s)과 Python의 대기시간(1.0초)을 완벽하게 맞물리게 조절했습니다.
             overlay_html = (
                 "<style>"
                 ".custom-overlay { position: fixed !important; top: 0px !important; left: 0px !important; right: 0px !important; bottom: 0px !important; width: 100vw !important; height: 100vh !important; background: rgba(3, 7, 18, 0.8) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important; z-index: 9999999 !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; pointer-events: all !important; }"
                 ".chart-box { position: relative; width: 160px; height: 130px; margin-bottom: 25px; }"
-                ".chart-line { fill: none; stroke: #F04452; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 400; stroke-dashoffset: 400; animation: drawLine 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards; filter: drop-shadow(0px 0px 8px rgba(240, 68, 82, 0.7)); }"
-                ".chart-point { fill: #F04452; opacity: 0; animation: fadeIn 0.3s ease-out 1.1s forwards; filter: drop-shadow(0px 0px 12px rgba(240, 68, 82, 1)); }"
+                ".chart-line { fill: none; stroke: #F04452; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 400; stroke-dashoffset: 400; animation: drawLine 0.9s cubic-bezier(0.4, 0, 0.2, 1) forwards; filter: drop-shadow(0px 0px 8px rgba(240, 68, 82, 0.7)); }"
+                ".chart-point { fill: #F04452; opacity: 0; animation: fadeIn 0.2s ease-out 0.8s forwards; filter: drop-shadow(0px 0px 12px rgba(240, 68, 82, 1)); }"
                 ".chart-grid { stroke: rgba(255,255,255,0.08); stroke-width: 1.5; stroke-dasharray: 4 6; }"
                 "@keyframes drawLine { to { stroke-dashoffset: 0; } }"
                 "@keyframes fadeIn { to { opacity: 1; } }"
@@ -494,12 +495,13 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.session_state.quant_portfolio = load_portfolio_data(supabase)
             st.session_state.quant_screening = load_screening_result(supabase)
             
-            # DB 조회가 너무 빨리 끝났을 경우, 멋진 애니메이션이 끊기지 않도록 최소 1.5초는 보장해 줍니다!
             elapsed = time.time() - start_time
-            if elapsed < 1.5:
-                time.sleep(1.5 - elapsed)
+            # 💡 애니메이션이 화면에 그려지는 시간(0.9s ~ 1.0s)과 파이썬의 대기시간을 1.0초로 완벽하게 동일하게 맞춥니다.
+            # 선이 그려지고 빛나는 포인트가 생기는 그 즉시 화면이 리프레쉬됩니다!
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)
             
-            # 애니메이션 완료 후 즉시 화면 다시 그리기 (이때는 캐시가 채워져 있으므로 0.001초 컷)
+            # 애니메이션 완료 직후 화면 다시 그리기 
             st.rerun()
 
     # 💡 [핵심 메모리 캐싱] 로그인 후 처음 진입할 때 딱 1번만 DB 조회 후 세션에 영구저장. 
@@ -802,7 +804,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
 
                 if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    st.error("해당 종목의 차트 데이터를 찾을 수 정를 수 없습니다.")
                 else:
                     st.divider()
                     st.success("✅ 실시간 퀀트 분석 데이터를 로드했습니다.")
