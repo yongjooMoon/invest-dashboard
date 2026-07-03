@@ -474,231 +474,235 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # 메뉴 1: 포트폴리오
     # ────────────────────────────────────────────────────────
     if tab == "Portfolio":
-        with st.spinner("포트폴리오 데이터를 불러오는 중..."):
+        # 💡 [핵심 최적화] DB 호출뿐만 아니라 화면 렌더링(차트, 표 등) 전체 과정을 스피너로 감쌉니다.
+        # 이렇게 하면 이전 화면이 버벅이며 멈춰있는 느낌 없이 "완전히 새로운 화면이 준비될 때까지" 로딩바가 돌아갑니다.
+        with st.spinner("💼 안전하게 포트폴리오 데이터를 동기화하고 화면을 구성하는 중입니다..."):
             holdings, trades, history = load_portfolio_data(supabase)
 
-        with st.container(border=True):
+            with st.container(border=True):
+                if holdings:
+                    # 동일비중 최소 시드 계산 (가장 비싼 주식 가격 기준 * 보유종목 수)
+                    max_price = max([h.get("current_price", 0) for h in holdings])
+                    total_stocks = len(holdings)
+                    total_seed = max_price * total_stocks
+                    
+                    st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
+                    st.markdown(f"## {total_seed:,.0f} 원")
+                    st.caption(f"종목당 {max_price:,.0f}원 기준 × {total_stocks}종목")
+                else:
+                    st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
+                    st.markdown("## 0 원")
+                    st.caption("보유 중인 종목이 없습니다.")
+
+            st.markdown(f"<h4 style='margin-bottom:10px; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
+
             if holdings:
-                # 동일비중 최소 시드 계산 (가장 비싼 주식 가격 기준 * 보유종목 수)
-                max_price = max([h.get("current_price", 0) for h in holdings])
-                total_stocks = len(holdings)
-                total_seed = max_price * total_stocks
-                
-                st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
-                st.markdown(f"## {total_seed:,.0f} 원")
-                st.caption(f"종목당 {max_price:,.0f}원 기준 × {total_stocks}종목")
-            else:
-                st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
-                st.markdown("## 0 원")
-                st.caption("보유 중인 종목이 없습니다.")
-
-        st.markdown(f"<h4 style='margin-bottom:10px; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
-
-        if holdings:
-            c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
-            c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-            c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
-            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-            c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
-            c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
-
-            dialog_trigger = None
-            dialog_payload = None
-
-            for h in holdings:
-                curr = h.get("current_price", 0)
-                entry = h.get("entry_price", curr)
-                stop = h.get("stop_price", entry * 0.85)
-                ret = h.get("return_rate", 0.0)
-                exit_risk = calculate_exit_risk(curr, entry, stop)
-
                 c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
-                c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
-                c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
-                c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
+                c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
+                c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
+                c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
+                c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
+                c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
+                c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
 
-                pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
-                c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
+                dialog_trigger = None
+                dialog_payload = None
 
-                risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
-                c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
+                for h in holdings:
+                    curr = h.get("current_price", 0)
+                    entry = h.get("entry_price", curr)
+                    stop = h.get("stop_price", entry * 0.85)
+                    ret = h.get("return_rate", 0.0)
+                    exit_risk = calculate_exit_risk(curr, entry, stop)
 
-                with c6:
-                    bc1, bc2 = st.columns(2)
-                    with bc1:
-                        with st.popover("🚨 Risk", use_container_width=True):
-                            render_exit_risk_content(h, supabase)
-                    with bc2:
-                        if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                            dialog_trigger = "detail"
-                            dialog_payload = h
+                    c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
+                    c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
+                    c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
+                    c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
 
-            if dialog_trigger == "detail" and dialog_payload:
-                show_detail_dialog(dialog_payload, supabase)
+                    pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
+                    c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
 
-        else:
-            st.info("현재 보유 중인 종목이 없습니다.")
+                    risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
+                    c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
 
-        st.divider()
-        st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha - 실현수익 기준)")
-        st.caption("※ 보유 중인 종목의 미실현 수익은 제외되며, 매도(Exit)가 완료된 종목의 실현 수익률만 차트에 반영됩니다.")
+                    with c6:
+                        bc1, bc2 = st.columns(2)
+                        with bc1:
+                            with st.popover("🚨 Risk", use_container_width=True):
+                                render_exit_risk_content(h, supabase)
+                        with bc2:
+                            if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
+                                dialog_trigger = "detail"
+                                dialog_payload = h
 
-        end_date = now_kst()
-        start_date = end_date - timedelta(days=30)
+                if dialog_trigger == "detail" and dialog_payload:
+                    show_detail_dialog(dialog_payload, supabase)
 
-        df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
-        if not df_kospi.empty:
-            df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
-        else:
-            df_kospi = pd.DataFrame(columns=['Close', 'kospi_cum'])
+            else:
+                st.info("현재 보유 중인 종목이 없습니다.")
 
-        chart_df = pd.DataFrame(index=df_kospi.index)
-        chart_df['KOSPI'] = df_kospi['kospi_cum']
+            st.divider()
+            st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha - 실현수익 기준)")
+            st.caption("※ 보유 중인 종목의 미실현 수익은 제외되며, 매도(Exit)가 완료된 종목의 실현 수익률만 차트에 반영됩니다.")
 
-        sell_trades = [t for t in trades if t.get('type') == 'SELL']
-        if sell_trades:
-            t_df = pd.DataFrame(sell_trades)
-            t_df['date'] = pd.to_datetime(t_df['trade_date']).dt.tz_localize(None)
+            end_date = now_kst()
+            start_date = end_date - timedelta(days=30)
 
-            daily_ret = t_df.groupby('date')['return_rate'].mean()
-            df_hist = pd.DataFrame({'sold_return': daily_ret})
+            df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
+            if not df_kospi.empty:
+                df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
+            else:
+                df_kospi = pd.DataFrame(columns=['Close', 'kospi_cum'])
 
-            chart_df = chart_df.join(df_hist['sold_return'], how='left')
-            chart_df['sold_return'] = chart_df['sold_return'].fillna(0)
-            chart_df['Portfolio'] = chart_df['sold_return'].cumsum()
+            chart_df = pd.DataFrame(index=df_kospi.index)
+            chart_df['KOSPI'] = df_kospi['kospi_cum']
 
-            cum_ret = chart_df['Portfolio'].iloc[-1]
-            day_ret = chart_df['sold_return'].iloc[-1]
-        else:
-            chart_df['Portfolio'] = 0.0
-            cum_ret = 0.0
-            day_ret = 0.0
+            sell_trades = [t for t in trades if t.get('type') == 'SELL']
+            if sell_trades:
+                t_df = pd.DataFrame(sell_trades)
+                t_df['date'] = pd.to_datetime(t_df['trade_date']).dt.tz_localize(None)
 
-        k_cum_ret = chart_df['KOSPI'].iloc[-1] if not chart_df['KOSPI'].empty else 0.0
-        k_day_ret = df_kospi['Close'].pct_change().iloc[-1] * 100 if not df_kospi.empty else 0.0
-        alpha = cum_ret - k_cum_ret
+                daily_ret = t_df.groupby('date')['return_rate'].mean()
+                df_hist = pd.DataFrame({'sold_return': daily_ret})
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Portfolio 실현 누적", f"{cum_ret:+.2f}%", f"Day {day_ret:+.2f}%")
-        col2.metric("KOSPI 누적", f"{k_cum_ret:+.2f}%", f"Day {k_day_ret:+.2f}%")
-        col3.metric("Alpha (초과수익)", f"{alpha:+.2f}%")
+                chart_df = chart_df.join(df_hist['sold_return'], how='left')
+                chart_df['sold_return'] = chart_df['sold_return'].fillna(0)
+                chart_df['Portfolio'] = chart_df['sold_return'].cumsum()
 
-        if not chart_df.empty:
-            chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
-            chart_df['Alpha_Color'] = chart_df['Alpha'].apply(lambda x: '#00B464' if x >= 0 else '#F04452')
-            fig = go.Figure()
-            custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Portfolio'], mode='lines+markers', name='Portfolio', line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)', customdata=custom_data, hovertemplate="<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br><span style='color:#3182F6;'>●</span> Portfolio &nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br><span style='color:#8B95A1;'>●</span> KOSPI &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{customdata[0]:.2f}%</b><br>─────────────────<br><span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b><extra></extra>"))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
-            fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
-            if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                cum_ret = chart_df['Portfolio'].iloc[-1]
+                day_ret = chart_df['sold_return'].iloc[-1]
+            else:
+                chart_df['Portfolio'] = 0.0
+                cum_ret = 0.0
+                day_ret = 0.0
+
+            k_cum_ret = chart_df['KOSPI'].iloc[-1] if not chart_df['KOSPI'].empty else 0.0
+            k_day_ret = df_kospi['Close'].pct_change().iloc[-1] * 100 if not df_kospi.empty else 0.0
+            alpha = cum_ret - k_cum_ret
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Portfolio 실현 누적", f"{cum_ret:+.2f}%", f"Day {day_ret:+.2f}%")
+            col2.metric("KOSPI 누적", f"{k_cum_ret:+.2f}%", f"Day {k_day_ret:+.2f}%")
+            col3.metric("Alpha (초과수익)", f"{alpha:+.2f}%")
+
+            if not chart_df.empty:
+                chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
+                chart_df['Alpha_Color'] = chart_df['Alpha'].apply(lambda x: '#00B464' if x >= 0 else '#F04452')
+                fig = go.Figure()
+                custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
+                fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Portfolio'], mode='lines+markers', name='Portfolio', line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)', customdata=custom_data, hovertemplate="<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br><span style='color:#3182F6;'>●</span> Portfolio &nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br><span style='color:#8B95A1;'>●</span> KOSPI &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{customdata[0]:.2f}%</b><br>─────────────────<br><span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b><extra></extra>"))
+                fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
+                fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
+                if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
     # 메뉴 2: Watchlist & Confirmed
     # ────────────────────────────────────────────────────────
     elif tab == "Watchlist":
-        with st.spinner("스크리닝 데이터를 불러오는 중..."):
+        # 💡 [핵심 최적화] 스크리닝 데이터를 로드하고 표를 그리는 작업 전체를 스피너로 감쌉니다.
+        with st.spinner("👀 스크리닝 데이터를 분석하고 종목 리스트를 구성하는 중입니다..."):
             confirmed, watchlist, last_updated = load_screening_result(supabase)
             holdings, _, _ = load_portfolio_data(supabase)
 
-        holding_syms = set([h['symbol'] for h in holdings])
-        filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
-        filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
+            holding_syms = set([h['symbol'] for h in holdings])
+            filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
+            filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
-        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'} (총 대기 종목: {len(filtered_confirmed) + len(filtered_watchlist)}개)")
+            st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'} (총 대기 종목: {len(filtered_confirmed) + len(filtered_watchlist)}개)")
 
-        def render_watchlist_grid(items, title, color_code):
-            st.markdown(f"#### {title}")
-
-            c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-            c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
-            c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-            c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
-            c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
-
-            for idx, w in enumerate(items):
-                curr = w.get('current_price', 0)
+            def render_watchlist_grid(items, title, color_code):
+                st.markdown(f"#### {title}")
 
                 c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-                c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
-                c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
-                c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
-                c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
-                c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
-                with c6:
-                    if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                        st.session_state['w_dialog_payload'] = w
+                c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
+                c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
+                c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
+                c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
+                c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
+                c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
 
-        if filtered_confirmed:
-            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
-            st.divider()
+                for idx, w in enumerate(items):
+                    curr = w.get('current_price', 0)
 
-        if filtered_watchlist:
-            render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4")
-            if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
-        else:
-            if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
+                    c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
+                    c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
+                    c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
+                    c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
+                    c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
+                    c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
+                    with c6:
+                        if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
+                            st.session_state['w_dialog_payload'] = w
 
-        if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
-            payload = st.session_state['w_dialog_payload']
-            st.session_state['w_dialog_payload'] = None
-            show_detail_dialog(payload, supabase)
+            if filtered_confirmed:
+                render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
+                st.divider()
+
+            if filtered_watchlist:
+                render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4")
+                if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
+            else:
+                if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
+
+            if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
+                payload = st.session_state['w_dialog_payload']
+                st.session_state['w_dialog_payload'] = None
+                show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
     # 메뉴 3: 매도 히스토리
     # ────────────────────────────────────────────────────────
     elif tab == "History":
-        with st.spinner("매도 히스토리 로드 중..."):
+        # 💡 [핵심 최적화] 매도 히스토리를 불러와 승률을 계산하고 표를 그리는 전체 과정을 감쌉니다.
+        with st.spinner("📉 매도 히스토리와 성과 통계를 계산하는 중입니다..."):
             _, trades, _ = load_portfolio_data(supabase)
 
-        st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리 & 성과 지표")
+            st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리 & 성과 지표")
 
-        sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
-        if sell_trades:
-            wins = [t for t in sell_trades if t.get('return_rate', 0) > 0]
-            losses = [t for t in sell_trades if t.get('return_rate', 0) <= 0]
-            
-            win_rate = (len(wins) / len(sell_trades)) * 100
-            
-            avg_win_pct = sum([t.get('return_rate', 0) for t in wins]) / len(wins) if wins else 0.0
-            avg_loss_pct = sum([t.get('return_rate', 0) for t in losses]) / len(losses) if losses else 0.0
-            
-            rr_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else (99.99 if avg_win_pct > 0 else 0)
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("총 매도 횟수", f"{len(sell_trades)}회", f"승 {len(wins)} / 패 {len(losses)}")
-            m2.metric("🎯 승률 (타율)", f"{win_rate:.1f}%")
-            m3.metric("⚖️ 손익비 (RR Ratio)", f"{rr_ratio:.2f}", f"평균수익 {avg_win_pct:+.2f}% / 평균손실 {avg_loss_pct:+.2f}%")
-            
-            total_profit_amt = 0
-            
-            for t in sell_trades:
-                trade_p = t.get('trade_price', 0)
-                ret_pct = t.get('return_rate', 0.0)
-                entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
-                t['entry_price'] = entry
+            sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
+            if sell_trades:
+                wins = [t for t in sell_trades if t.get('return_rate', 0) > 0]
+                losses = [t for t in sell_trades if t.get('return_rate', 0) <= 0]
                 
-                profit = trade_p - entry 
-                t['profit_amount'] = profit
-                total_profit_amt += profit
+                win_rate = (len(wins) / len(sell_trades)) * 100
+                
+                avg_win_pct = sum([t.get('return_rate', 0) for t in wins]) / len(wins) if wins else 0.0
+                avg_loss_pct = sum([t.get('return_rate', 0) for t in losses]) / len(losses) if losses else 0.0
+                
+                rr_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else (99.99 if avg_win_pct > 0 else 0)
 
-            m4.metric("💰 주당 누적 실현손익금", f"{total_profit_amt:,.0f}원")
-            
-            st.divider()
-            
-            t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
-            t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("총 매도 횟수", f"{len(sell_trades)}회", f"승 {len(wins)} / 패 {len(losses)}")
+                m2.metric("🎯 승률 (타율)", f"{win_rate:.1f}%")
+                m3.metric("⚖️ 손익비 (RR Ratio)", f"{rr_ratio:.2f}", f"평균수익 {avg_win_pct:+.2f}% / 평균손실 {avg_loss_pct:+.2f}%")
+                
+                total_profit_amt = 0
+                
+                for t in sell_trades:
+                    trade_p = t.get('trade_price', 0)
+                    ret_pct = t.get('return_rate', 0.0)
+                    entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
+                    t['entry_price'] = entry
+                    
+                    profit = trade_p - entry 
+                    t['profit_amount'] = profit
+                    total_profit_amt += profit
 
-            styled_t = t_df.style.map(
-                lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
-            ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
-            st.dataframe(styled_t, hide_index=True, use_container_width=True)
-        else:
-            st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
+                m4.metric("💰 주당 누적 실현손익금", f"{total_profit_amt:,.0f}원")
+                
+                st.divider()
+                
+                t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
+                t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
+
+                styled_t = t_df.style.map(
+                    lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
+                ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
+                st.dataframe(styled_t, hide_index=True, use_container_width=True)
+            else:
+                st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
     # 메뉴 4: Stock Search (주식 조회)
