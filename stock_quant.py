@@ -402,7 +402,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
-    with st.spinner("캐시된 데이터를 불러오는 중입니다..."):
+    with st.spinner("캐시된 데이터를 불러오는 중..."):
         
         # 💡 [핵심 추가] 포트폴리오(id=11) 종목이라서 디테일 데이터가 비어있다면?
         # 1순위: 스크리닝 캐시(id=1, 2)에서 복사, 2순위: 펀더멘털 DB에서 복사해옵니다!
@@ -442,29 +442,47 @@ def show_detail_dialog(sel, supabase):
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     st.title("📡 퀀트투자")
 
-    # 🌟 [핵심 변경] 전체 데이터를 한번에 다 불러오던 비효율 로직 삭제!
-    # 이제 클릭한 메뉴(버튼)에 맞는 데이터만 즉석에서 On-Demand로 불러옵니다.
-    
-    # 💡 강력한 세션 캐시 딕셔너리 초기화
+    # 💡 [핵심] 로그인 직후 처음 이 화면에 들어왔을 때 딱 한 번만 캐시를 초기화하고 강제 로딩(True)합니다.
     if "quant_data_cache" not in st.session_state:
         st.session_state.quant_data_cache = {}
+        st.session_state.quant_needs_refresh = True 
+        
     if "quant_needs_refresh" not in st.session_state:
-        st.session_state.quant_needs_refresh = True
+        st.session_state.quant_needs_refresh = False
+
     if "quant_active_tab" not in st.session_state:
         st.session_state.quant_active_tab = "Portfolio"
 
-    def switch_tab(tab_name):
-        st.session_state.quant_active_tab = tab_name
-        # 💡 [핵심] 상단 탭을 '직접' 클릭했을 때만 DB를 새로고침(True) 하도록 명시!
-        st.session_state.quant_needs_refresh = True
-
-    # 상단 네비게이션 버튼 (Top Menu)
+    # 🌟 [버그 수정] on_click을 빼고, 버튼이 직접 클릭되었을 때(True를 반환할 때)만 
+    # needs_refresh를 강제로 True로 바꿔서 DB를 조회하게 만듭니다. 
+    # 이렇게 하면 다른 곳(팝업 취소 등)을 눌러서 단순히 화면만 Rerun 될 때는 캐시에서 즉시 불러옵니다!
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.button("💼 Portfolio", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Portfolio" else "secondary", on_click=switch_tab, args=("Portfolio",))
-    c2.button("👀 Watchlist", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Watchlist" else "secondary", on_click=switch_tab, args=("Watchlist",))
-    c3.button("📉 매도 히스토리", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "History" else "secondary", on_click=switch_tab, args=("History",))
-    c4.button("🔍 Stock Search", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Search" else "secondary", on_click=switch_tab, args=("Search",))
-    c5.button("📖 Algo Whitepaper", use_container_width=True, type="primary" if st.session_state.quant_active_tab == "Docs" else "secondary", on_click=switch_tab, args=("Docs",))
+    
+    tab = st.session_state.quant_active_tab
+    
+    if c1.button("💼 Portfolio", use_container_width=True, type="primary" if tab == "Portfolio" else "secondary"):
+        st.session_state.quant_active_tab = "Portfolio"
+        st.session_state.quant_needs_refresh = True
+        st.rerun()
+        
+    if c2.button("👀 Watchlist", use_container_width=True, type="primary" if tab == "Watchlist" else "secondary"):
+        st.session_state.quant_active_tab = "Watchlist"
+        st.session_state.quant_needs_refresh = True
+        st.rerun()
+        
+    if c3.button("📉 매도 히스토리", use_container_width=True, type="primary" if tab == "History" else "secondary"):
+        st.session_state.quant_active_tab = "History"
+        st.session_state.quant_needs_refresh = True
+        st.rerun()
+        
+    if c4.button("🔍 Stock Search", use_container_width=True, type="primary" if tab == "Search" else "secondary"):
+        st.session_state.quant_active_tab = "Search"
+        st.session_state.quant_needs_refresh = True
+        st.rerun()
+        
+    if c5.button("📖 Algo Whitepaper", use_container_width=True, type="primary" if tab == "Docs" else "secondary"):
+        st.session_state.quant_active_tab = "Docs"
+        st.rerun() # 백서는 불러올 DB가 없으므로 refresh 불필요
 
     st.markdown("""
     <style>
@@ -475,18 +493,20 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     """, unsafe_allow_html=True)
     st.divider()
 
+    # 클릭으로 세션 탭 이름이 바뀌었을 수 있으므로 다시 가져옵니다
     tab = st.session_state.quant_active_tab
 
     # ────────────────────────────────────────────────────────
     # 메뉴 1: 포트폴리오
     # ────────────────────────────────────────────────────────
     if tab == "Portfolio":
-        # 💡 [핵심 최적화] Refresh 플래그가 켜졌거나, 캐시가 비어있을 때'만' DB에서 로드!
+        # 💡 [핵심] Refresh 플래그가 켜졌거나 캐시가 비어있을 때'만' DB에서 로드!
+        # 다른 액션(취소버튼 등)으로 인해 Rerun이 발생했을 때는 아래 코드가 실행되지 않고 즉시 else문으로 넘어갑니다.
         if st.session_state.quant_needs_refresh or "portfolio" not in st.session_state.quant_data_cache:
-            with st.spinner("💼 안전하게 포트폴리오 데이터를 동기화하고 화면을 구성하는 중입니다..."):
+            with st.spinner("💼 포트폴리오 데이터를 동기화하고 있습니다..."):
                 holdings, trades, history = load_portfolio_data(supabase)
                 st.session_state.quant_data_cache["portfolio"] = (holdings, trades, history)
-                st.session_state.quant_needs_refresh = False  # 조회가 끝났으니 다시 잠금!
+                st.session_state.quant_needs_refresh = False  # 조회가 끝났으니 다시 잠금! (이게 F5 방지 핵심)
         else:
             # Refresh가 필요 없다면 0.001초 만에 세션 메모리에서 즉시 렌더링
             holdings, trades, history = st.session_state.quant_data_cache["portfolio"]
@@ -614,7 +634,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # ────────────────────────────────────────────────────────
     elif tab == "Watchlist":
         if st.session_state.quant_needs_refresh or "watchlist" not in st.session_state.quant_data_cache:
-            with st.spinner("👀 스크리닝 데이터를 분석하고 종목 리스트를 구성하는 중입니다..."):
+            with st.spinner("👀 스크리닝 데이터를 동기화하고 있습니다..."):
                 confirmed, watchlist, last_updated = load_screening_result(supabase)
                 holdings, _, _ = load_portfolio_data(supabase)
                 st.session_state.quant_data_cache["watchlist"] = (confirmed, watchlist, last_updated, holdings)
@@ -672,7 +692,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # ────────────────────────────────────────────────────────
     elif tab == "History":
         if st.session_state.quant_needs_refresh or "history" not in st.session_state.quant_data_cache:
-            with st.spinner("📉 매도 히스토리와 성과 통계를 계산하는 중입니다..."):
+            with st.spinner("📉 매도 히스토리를 동기화하고 있습니다..."):
                 _, trades, _ = load_portfolio_data(supabase)
                 st.session_state.quant_data_cache["history"] = trades
                 st.session_state.quant_needs_refresh = False
