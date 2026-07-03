@@ -111,7 +111,8 @@ if not st.session_state.logged_in and "auth_token" in st.query_params:
             pass
     else:
         # 토큰이 6시간이 지났거나 누군가 임의로 조작했다면 가차 없이 URL에서 파기
-        del st.query_params["auth_token"]
+        if "auth_token" in st.query_params:
+            del st.query_params["auth_token"]
 
 
 # --- [3. 로그인 화면 (오로라 글래스모피즘 + 찐 설인 애니메이션 UI)] ---
@@ -359,7 +360,6 @@ if not st.session_state.logged_in:
     }
     </style>
     
-    <!-- 움직이는 오로라 백그라운드 HTML 주입 -->
     <div class="aurora-bg">
         <div class="orb orb-1"></div>
         <div class="orb orb-2"></div>
@@ -398,7 +398,7 @@ if not st.session_state.logged_in:
             '<path fill="#FFFFFF" d="M138.142,55.064c-4.93,1.259-9.874,2.118-14.787,2.599c-0.336,3.341-0.776,6.689-1.322,10.037c-4.569-1.465-8.909-3.222-12.996-5.226c-0.98,3.075-2.07,6.137-3.267,9.179c-5.514-3.067-10.559-6.545-15.097-10.329c-1.806,2.889-3.745,5.73-5.816,8.515c-7.916-4.124-15.053-9.114-21.296-14.738l1.107-11.768h73.475V55.064z"/>'
             '<path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M63.56,55.102c6.243,5.624,13.38,10.614,21.296,14.738c2.071-2.785,4.01-5.626,5.816-8.515c4.537,3.785,9.583,7.263,15.097,10.329c1.197-3.043,2.287-6.104,3.267-9.179c4.087,2.004,8.427,3.761,12.996,5.226c0.545-3.348,0.986-6.696,1.322-10.037c4.913-0.481,9.857-1.34,14.787-2.599"/>'
             '</g>'
-            '<!-- 눈을 더 크고 선명하게 (r=5, r=1.5) -->'
+            ''
             '<g id="eyes" style="transition: transform 0.1s ease-out;">'
             '<g class="eyeL"><circle cx="85.5" cy="78.5" r="5" fill="#3a5e77"/><circle cx="84" cy="76" r="1.5" fill="#fff"/></g>'
             '<g class="eyeR"><circle cx="114.5" cy="78.5" r="5" fill="#3a5e77"/><circle cx="113" cy="76" r="1.5" fill="#fff"/></g>'
