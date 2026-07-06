@@ -1,9 +1,16 @@
 import streamlit as st
+import os
+import requests
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from supabase import create_client, Client
 from datetime import datetime, timedelta
+
+# 🌟 Streamlit Cloud의 잘못된 프록시 환경 변수 간섭을 원천 차단하여 에러 해결
+for env_key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
+    if env_key in os.environ:
+        del os.environ[env_key]
 
 # ==========================================
 # 1. 환경 변수 및 설정
@@ -11,13 +18,14 @@ from datetime import datetime, timedelta
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-# 구조 변경된 st.secrets 키 적용
+# 구조 변경된 1차원 st.secrets 키 적용 완료
 GOOGLE_CLIENT_ID = st.secrets["client_id"]
 GOOGLE_CLIENT_SECRET = st.secrets["client_secret"]
 GOOGLE_REFRESH_TOKEN = st.secrets["refresh_token"]
 
 SCOPES = [
     'https://www.googleapis.com/auth/documents.readonly',
+    'https://www.googleapis.com/auth/drive.readonly'
 ]
 
 DOCUMENT_NAME_KEYWORD = "Daily AI News Brief"
@@ -27,7 +35,7 @@ DOCUMENT_NAME_KEYWORD = "Daily AI News Brief"
 # 2. 구글 인증 (OAuth 2.0 - 메모리 캐싱 방식)
 # ==========================================
 def get_google_credentials():
-    token_uri = "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)"
+    token_uri = "https://oauth2.googleapis.com/token"
     creds = Credentials(
         token=None, 
         refresh_token=GOOGLE_REFRESH_TOKEN,
@@ -38,7 +46,10 @@ def get_google_credentials():
     )
 
     if not creds.valid:
-        creds.refresh(Request())
+        # 🌟 시스템 프록시 환경변수를 완전히 무시하도록 빈 세션을 강제 바인딩 (에러 방어용)
+        session = requests.Session()
+        session.trust_env = False
+        creds.refresh(Request(session=session))
     return creds
 
 
@@ -84,7 +95,7 @@ def get_google_doc_text(doc_id, creds):
 
 
 # ==========================================
-# 5. 🌟 데이터 파싱 및 Supabase Insert 함수 (신규 포맷 7컬럼 적용)
+# 5. 데이터 파싱 및 Supabase Insert 함수 (신규 포맷 7컬럼 적용)
 # ==========================================
 def process_and_insert_data(raw_text):
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -103,7 +114,6 @@ def process_and_insert_data(raw_text):
         if columns[0].strip().lower() == 'region':
             continue
 
-        # 🌟 이제 프롬프트에서 7개의 컬럼이 넘어옵니다.
         if len(columns) == 7:
             try:
                 region = columns[0].strip()
@@ -112,17 +122,14 @@ def process_and_insert_data(raw_text):
                 summary = columns[3].strip()
                 score = int(columns[4].strip())
                 
-                # 6번째: 주요뉴스 여부 파싱 (대소문자 무관하게 True 포함시 True)
                 is_major = True if 'true' in columns[5].strip().lower() else False
                 
-                # 7번째: 시간 파싱 (넘어온 시간을 그대로 파싱하여 저장)
                 time_str = columns[6].strip()
                 try:
                     parsed_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M")
                     created_at_iso = parsed_time.isoformat()
                 except Exception as e:
                     print(f"시간 파싱 오류 (현재시간으로 대체): {time_str}")
-                    # 파싱 실패 시 현재 시간 적용
                     created_at_iso = datetime.utcnow().isoformat()
 
                 # DB 중복 체크 (제목 기준)
@@ -133,7 +140,6 @@ def process_and_insert_data(raw_text):
                     skipped_count += 1
                     continue
 
-                # 🌟 DB Insert 페이로드 (시간과 주요뉴스 플래그까지 포함)
                 data = {
                     "region": region,
                     "sector_asset": sector,
@@ -141,7 +147,7 @@ def process_and_insert_data(raw_text):
                     "summary": summary,
                     "sentiment_score": score,
                     "is_major": is_major,
-                    "created_at": created_at_iso  # 파싱한 뉴스의 실제 발생 시간으로 덮어쓰기!
+                    "created_at": created_at_iso
                 }
 
                 supabase.table("market_news").insert(data).execute()
@@ -157,7 +163,7 @@ def process_and_insert_data(raw_text):
 
 
 # ==========================================
-# 6. 외부 배치(Scheduler) 호출용 메인 함수
+# 6. 외부 배치(Scheduler) 및 수동 호출용 메인 함수
 # ==========================================
 def run_sync():
     print("\n[배치 실행] 구글 드라이브 문서 수합을 시작합니다...")
