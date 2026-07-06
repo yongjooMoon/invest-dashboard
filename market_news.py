@@ -41,28 +41,27 @@ def news_detail_dialog():
         border-radius: 4px;
     }
     
-    /* 🔥 하단 네비게이션 버튼을 투명한 이모지 아이콘으로 튜닝 🔥 */
+    /* 🔥 하단 네비게이션 버튼을 완벽하게 투명한 이모지 아이콘으로 튜닝 🔥 */
     div[data-testid="stModal"] div[data-testid="stButton"] button {
-        background: transparent !important;
-        border: none !important;
+        background-color: transparent !important;
+        border: 0px solid transparent !important; /* 테두리 완벽 제거 */
         box-shadow: none !important;
-        font-size: 28px !important; /* 이모지 크기를 큼직하게 */
         transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
         padding: 0 !important;
     }
-    /* 마우스를 올리면 통통 튀며 커지는 효과 */
-    div[data-testid="stModal"] div[data-testid="stButton"] button:hover {
-        transform: scale(1.3) !important; 
-        background: transparent !important;
-        border: none !important;
-    }
+    /* 마우스를 올리거나 클릭할 때도 테두리가 생기지 않도록 강제 설정 */
+    div[data-testid="stModal"] div[data-testid="stButton"] button:hover,
+    div[data-testid="stModal"] div[data-testid="stButton"] button:active,
     div[data-testid="stModal"] div[data-testid="stButton"] button:focus {
-        background: transparent !important;
-        border: none !important;
+        background-color: transparent !important;
+        border: 0px solid transparent !important;
+        box-shadow: none !important;
+        transform: scale(1.2) !important; 
         color: inherit !important;
     }
     div[data-testid="stModal"] div[data-testid="stButton"] p {
         font-size: 32px !important; /* 내부 텍스트(이모지) 크기 강제 고정 */
+        margin: 0 !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -133,16 +132,16 @@ def news_detail_dialog():
     </div>
     """, unsafe_allow_html=True)
 
-    # 🌟 하단 네비게이션 버튼 (글자 없이 정중앙에 작고 예쁘게 배치)
+    # 🌟 하단 네비게이션 버튼 (양끝으로 배치)
     st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
     
-    # 4:1:1:4 비율로 컬럼을 나누어 가운데 두 칸에만 버튼을 배치 (완벽한 중앙 정렬)
-    empty_left, prev_col, next_col, empty_right = st.columns([4.5, 1, 1, 4.5])
+    # 양끝 배치를 위해 1:8:1 비율로 컬럼 분할
+    nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
     
-    with prev_col:
+    with nav_col1:
         if idx > 0:
             st.button("⬅️", on_click=go_prev, use_container_width=True)
-    with next_col:
+    with nav_col2:
         if idx < len(news_list) - 1:
             st.button("➡️", on_click=go_next, use_container_width=True)
 
