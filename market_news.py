@@ -175,9 +175,9 @@ def news_detail_dialog():
 def run_news_page(supabase):
     st.markdown("""
     <style>
-    /* 🌟 1. 검색창 잘림 방지를 위해 상단 여백(padding-top) 대폭 증가 */
+    /* 🌟 1. 검색창 잘림 방지를 위해 상단 여백(padding-top) 대폭 증가 및 너비 축소 */
     .block-container {
-        max-width: 1000px !important; 
+        max-width: 950px !important; /* 다시 이전 950px 사이즈로 복구 */
         padding-top: 4.5rem !important; 
         padding-bottom: 4rem !important;
         margin: 0 auto !important;
