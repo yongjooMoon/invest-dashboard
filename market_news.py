@@ -20,7 +20,7 @@ def get_region_style(region):
 # ==========================================
 @st.dialog("📰 뉴스 상세 브리핑")
 def news_detail_dialog():
-    # 🌟 팝업창 크기를 화면 꽉 차게 대폭 확장 (90vw, 85vh)
+    # 🌟 팝업창 크기 지정 및 하단 버튼(이모지) 투명화 마법 CSS
     st.markdown("""
     <style>
     div[data-testid="stModal"] > div[role="dialog"] {
@@ -39,6 +39,30 @@ def news_detail_dialog():
     div[data-testid="stModal"] > div[role="dialog"] ::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, 0.2);
         border-radius: 4px;
+    }
+    
+    /* 🔥 하단 네비게이션 버튼을 투명한 이모지 아이콘으로 튜닝 🔥 */
+    div[data-testid="stModal"] div[data-testid="stButton"] button {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        font-size: 28px !important; /* 이모지 크기를 큼직하게 */
+        transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+        padding: 0 !important;
+    }
+    /* 마우스를 올리면 통통 튀며 커지는 효과 */
+    div[data-testid="stModal"] div[data-testid="stButton"] button:hover {
+        transform: scale(1.3) !important; 
+        background: transparent !important;
+        border: none !important;
+    }
+    div[data-testid="stModal"] div[data-testid="stButton"] button:focus {
+        background: transparent !important;
+        border: none !important;
+        color: inherit !important;
+    }
+    div[data-testid="stModal"] div[data-testid="stButton"] p {
+        font-size: 32px !important; /* 내부 텍스트(이모지) 크기 강제 고정 */
     }
     </style>
     """, unsafe_allow_html=True)
@@ -109,13 +133,16 @@ def news_detail_dialog():
     </div>
     """, unsafe_allow_html=True)
 
-    # 🌟 하단 네비게이션 버튼 (이모지만 작고 깔끔하게 배치)
-    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
-    nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
-    with nav_col1:
+    # 🌟 하단 네비게이션 버튼 (글자 없이 정중앙에 작고 예쁘게 배치)
+    st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
+    
+    # 4:1:1:4 비율로 컬럼을 나누어 가운데 두 칸에만 버튼을 배치 (완벽한 중앙 정렬)
+    empty_left, prev_col, next_col, empty_right = st.columns([4.5, 1, 1, 4.5])
+    
+    with prev_col:
         if idx > 0:
             st.button("⬅️", on_click=go_prev, use_container_width=True)
-    with nav_col2:
+    with next_col:
         if idx < len(news_list) - 1:
             st.button("➡️", on_click=go_next, use_container_width=True)
 
