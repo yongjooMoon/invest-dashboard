@@ -41,27 +41,37 @@ def news_detail_dialog():
         border-radius: 4px;
     }
     
-    /* 🔥 하단 네비게이션 버튼을 완벽하게 투명한 이모지 아이콘으로 튜닝 🔥 */
+    /* 🔥 하단 네비게이션 버튼을 세련된 색상의 카드형 버튼으로 튜닝 🔥 */
     div[data-testid="stModal"] div[data-testid="stButton"] button {
-        background-color: transparent !important;
-        border: 0px solid transparent !important; /* 테두리 완벽 제거 */
-        box-shadow: none !important;
-        transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
-        padding: 0 !important;
+        background-color: rgba(30, 41, 59, 0.8) !important; /* 어두운 슬레이트 배경 */
+        border: 1px solid rgba(255, 255, 255, 0.1) !important; /* 은은한 테두리 */
+        border-radius: 12px !important; /* 둥근 모서리 */
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2) !important;
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        transition: all 0.2s ease-in-out !important;
+        padding: 8px 0 !important; /* 상하 여백으로 버튼 형태(두께) 확보 */
     }
-    /* 마우스를 올리거나 클릭할 때도 테두리가 생기지 않도록 강제 설정 */
+    div[data-testid="stModal"] div[data-testid="stButton"] button::before,
+    div[data-testid="stModal"] div[data-testid="stButton"] button::after {
+        display: none !important; /* Streamlit 기본 테두리 효과 차단 */
+    }
+    /* 마우스를 올릴 때 디자인 (버튼이 살짝 떠오르며 밝아짐) */
     div[data-testid="stModal"] div[data-testid="stButton"] button:hover,
     div[data-testid="stModal"] div[data-testid="stButton"] button:active,
     div[data-testid="stModal"] div[data-testid="stButton"] button:focus {
-        background-color: transparent !important;
-        border: 0px solid transparent !important;
-        box-shadow: none !important;
-        transform: scale(1.2) !important; 
+        background-color: rgba(51, 65, 85, 0.95) !important; /* 호버 시 밝아짐 */
+        border: 1px solid rgba(255, 255, 255, 0.25) !important;
+        box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3) !important;
+        transform: translateY(-3px) !important; /* 위로 살짝 떠오르는 애니메이션 */
         color: inherit !important;
     }
     div[data-testid="stModal"] div[data-testid="stButton"] p {
-        font-size: 32px !important; /* 내부 텍스트(이모지) 크기 강제 고정 */
+        font-size: 26px !important; /* 이모지 크기를 버튼 폼 안에 예쁘게 맞춤 */
         margin: 0 !important;
+        text-align: center !important;
+        width: 100% !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -132,10 +142,10 @@ def news_detail_dialog():
     </div>
     """, unsafe_allow_html=True)
 
-    # 🌟 하단 네비게이션 버튼 (양끝으로 배치)
+    # 🌟 하단 네비게이션 버튼 (양끝으로 배치하고, 이모지 자체를 버튼 중앙에 정렬)
     st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
     
-    # 양끝 배치를 위해 1:8:1 비율로 컬럼 분할
+    # 양끝 배치 복구 (1:8:1 비율)
     nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
     
     with nav_col1:
