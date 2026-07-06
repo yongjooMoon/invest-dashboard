@@ -3,23 +3,58 @@ import re
 from datetime import datetime
 
 # ==========================================
-# 팝업 다이얼로그 (상세 브리핑 모달창 - 사이즈 대폭 확대)
+# 팝업 다이얼로그 (상세 브리핑 모달창 - 사이즈 및 높이 대폭 확대, 네비게이션 추가)
 # ==========================================
 @st.dialog("📰 뉴스 상세 브리핑")
-def news_detail_dialog(news):
-    # 🌟 팝업(모달) 창의 사이즈를 강제로 키우는 CSS 주입
+def news_detail_dialog():
+    # 세션 상태에서 현재 뉴스 리스트와 인덱스 가져오기
+    news_list = st.session_state.get("filtered_news", [])
+    idx = st.session_state.get("current_news_index", 0)
+    
+    if not news_list:
+        st.error("뉴스를 찾을 수 없습니다.")
+        return
+        
+    news = news_list[idx]
+
+    # 🌟 팝업(모달) 창의 높이(height)를 80vh로 강제하고 너비를 키우는 CSS
     st.markdown("""
     <style>
     div[data-testid="stModal"] > div[role="dialog"] {
-        width: 80vw !important;
-        max-width: 900px !important;
+        width: 85vw !important;
+        max-width: 950px !important;
+        height: 80vh !important; /* 높이를 화면의 80%로 시원하게 확장 */
+        min-height: 600px !important;
         border-radius: 16px !important;
     }
     div[data-testid="stModal"] div[data-testid="stMarkdownContainer"] {
-        padding: 1rem 0.5rem;
+        padding: 0.5rem 0.5rem;
+    }
+    /* 모달 내부 스크롤바 디자인 */
+    div[data-testid="stModal"] > div[role="dialog"] ::-webkit-scrollbar {
+        width: 8px;
+    }
+    div[data-testid="stModal"] > div[role="dialog"] ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
     }
     </style>
     """, unsafe_allow_html=True)
+
+    # 상단 네비게이션 버튼 (이전/다음)
+    nav_col1, empty_col, nav_col2 = st.columns([2, 5, 2])
+    with nav_col1:
+        if idx > 0:
+            if st.button("◀ 이전 기사", use_container_width=True):
+                st.session_state.current_news_index -= 1
+                st.rerun()
+    with nav_col2:
+        if idx < len(news_list) - 1:
+            if st.button("다음 기사 ▶", use_container_width=True):
+                st.session_state.current_news_index += 1
+                st.rerun()
+
+    st.markdown("<hr style='margin: 10px 0 20px 0; border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
 
     # 시간 포맷팅
     try:
@@ -39,7 +74,7 @@ def news_detail_dialog(news):
         <span>·</span>
         <span>{time_str}</span>
     </div>
-    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 25px; font-weight: 900; line-height: 1.4; font-size: 26px;">{news['title']}</h2>
+    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 25px; font-weight: 900; line-height: 1.4; font-size: 28px;">{news['title']}</h2>
     """, unsafe_allow_html=True)
     
     # 3줄 요약 처리
@@ -48,8 +83,11 @@ def news_detail_dialog(news):
         summary_text = summary_text[8:]
         
     st.markdown(f"""
-    <div style="background-color: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.05); padding: 25px; border-radius: 12px; color: #E2E8F0; line-height: 1.8; margin-bottom: 30px; font-size: 16px;">
-        {summary_text}
+    <div style="background: linear-gradient(145deg, rgba(30,58,138,0.2), rgba(15,23,42,0.6)); border: 1px solid rgba(56,189,248,0.2); padding: 25px; border-radius: 12px; margin-bottom: 30px;">
+        <h4 style="color: #38BDF8; margin-top: 0; margin-bottom: 15px; font-size: 16px;">✨ AI 핵심 요약</h4>
+        <div style="color: #E2E8F0; line-height: 1.8; font-size: 16px;">
+            {summary_text}
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -62,9 +100,9 @@ def news_detail_dialog(news):
         color, status = "#10B981", "Bullish (긍정적)"
         
     st.markdown(f"""
-    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px; display: flex; justify-content: space-between; align-items: center;">
+    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; display: flex; justify-content: space-between; align-items: center;">
         <span style="color: #94A3B8; font-size: 15px; font-weight: 700;">AI Sentiment Score</span>
-        <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 8px 18px; border-radius: 20px; font-size: 16px;">
+        <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 10px 20px; border-radius: 30px; font-size: 16px;">
             {score} / 5 &nbsp;·&nbsp; {status}
         </span>
     </div>
@@ -77,9 +115,9 @@ def news_detail_dialog(news):
 def run_news_page(supabase):
     st.markdown("""
     <style>
-    /* 🌟 1. 전체 화면 너비 제한 및 중앙 정렬 (요청하신 사이즈 최적화) */
+    /* 🌟 1. 전체 화면 너비 제한 및 중앙 정렬 */
     .block-container {
-        max-width: 1050px !important;
+        max-width: 950px !important; /* 너비를 살짝 줄여서 중앙 집중도를 높임 */
         padding-top: 2rem !important;
         padding-bottom: 4rem !important;
         margin: 0 auto !important;
@@ -169,11 +207,14 @@ def run_news_page(supabase):
         match_search = not search_query or search_query.lower() in n['title'].lower() or search_query.lower() in n['summary'].lower()
         if match_category and match_search:
             filtered_news.append(n)
+
+    # 상태 관리를 위해 필터링된 뉴스를 세션에 저장 (모달창 네비게이션 용도)
+    st.session_state.filtered_news = filtered_news
             
     st.write("")
     
     # ==========================================
-    # 🔥 상단: 가로형 주요 뉴스 카드 (버튼 없는 클릭형)
+    # 🔥 상단: 가로형 주요 뉴스 카드
     # ==========================================
     top_news = filtered_news[:2] 
     list_news = filtered_news[2:] 
@@ -183,11 +224,13 @@ def run_news_page(supabase):
         cols = st.columns(2, gap="medium")
         
         for i, news in enumerate(top_news):
+            # 필터링된 전체 리스트에서의 실제 인덱스 찾기
+            actual_idx = filtered_news.index(news)
+            
             with cols[i % 2]:
                 dt = datetime.strptime(news['created_at'].split(".")[0][:19], "%Y-%m-%dT%H:%M:%S")
                 time_str = dt.strftime("%H:%M")
                 
-                # st.container() 안에 HTML 카드와 투명 버튼을 함께 배치하여 오버레이(Overlay) 클릭 구현
                 with st.container():
                     st.markdown(f"""
                     <div class="clickable-card" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
@@ -204,15 +247,15 @@ def run_news_page(supabase):
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # 카드를 클릭하면 이 안보이는 버튼이 눌려 팝업이 뜹니다.
                     if st.button(" ", key=f"top_btn_{news['id']}", use_container_width=True):
-                        news_detail_dialog(news)
+                        st.session_state.current_news_index = actual_idx
+                        news_detail_dialog()
 
     st.write("")
     st.write("")
     
     # ==========================================
-    # 📄 하단: 세로형 일반 뉴스 리스트 (버튼 없는 클릭형 로우)
+    # 📄 하단: 세로형 일반 뉴스 리스트
     # ==========================================
     st.markdown("<h3 style='margin-bottom: 12px; font-weight: 800;'>뉴스</h3>", unsafe_allow_html=True)
     st.markdown('<div class="news-divider" style="margin-bottom: 16px;"></div>', unsafe_allow_html=True)
@@ -221,6 +264,8 @@ def run_news_page(supabase):
         st.warning("조건에 맞는 뉴스가 없습니다.")
     else:
         for news in list_news:
+            actual_idx = filtered_news.index(news)
+            
             dt = datetime.strptime(news['created_at'].split(".")[0][:19], "%Y-%m-%dT%H:%M:%S")
             time_str = dt.strftime("%H:%M") 
             
@@ -238,6 +283,6 @@ def run_news_page(supabase):
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # 리스트 한 줄 전체를 클릭할 수 있게 만드는 투명 버튼
                 if st.button(" ", key=f"list_btn_{news['id']}", use_container_width=True):
-                    news_detail_dialog(news)
+                    st.session_state.current_news_index = actual_idx
+                    news_detail_dialog()
