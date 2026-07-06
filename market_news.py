@@ -203,7 +203,7 @@ def run_news_page(supabase):
     /* 투명 클릭 카드 */
     .clickable-card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; background-color: rgba(15, 23, 42, 0.3); transition: all 0.3s ease; position: relative; }
     div[data-testid="stVerticalBlock"]:has(.clickable-card) { position: relative; gap: 0 !important; }
-    div[data-testid="stVerticalBlock"]:has(.clickable-card) > div[data-testid="stButton"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
+    div[data-testid="stVerticalBlock"]:has(.clickable-card) > div[data-testid="stButton"] { position: absolute; inset: 0; z-index: 10; }
     div[data-testid="stVerticalBlock"]:has(.clickable-card) > div[data-testid="stButton"] button { width: 100%; height: 100%; opacity: 0; cursor: pointer; background: transparent; border: none; }
     div[data-testid="stVerticalBlock"]:has(> div[data-testid="stButton"] button:hover) .clickable-card { background-color: rgba(255, 255, 255, 0.08) !important; border-color: rgba(255, 255, 255, 0.3) !important; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
     
@@ -211,6 +211,8 @@ def run_news_page(supabase):
     button[data-baseweb="tab"] { font-size: 16px !important; font-weight: 600 !important; }
     
     /* 슬라이드 화살표 버튼 커스텀 */
+    /* 🌟 카드의 투명 오버레이 버튼(z-index:10)이 살짝 겹쳐도 클릭을 가로채지 못하게, 슬라이더 버튼을 항상 위에 둡니다 */
+    .slider-btn { position: relative; z-index: 20; }
     .slider-btn div[data-testid="stButton"] > button {
         background-color: rgba(255,255,255,0.05) !important; border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 8px !important; padding: 0 !important; font-size: 14px !important; height: 35px !important;
@@ -218,6 +220,7 @@ def run_news_page(supabase):
     .slider-btn div[data-testid="stButton"] > button:hover { background-color: rgba(56, 189, 248, 0.2) !important; border-color: rgba(56, 189, 248, 0.5) !important; color: white !important;}
 
     /* 달력 네비게이션 버튼 디자인 */
+    .date-nav-btn { position: relative; z-index: 20; }
     .date-nav-btn div[data-testid="stButton"] > button {
         background-color: rgba(30, 41, 59, 1) !important; border: 1px solid rgba(255, 255, 255, 0.15) !important;
         border-radius: 12px !important; height: 45px !important; transition: all 0.2s ease !important;
