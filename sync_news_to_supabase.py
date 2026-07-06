@@ -1,10 +1,6 @@
-# 필요 라이브러리 설치:
-# pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib supabase
-
-import os.path
+import streamlit as st
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from supabase import create_client, Client
 
@@ -15,9 +11,11 @@ from supabase import create_client, Client
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-# Google API 설정 (OAuth 2.0 방식)
-# 서비스 계정이 아닌 '본인 계정'으로 직접 접근하기 위한 설정입니다.
-CLIENT_SECRET_FILE = 'credentials.json'
+# 파일 대신 st.secrets에서 구글 인증 정보 가져오기
+GOOGLE_CLIENT_ID = st.secrets["GOOGLE_OAUTH"]["client_id"]
+GOOGLE_CLIENT_SECRET = st.secrets["GOOGLE_OAUTH"]["client_secret"]
+GOOGLE_REFRESH_TOKEN = st.secrets["GOOGLE_OAUTH"]["refresh_token"]
+
 SCOPES = [
     'https://www.googleapis.com/auth/documents.readonly',
     'https://www.googleapis.com/auth/drive.readonly'
@@ -27,29 +25,26 @@ DOCUMENT_NAME_KEYWORD = "Daily AI News Brief"
 
 
 # ==========================================
-# 2. 구글 인증 (OAuth 2.0) 함수
+# 2. 구글 인증 (OAuth 2.0 - 메모리 캐싱 방식)
 # ==========================================
 def get_google_credentials():
-    """사용자(본인) 계정으로 인증하고 크레덴셜을 반환합니다."""
-    creds = None
-    # token.json 파일에는 사용자의 액세스 토큰과 리프레시 토큰이 저장됩니다.
-    # 처음 실행 시 로그인하면 생성되며, 이후로는 자동으로 토큰을 갱신합니다.
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    """파일 없이 st.secrets의 값만으로 인증 객체를 생성하고, 만료 시 자동 갱신합니다."""
+    token_uri = "https://oauth2.googleapis.com/token"
 
-    # 유효한 크레덴셜이 없으면 로그인 진행
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CLIENT_SECRET_FILE, SCOPES)
-            # 처음 실행 시 웹 브라우저가 열리며 구글 로그인 창이 뜹니다.
-            creds = flow.run_local_server(port=0)
+    # 로컬 파일을 읽고 쓰는 과정 없이, 자격증명(Credentials) 객체를 즉석에서 생성합니다.
+    # access_token(token)은 None으로 비워두고 refresh_token만 넣으면, 알아서 새 토큰을 받아옵니다.
+    creds = Credentials(
+        token=None, 
+        refresh_token=GOOGLE_REFRESH_TOKEN,
+        token_uri=token_uri,
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=SCOPES
+    )
 
-        # 다음 실행을 위해 토큰 저장
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+    # 강제로 유효성 검사 후 새 Access Token으로 갱신
+    if not creds.valid:
+        creds.refresh(Request())
 
     return creds
 
@@ -118,7 +113,6 @@ def process_and_insert_data(raw_text):
 
         columns = line.split('|')
 
-        # [수정된 부분] AI가 출력한 헤더(컬럼명) 줄인 경우 건너뛰기
         if columns[0].strip().lower() == 'region':
             continue
 
@@ -158,21 +152,19 @@ def process_and_insert_data(raw_text):
 
 
 # ==========================================
-# 6. 메인 실행 블록
+# 6. 외부 배치(Scheduler) 호출용 메인 함수
 # ==========================================
-if __name__ == '__main__':
-    print("인증을 진행합니다 (필요시 브라우저가 열립니다)...")
+def run_sync():
+    """app.py 스케줄러에서 이 함수를 호출하여 백그라운드로 실행합니다."""
+    print("\n[배치 실행] 구글 드라이브 문서 수합을 시작합니다...")
     creds = get_google_credentials()
+    
+    if creds:
+        doc_id = get_latest_doc_id_from_drive(creds)
+        if doc_id:
+            doc_text = get_google_doc_text(doc_id, creds)
+            if doc_text:
+                process_and_insert_data(doc_text)
 
-    print("\n1. 드라이브에서 가장 최신 뉴스 문서를 찾습니다...")
-    latest_doc_id = get_latest_doc_id_from_drive(creds)
-
-    if latest_doc_id:
-        print(f"2. 구글 문서({latest_doc_id})에서 데이터를 읽어옵니다...")
-        doc_text = get_google_doc_text(latest_doc_id, creds)
-
-        if doc_text:
-            print("3. 데이터 파싱 및 DB 저장을 시작합니다...")
-            process_and_insert_data(doc_text)
-    else:
-        print("작업을 종료합니다 (문서 ID를 찾지 못함).")
+if __name__ == '__main__':
+    run_sync()
