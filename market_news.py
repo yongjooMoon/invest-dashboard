@@ -27,9 +27,24 @@ def get_kst_time(utc_time_str):
 # ==========================================
 # 팝업 상태 컨트롤 및 콜백 (튕김 현상 완벽 해결)
 # ==========================================
-# 달력 날짜 변경 콜백
-def prev_history_day(): st.session_state.history_date -= timedelta(days=1)
-def next_history_day(): st.session_state.history_date += timedelta(days=1)
+def prev_history_day(): 
+    st.session_state.history_date -= timedelta(days=1)
+    st.session_state.show_history_dialog = True # 팝업 유지
+
+def next_history_day(): 
+    st.session_state.history_date += timedelta(days=1)
+    st.session_state.show_history_dialog = True # 팝업 유지
+
+def on_date_change():
+    st.session_state.show_history_dialog = True # 달력 선택 시 팝업 유지
+
+def go_prev_news(): 
+    st.session_state.dialog_news_index -= 1
+    st.session_state.show_detail_dialog = True # 팝업 유지
+
+def go_next_news(): 
+    st.session_state.dialog_news_index += 1
+    st.session_state.show_detail_dialog = True # 팝업 유지
 
 
 # ==========================================
@@ -40,7 +55,7 @@ def top_news_history_dialog(news_list_full):
     st.markdown("""
     <style>
     div[role="dialog"] {
-        width: 80vw !important; max-width: 850px !important; height: 80vh !important; min-height: 600px !important; border-radius: 16px !important;
+        width: 80vw !important; max-width: 850px !important; min-height: 600px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
     }
     div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.5rem 1rem; }
     div[role="dialog"] ::-webkit-scrollbar { width: 8px; }
@@ -55,8 +70,8 @@ def top_news_history_dialog(news_list_full):
     with c1: 
         st.button("◀ 이전일", on_click=prev_history_day, use_container_width=True)
     with c2: 
-        # 🌟 실제 달력 팝업 완벽 연동
-        st.date_input("날짜 선택", key="history_date", label_visibility="collapsed")
+        # 🌟 실제 달력 팝업 완벽 연동 (on_change 이벤트로 튕김 방지)
+        st.date_input("날짜 선택", key="history_date", on_change=on_date_change, label_visibility="collapsed")
     with c3: 
         st.button("다음일 ▶", on_click=next_history_day, use_container_width=True)
     
@@ -92,9 +107,7 @@ def top_news_history_dialog(news_list_full):
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # 🔥 스트림릿 다이얼로그 중첩(튕김) 방지 라우팅 해킹 🔥
-                # st.rerun()을 호출하면 현재 열려있는 히스토리 팝업이 꺼지고,
-                # 메인 루프가 다시 돌면서 상세 팝업을 열어줍니다! (부드러운 전환 구현)
+                # 🔥 스트림릿 다이얼로그 중첩(튕김) 방지 스위칭 로직
                 if st.button(" ", key=f"hist_btn_{news['id']}", use_container_width=True):
                     st.session_state.show_detail_dialog = True
                     st.session_state.dialog_news_list = major_news
@@ -108,16 +121,17 @@ def top_news_history_dialog(news_list_full):
 # ==========================================
 @st.dialog("📰 뉴스 상세 브리핑")
 def news_detail_dialog():
+    # 🌟 팝업 높이 자동 조절(height:auto)로 하단 이모지 버튼이 밀려나가지 않게 최적화
     st.markdown("""
     <style>
     div[role="dialog"] {
-        width: 80vw !important; max-width: 850px !important; height: 80vh !important; min-height: 600px !important; border-radius: 16px !important;
+        width: 80vw !important; max-width: 850px !important; min-height: 600px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
     }
     div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.5rem 1rem; }
     div[role="dialog"] ::-webkit-scrollbar { width: 8px; }
     div[role="dialog"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
     
-    /* 하단 이모지 버튼 투명화 */
+    /* 하단 이모지 버튼 투명화 디자인 */
     .emoji-btn-container div[data-testid="stButton"] button {
         background: transparent !important; border: none !important; box-shadow: none !important;
         transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important; padding: 0 !important;
@@ -141,7 +155,7 @@ def news_detail_dialog():
     if st.session_state.get("modal_back_visible", False):
         if st.button("🔙 전체 목록으로 돌아가기"):
             st.session_state.show_history_dialog = True
-            st.rerun() # 현재 상세창을 끄고, 메인 루프를 통해 히스토리 창을 켭니다.
+            st.rerun() 
         st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
     dt_kst = get_kst_time(news['created_at'])
@@ -175,29 +189,25 @@ def news_detail_dialog():
     else: color, status = "#10B981", "Bullish (긍정적)"
         
     st.markdown(f"""
-    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; display: flex; justify-content: space-between; align-items: center;">
+    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
         <span style="color: #94A3B8; font-size: 16px; font-weight: 700;">AI Sentiment Score</span>
         <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 10px 20px; border-radius: 30px; font-size: 17px;">
             {score} / 5 &nbsp;·&nbsp; {status}
         </span>
     </div>
-    <div style='margin-top: 40px;'></div>
     """, unsafe_allow_html=True)
     
+    # 하단 이모지 전용 네비게이션 (on_click 이벤트를 걸어서 팝업 튕김 현상 100% 방지)
     nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
     with nav_col1:
         if idx > 0: 
             st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
-            if st.button("⬅️", use_container_width=True):
-                st.session_state.dialog_news_index -= 1
-                st.rerun()
+            st.button("⬅️", on_click=go_prev_news, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
     with nav_col2:
         if idx < len(news_list) - 1: 
             st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
-            if st.button("➡️", use_container_width=True):
-                st.session_state.dialog_news_index += 1
-                st.rerun()
+            st.button("➡️", on_click=go_next_news, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -208,15 +218,12 @@ def run_news_page(supabase):
     
     # 🌟 메인루프 최상단에서 팝업(모달) 오픈 신호를 감지하고 처리합니다. 🌟
     if st.session_state.get("show_history_dialog", False):
-        st.session_state.show_history_dialog = False # 무한 반복 방지를 위해 신호 초기화
-        # 주의: top_news_history_dialog는 news_list 전체가 필요하지만,
-        # 아래 로직에서 불러온 것을 세션에 넣어뒀다고 가정하거나 DB에서 불러옵니다.
-        # 가장 안전하게 DB에서 한번 더 가져옵니다.
+        st.session_state.show_history_dialog = False # 무한 반복 방지
         res = supabase.table("market_news").select("*").order("created_at", desc=True).limit(100).execute()
         top_news_history_dialog(res.data)
         
     if st.session_state.get("show_detail_dialog", False):
-        st.session_state.show_detail_dialog = False # 신호 초기화
+        st.session_state.show_detail_dialog = False 
         news_detail_dialog()
 
     # ----------------------------------------
@@ -240,16 +247,18 @@ def run_news_page(supabase):
     /* 🔥 오늘 주요뉴스 가로 스크롤(Slider) 강제 적용 마법 CSS 🔥 */
     /* id가 horizontal-scroll-anchor 인 마크다운 바로 다음 형제(HorizontalBlock)를 타겟팅 */
     div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"] {
-        overflow-x: auto !important;
+        display: flex !important;
         flex-wrap: nowrap !important;
+        overflow-x: auto !important;
         padding-bottom: 20px !important;
         scroll-behavior: smooth;
     }
-    /* 스크롤 영역 내부 컬럼(카드) 너비 고정 */
+    /* 스크롤 영역 내부 컬럼(카드)의 너비를 픽셀 단위로 완벽하게 고정!! */
     div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+        width: 320px !important;
         min-width: 320px !important;
         max-width: 320px !important;
-        flex: 0 0 auto !important;
+        flex: 0 0 320px !important;
     }
     /* 가로 스크롤바 디자인 */
     div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"]::-webkit-scrollbar {
@@ -286,7 +295,7 @@ def run_news_page(supabase):
         cutoff_time -= timedelta(days=1)
         
     today_news = [n for n in news_list if get_kst_time(n['created_at']) >= cutoff_time]
-    display_top_news = today_news[:6] # 가로 스크롤 테스트를 위해 최대 6개 노출 (이후 DB 주요뉴스 플래그로 필터 연동)
+    display_top_news = today_news[:6] # 가로 스크롤을 위해 넉넉히 최대 6개 추출
     
     col_h1, col_h2 = st.columns([8, 2], vertical_alignment="bottom")
     with col_h1:
@@ -313,7 +322,7 @@ def run_news_page(supabase):
             with cols[idx]:
                 with st.container():
                     st.markdown(f"""
-                    <div class="clickable-card" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
+                    <div class="top-news-card clickable-card" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{region_text}</span>
                             <span style="color: #64748B; font-size: 12px; font-weight: 600;">{time_str}</span>
