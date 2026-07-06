@@ -20,14 +20,14 @@ def get_region_style(region):
 # ==========================================
 @st.dialog("📰 뉴스 상세 브리핑")
 def news_detail_dialog():
-    # 🌟 어떤 스트림릿 버전이든 100% 디자인이 적용되도록 CSS 선택자 초강화
+    # 🌟 팝업창 크기 복구 (너비를 줄여서 집중도 향상)
     st.markdown("""
     <style>
     div[role="dialog"] {
-        width: 90vw !important;
-        max-width: 1000px !important;
-        height: 85vh !important; 
-        min-height: 650px !important;
+        width: 70vw !important;
+        max-width: 750px !important; /* 팝업 너비 아담하게 복구 */
+        height: 80vh !important; 
+        min-height: 600px !important;
         border-radius: 16px !important;
     }
     div[role="dialog"] div[data-testid="stMarkdownContainer"] {
@@ -114,14 +114,14 @@ def news_detail_dialog():
     sector = news.get('sector_asset', 'News')
     
     st.markdown(f"""
-    <div style="color: #94A3B8; font-size: 15px; margin-bottom: 20px; display:flex; gap: 12px; align-items:center;">
-        <span style="background-color: {reg_bg}; color: {reg_color}; padding: 4px 12px; border-radius: 6px; font-weight: 800;">{region_text}</span>
+    <div style="color: #94A3B8; font-size: 14px; margin-bottom: 20px; display:flex; gap: 10px; align-items:center;">
+        <span style="background-color: {reg_bg}; color: {reg_color}; padding: 4px 10px; border-radius: 6px; font-weight: 800;">{region_text}</span>
         <span>·</span>
         <span style="font-weight: 700;">{sector}</span>
         <span>·</span>
         <span>{time_str}</span>
     </div>
-    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 30px; font-weight: 900; line-height: 1.4; font-size: 32px;">{news['title']}</h2>
+    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 25px; font-weight: 900; line-height: 1.4; font-size: 28px;">{news['title']}</h2>
     """, unsafe_allow_html=True)
     
     # 3줄 요약 처리
@@ -130,9 +130,9 @@ def news_detail_dialog():
         summary_text = summary_text[8:]
         
     st.markdown(f"""
-    <div style="background: linear-gradient(145deg, rgba(30,58,138,0.2), rgba(15,23,42,0.6)); border: 1px solid rgba(56,189,248,0.2); padding: 30px; border-radius: 12px; margin-bottom: 35px;">
-        <h4 style="color: #38BDF8; margin-top: 0; margin-bottom: 15px; font-size: 18px;">✨ AI 핵심 요약</h4>
-        <div style="color: #E2E8F0; line-height: 1.8; font-size: 17px;">
+    <div style="background: linear-gradient(145deg, rgba(30,58,138,0.2), rgba(15,23,42,0.6)); border: 1px solid rgba(56,189,248,0.2); padding: 25px; border-radius: 12px; margin-bottom: 30px;">
+        <h4 style="color: #38BDF8; margin-top: 0; margin-bottom: 12px; font-size: 16px;">✨ AI 핵심 요약</h4>
+        <div style="color: #E2E8F0; line-height: 1.7; font-size: 16px;">
             {summary_text}
         </div>
     </div>
@@ -147,19 +147,19 @@ def news_detail_dialog():
         color, status = "#10B981", "Bullish (긍정적)"
         
     st.markdown(f"""
-    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; display: flex; justify-content: space-between; align-items: center;">
-        <span style="color: #94A3B8; font-size: 16px; font-weight: 700;">AI Sentiment Score</span>
-        <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 10px 20px; border-radius: 30px; font-size: 17px;">
+    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px; display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: #94A3B8; font-size: 15px; font-weight: 700;">AI Sentiment Score</span>
+        <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 8px 18px; border-radius: 30px; font-size: 16px;">
             {score} / 5 &nbsp;·&nbsp; {status}
         </span>
     </div>
     """, unsafe_allow_html=True)
 
     # 🌟 하단 네비게이션 버튼 (양끝으로 배치)
-    st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
     
     # 1:8:1 비율로 양끝 배치
-    nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
+    nav_col1, empty_col, nav_col2 = st.columns([1.5, 7, 1.5])
     
     with nav_col1:
         if idx > 0:
@@ -294,17 +294,18 @@ def run_news_page(supabase):
                         reg_color, reg_bg = get_region_style(region_text)
                         
                         with st.container():
+                            # 🌟 카드 높이를 170px에서 150px로 아담하게 복구, 패딩 최적화
                             st.markdown(f"""
-                            <div class="clickable-card" style="height: 170px; padding: 22px; display: flex; flex-direction: column; justify-content: space-between;">
+                            <div class="clickable-card" style="height: 150px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 12px; padding: 4px 10px; border-radius: 4px; font-weight: 800;">{region_text}</span>
-                                    <span style="color: #64748B; font-size: 13px; font-weight: 600;">{time_str}</span>
+                                    <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{region_text}</span>
+                                    <span style="color: #64748B; font-size: 12px; font-weight: 600;">{time_str}</span>
                                 </div>
-                                <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+                                <div style="font-size: 17px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
                                     {news['title']}
                                 </div>
                                 <div>
-                                    <span style="background-color: rgba(255,255,255,0.05); color: #94A3B8; font-size: 12px; padding: 4px 12px; border-radius: 12px; font-weight: 700;">#{news['sector_asset']}</span>
+                                    <span style="background-color: rgba(255,255,255,0.05); color: #94A3B8; font-size: 11px; padding: 4px 10px; border-radius: 12px; font-weight: 700;">#{news['sector_asset']}</span>
                                 </div>
                             </div>
                             """, unsafe_allow_html=True)
@@ -339,9 +340,9 @@ def run_news_page(supabase):
                         <div style="display: flex; align-items: center; gap: 14px; flex: 1; overflow: hidden;">
                             <span style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px; white-space: nowrap;">{region_text}</span>
                             <span style="color: #94A3B8; font-size: 14px; font-weight: 700; white-space: nowrap;">· {news['sector_asset']}</span>
-                            <span style="font-size: 17px; font-weight: 700; color: #E2E8F0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 5px;">{news['title']}</span>
+                            <span style="font-size: 16px; font-weight: 700; color: #E2E8F0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 5px;">{news['title']}</span>
                         </div>
-                        <div style="color: #64748B; font-size: 14px; font-weight: 600; white-space: nowrap; margin-left: 16px;">
+                        <div style="color: #64748B; font-size: 13px; font-weight: 600; white-space: nowrap; margin-left: 16px;">
                             {time_str}
                         </div>
                     </div>
