@@ -25,7 +25,7 @@ def get_kst_time(utc_time_str):
 
 
 # ==========================================
-# 상태 컨트롤 콜백 함수
+# 팝업 상태 컨트롤 및 콜백 (튕김 현상 완벽 해결)
 # ==========================================
 def prev_history_day(): 
     st.session_state.history_date -= timedelta(days=1)
@@ -189,40 +189,44 @@ def run_news_page(supabase):
         return
 
     # ==========================================
-    # 🔥 상단 고정: 오늘 주요뉴스 (파이썬 기반 안정적 슬라이드 구현)
+    # 🔥 상단 고정: 오늘 주요뉴스 (DB is_major 연동)
     # ==========================================
     now_kst = datetime.utcnow() + timedelta(hours=9)
     cutoff_time = now_kst.replace(hour=8, minute=30, second=0, microsecond=0)
     if now_kst < cutoff_time:
         cutoff_time -= timedelta(days=1)
         
+    # 🌟 하드코딩 제거: 08:30 이후 데이터 중 is_major 필드가 True인 것만 가져오기
     today_news = [n for n in news_list if get_kst_time(n['created_at']) >= cutoff_time]
+    today_major_news = [n for n in today_news if n.get('is_major') == True]
     
     if "carousel_idx" not in st.session_state:
         st.session_state.carousel_idx = 0
         
-    # 헤더 및 슬라이드 버튼 (좌우 넘기기) - "전체보기" 버튼 제거
+    # 헤더 및 슬라이드 버튼 (주요 뉴스가 없을 경우 버튼 숨김 처리)
     col_h1, col_h2, col_h3 = st.columns([7.6, 0.7, 0.7], vertical_alignment="bottom")
     with col_h1:
         st.markdown("<h3 style='margin-bottom: 0px; font-weight: 800;'>🔥 오늘 주요뉴스</h3>", unsafe_allow_html=True)
     with col_h2:
-        st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
-        if st.button("◀", disabled=(st.session_state.carousel_idx == 0), use_container_width=True):
-            st.session_state.carousel_idx -= 2
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+        if today_major_news: # 🌟 주요 뉴스가 있을 때만 버튼 렌더링
+            st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
+            if st.button("◀", disabled=(st.session_state.carousel_idx <= 0), use_container_width=True):
+                st.session_state.carousel_idx -= 2
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
     with col_h3:
-        st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
-        max_idx = max(0, len(today_news) - 2)
-        if st.button("▶", disabled=(not today_news or st.session_state.carousel_idx >= max_idx), use_container_width=True):
-            st.session_state.carousel_idx += 2
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+        if today_major_news: # 🌟 주요 뉴스가 있을 때만 버튼 렌더링
+            st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
+            max_idx = max(0, len(today_major_news) - 2)
+            if st.button("▶", disabled=(st.session_state.carousel_idx >= max_idx), use_container_width=True):
+                st.session_state.carousel_idx += 2
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
             
     st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
     
-    if today_news:
-        display_top_news = today_news[st.session_state.carousel_idx : st.session_state.carousel_idx + 2]
+    if today_major_news:
+        display_top_news = today_major_news[st.session_state.carousel_idx : st.session_state.carousel_idx + 2]
         cols = st.columns(2)
         
         for idx, news in enumerate(display_top_news):
@@ -255,12 +259,13 @@ def run_news_page(supabase):
                         st.session_state.dialog_news_index = actual_idx
                         st.rerun() 
     else:
-        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스를 대기 중입니다.")
+        # 🌟 주요 뉴스가 없을 경우 빈 카드 대신 깔끔한 안내문 표출
+        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
         
     st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         
     # ==========================================
-    # 📄 하단: 탭 영역 (🔥 주요뉴스 탭 신설)
+    # 📄 하단: 탭 영역 (🔥 주요뉴스 탭 연동)
     # ==========================================
     st.markdown("<h3 style='margin-bottom: 20px; font-weight: 800;'>📌 섹터별 최신 뉴스</h3>", unsafe_allow_html=True)
     
@@ -287,7 +292,6 @@ def run_news_page(supabase):
                     st.button("◀ 이전일", on_click=prev_history_day, key="btn_prev_day", use_container_width=True)
                     st.markdown("</div>", unsafe_allow_html=True)
                 with c2: 
-                    # 🌟 탭 내부에서 안전하게 캘린더 구동
                     selected_date = st.date_input("날짜 선택", value=st.session_state.history_date, label_visibility="collapsed")
                     if selected_date != st.session_state.history_date:
                         st.session_state.history_date = selected_date
@@ -301,12 +305,15 @@ def run_news_page(supabase):
                 
                 target_date = st.session_state.history_date
                 day_news = [n for n in news_list if get_kst_time(n['created_at']).date() == target_date]
-                major_news = day_news[:10] # Mock: 추후 DB 속성 필터 가능
                 
-                if not major_news:
+                # 🌟 하드코딩 제거: DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
+                major_news_list = [n for n in day_news if n.get('is_major') == True]
+                
+                if not major_news_list:
                     st.info(f"{target_date.strftime('%Y년 %m월 %d일')}에 수집된 주요 뉴스가 없습니다.")
                 else:
-                    for idx_in_day, news in enumerate(major_news):
+                    for idx_in_day, news in enumerate(major_news_list):
+                        actual_idx = news_list.index(news)
                         dt_kst = get_kst_time(news['created_at'])
                         time_str = dt_kst.strftime("%H:%M")
                         region_text = news.get('region', 'Global')
@@ -331,8 +338,8 @@ def run_news_page(supabase):
                             # 상세 보기 호출 (단일 팝업)
                             if st.button(" ", key=f"hist_card_btn_{news['id']}", use_container_width=True):
                                 st.session_state.show_detail_dialog = True
-                                st.session_state.dialog_news_list = major_news
-                                st.session_state.dialog_news_index = idx_in_day
+                                st.session_state.dialog_news_list = news_list # 네비게이션을 위해 전체 리스트 전달
+                                st.session_state.dialog_news_index = actual_idx
                                 st.rerun() 
 
             # ----------------------------------------
@@ -353,7 +360,7 @@ def run_news_page(supabase):
                     continue
 
                 for news in tab_filtered_news:
-                    actual_idx = tab_filtered_news.index(news)
+                    actual_idx = news_list.index(news)
                     dt_kst = get_kst_time(news['created_at'])
                     time_str = dt_kst.strftime("%m.%d %H:%M") 
                     
@@ -376,6 +383,6 @@ def run_news_page(supabase):
                         
                         if st.button(" ", key=f"list_btn_{current_sector}_{news['id']}", use_container_width=True):
                             st.session_state.show_detail_dialog = True
-                            st.session_state.dialog_news_list = tab_filtered_news
+                            st.session_state.dialog_news_list = news_list
                             st.session_state.dialog_news_index = actual_idx
                             st.rerun()
