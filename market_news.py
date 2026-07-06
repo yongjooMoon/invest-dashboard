@@ -1,122 +1,170 @@
 import streamlit as st
-import re
-from datetime import datetime
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from supabase import create_client, Client
 
-def run_news_page(supabase):
-    st.markdown("""
-    <style>
-    /* 스크롤바 디자인 숨기기 및 부드럽게 만들기 */
-    .st-emotion-cache-1y4p8pa {
-        padding-top: 1rem !important;
-    }
-    .st-emotion-cache-16txtl3 {
-        padding: 2rem 1.5rem !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# ==========================================
+# 1. 환경 변수 및 설정
+# ==========================================
+# Supabase 설정
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-    st.markdown("### 📰 글로벌 매크로 & 주도주 뉴스 데스크")
+# 파일 대신 st.secrets에서 구글 인증 정보 가져오기
+GOOGLE_CLIENT_ID = st.secrets["client_id"]
+GOOGLE_CLIENT_SECRET = st.secrets["client_secret"]
+GOOGLE_REFRESH_TOKEN = st.secrets["refresh_token"]
 
-    # DB에서 최신 뉴스 50개 가져오기
+SCOPES = [
+    'https://www.googleapis.com/auth/documents.readonly',
+    'https://www.googleapis.com/auth/drive.readonly'
+]
+
+DOCUMENT_NAME_KEYWORD = "Daily AI News Brief"
+
+
+# ==========================================
+# 2. 구글 인증 (OAuth 2.0 - 메모리 캐싱 방식)
+# ==========================================
+def get_google_credentials():
+    """파일 없이 st.secrets의 값만으로 인증 객체를 생성하고, 만료 시 자동 갱신합니다."""
+    token_uri = "https://oauth2.googleapis.com/token"
+
+    # 로컬 파일을 읽고 쓰는 과정 없이, 자격증명(Credentials) 객체를 즉석에서 생성합니다.
+    # access_token(token)은 None으로 비워두고 refresh_token만 넣으면, 알아서 새 토큰을 받아옵니다.
+    creds = Credentials(
+        token=None, 
+        refresh_token=GOOGLE_REFRESH_TOKEN,
+        token_uri=token_uri,
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=SCOPES
+    )
+
+    # 강제로 유효성 검사 후 새 Access Token으로 갱신
+    if not creds.valid:
+        creds.refresh(Request())
+
+    return creds
+
+
+# ==========================================
+# 3. 구글 드라이브에서 가장 최신 문서 ID 찾기
+# ==========================================
+def get_latest_doc_id_from_drive(creds):
     try:
-        res = supabase.table("market_news").select("*").order("created_at", desc=True).limit(50).execute()
-        news_list = res.data
+        drive_service = build('drive', 'v3', credentials=creds)
+        query = f"name contains '{DOCUMENT_NAME_KEYWORD}' and mimeType='application/vnd.google-apps.document' and trashed=false"
+
+        results = drive_service.files().list(
+            q=query, orderBy="createdTime desc", pageSize=1, fields="files(id, name, createdTime)"
+        ).execute()
+
+        files = results.get('files', [])
+        if not files:
+            print(f"'{DOCUMENT_NAME_KEYWORD}' 키워드가 포함된 문서를 찾을 수 없습니다.")
+            return None
+
+        latest_file = files[0]
+        print(f"최신 문서를 찾았습니다: {latest_file['name']} (생성일시: {latest_file['createdTime']})")
+        return latest_file['id']
+
     except Exception as e:
-        st.error(f"뉴스 데이터를 불러오는 중 오류가 발생했습니다: {e}")
-        return
+        print(f"[오류] 드라이브에서 문서를 검색하는데 실패했습니다: {e}")
+        return None
 
-    if not news_list:
-        st.info("아직 수집된 뉴스가 없습니다. (8:32 / 15:32 / 22:32 배치 대기 중)")
-        return
 
-    # 선택된 뉴스를 세션에 저장 (최초 접속 시 가장 최근 뉴스 1번 선택)
-    if "selected_news" not in st.session_state:
-        st.session_state.selected_news = news_list[0]
+# ==========================================
+# 4. 구글 문서 텍스트 추출 함수
+# ==========================================
+def get_google_doc_text(doc_id, creds):
+    try:
+        service = build('docs', 'v1', credentials=creds)
+        doc = service.documents().get(documentId=doc_id).execute()
 
-    # 화면 분할 (좌측: 좁은 타임라인, 우측: 넓은 상세 정보)
-    col1, col2 = st.columns([1, 1.4], gap="large")
+        text_content = ""
+        for element in doc.get('body').get('content'):
+            if 'paragraph' in element:
+                elements = element.get('paragraph').get('elements')
+                for elem in elements:
+                    if 'textRun' in elem:
+                        text_content += elem.get('textRun').get('content')
+        return text_content
+    except Exception as e:
+        print(f"[오류] 구글 문서를 읽어오는데 실패했습니다: {e}")
+        return None
 
-    with col1:
-        st.markdown("#### ⏳ 실시간 타임라인")
-        # 높이를 고정하여 자체 스크롤이 가능하게 컨테이너 생성
-        with st.container(height=650):
-            for news in news_list:
-                # 시간 포맷팅 (예: 24.07.06 15:32)
-                dt = datetime.strptime(news['created_at'].split(".")[0][:19], "%Y-%m-%dT%H:%M:%S")
-                time_str = dt.strftime("%y.%m.%d %H:%M")
-                
-                # 선택된 카드 시각적 하이라이트 (테두리 및 배경색 변화)
-                is_selected = st.session_state.selected_news['id'] == news['id']
-                border_color = "#20C997" if is_selected else "rgba(255,255,255,0.1)"
-                bg_color = "rgba(32, 201, 151, 0.1)" if is_selected else "rgba(15, 23, 42, 0.4)"
 
-                with st.container():
-                    st.markdown(f"""
-                    <div style="
-                        border: 1px solid {border_color};
-                        border-radius: 12px;
-                        padding: 16px;
-                        background: {bg_color};
-                        margin-bottom: 5px;
-                        transition: 0.3s;
-                    ">
-                        <div style="font-size: 11px; color: #94A3B8; margin-bottom: 8px;">
-                            <span style="border: 1px solid #475569; padding: 2px 8px; border-radius: 12px; margin-right: 5px;">🌍 {news['region']}</span>
-                            <span style="color: #38BDF8; font-weight: 600;">{news['sector_asset']}</span>
-                            <span style="float: right;">{time_str}</span>
-                        </div>
-                        <div style="font-size: 15px; font-weight: 700; color: #F8FAFC; margin-bottom: 12px; line-height: 1.4;">
-                            {news['title']}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # 꼼수: HTML div 자체는 클릭이 안 되므로 바로 아래에 투명감 있는 상세보기 버튼 배치
-                    if st.button("내용 보기 ➡️", key=f"btn_{news['id']}", use_container_width=True, type="primary" if is_selected else "secondary"):
-                        st.session_state.selected_news = news
-                        st.rerun()
-                st.markdown("<hr style='margin: 0px 0 15px 0; border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
+# ==========================================
+# 5. 데이터 파싱 및 Supabase Insert 함수
+# ==========================================
+def process_and_insert_data(raw_text):
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    with col2:
-        sel = st.session_state.selected_news
-        st.markdown("#### 📄 상세 브리핑")
-        
-        with st.container(border=True):
-            st.markdown(f"""
-            <div style="margin-bottom: 15px;">
-                <span style="background-color: #1E293B; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: #38BDF8; font-weight: 700; margin-right: 10px;">
-                    🌍 {sel['region']}
-                </span>
-                <span style="background-color: #1E293B; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: #A78BFA; font-weight: 700;">
-                    🏷️ {sel['sector_asset']}
-                </span>
-            </div>
-            <h2 style="color: #F8FAFC; margin-bottom: 25px; font-size: 26px; line-height: 1.4; font-weight: 800;">{sel['title']}</h2>
-            """, unsafe_allow_html=True)
-            
-            # AI의 '1. 2. 3.' 형식 요약을 줄바꿈으로 예쁘게 파싱
-            st.markdown("##### 📝 AI 3-Line Summary")
-            summary_text = re.sub(r'(\d\.)', r'<br><br>\1', sel['summary'])
-            if summary_text.startswith('<br><br>'):
-                summary_text = summary_text[8:] # 맨 앞 줄바꿈 제거
-                
-            st.info(summary_text)
-            
-            st.markdown("---")
-            
-            # 긍부정 점수 시각화
-            score = sel['sentiment_score']
-            color = "#EF4444" if score <= 2 else "#F59E0B" if score == 3 else "#10B981"
-            status = "부정적 (Bearish)" if score <= 2 else "중립 (Neutral)" if score == 3 else "긍정적 (Bullish)"
-            
-            st.markdown("##### 📊 AI Market Sentiment")
-            
-            st.markdown(f"""
-            <div style="display: flex; align-items: center; gap: 20px; margin-top: 10px; margin-bottom: 15px;">
-                <h1 style="margin: 0; color: {color}; font-size: 40px; text-shadow: 0 0 10px {color}40;">{score} <span style="font-size: 20px; color: #64748B;">/ 5</span></h1>
-                <div style="font-size: 20px; font-weight: 800; color: {color}; background-color: {color}20; padding: 8px 16px; border-radius: 8px;">{status}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # 프로그레스 바로 직관성 극대화
-            st.progress(score / 5.0)
+    lines = raw_text.split('\n')
+    inserted_count = 0
+    skipped_count = 0
+
+    for line in lines:
+        line = line.strip()
+        if not line or '|' not in line:
+            continue
+
+        columns = line.split('|')
+
+        if columns[0].strip().lower() == 'region':
+            continue
+
+        if len(columns) == 5:
+            try:
+                region = columns[0].strip()
+                sector = columns[1].strip()
+                title = columns[2].strip()
+                summary = columns[3].strip()
+                score = int(columns[4].strip())
+
+                existing_data = supabase.table("market_news").select("id").eq("title", title).execute()
+
+                if len(existing_data.data) > 0:
+                    print(f"⏩ 중복 건너뜀 (이미 저장됨): {title[:20]}...")
+                    skipped_count += 1
+                    continue
+
+                data = {
+                    "region": region,
+                    "sector_asset": sector,
+                    "title": title,
+                    "summary": summary,
+                    "sentiment_score": score
+                }
+
+                supabase.table("market_news").insert(data).execute()
+                inserted_count += 1
+                print(f"✅ 저장 성공: {title[:20]}...")
+
+            except Exception as e:
+                print(f"❌ 데이터 Insert 실패 ({line}): {e}")
+        else:
+            print(f"⚠️ 형식 불일치로 건너뜀 (열 개수: {len(columns)}): {line}")
+
+    print(f"\n🎉 완료! 새로 저장됨: {inserted_count}개 | 중복 스킵: {skipped_count}개")
+
+
+# ==========================================
+# 6. 외부 배치(Scheduler) 호출용 메인 함수
+# ==========================================
+def run_sync():
+    """app.py 스케줄러에서 이 함수를 호출하여 백그라운드로 실행합니다."""
+    print("\n[배치 실행] 구글 드라이브 문서 수합을 시작합니다...")
+    creds = get_google_credentials()
+    
+    if creds:
+        doc_id = get_latest_doc_id_from_drive(creds)
+        if doc_id:
+            doc_text = get_google_doc_text(doc_id, creds)
+            if doc_text:
+                process_and_insert_data(doc_text)
+
+if __name__ == '__main__':
+    run_sync()
