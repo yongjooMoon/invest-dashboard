@@ -127,10 +127,8 @@ def master_news_dialog(news_list_full):
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # 카드 클릭 시, 팝업을 끄지 않고 상세 뷰로 전환하는 콜백 실행
-                    if st.button(" ", key=f"hist_btn_{news['id']}", use_container_width=True):
-                        open_detail_from_history(major_news, idx_in_day)
-                        st.rerun()
+                    # 🔥 콜백(on_click) 적용: 클릭해도 창이 꺼지지 않고 자연스럽게 상세로 넘어감
+                    st.button(" ", key=f"hist_btn_{news['id']}", on_click=open_detail_from_history, args=(major_news, idx_in_day), use_container_width=True)
 
     # ----------------------------------------
     # [뷰 B] 특정 뉴스 상세 브리핑 화면
@@ -225,8 +223,8 @@ def run_news_page(supabase):
         scroll-behavior: smooth;
     }
     div[data-testid="stHorizontalBlock"]:has(.top-news-card) > div[data-testid="column"] {
-        min-width: 280px !important;
-        max-width: 280px !important;
+        min-width: 360px !important; /* 💥 화면에 약 2.5개만 큼직하게 보이도록 너비 대폭 확장! */
+        max-width: 360px !important;
         flex: 0 0 auto !important;
     }
     div[data-testid="stHorizontalBlock"]:has(.top-news-card)::-webkit-scrollbar { height: 8px; }
@@ -338,7 +336,7 @@ def run_news_page(supabase):
                 continue
 
             for news in tab_filtered_news:
-                actual_idx = tab_filtered_news.index(news)
+                actual_idx = news_list.index(news)
                 dt_kst = get_kst_time(news['created_at'])
                 time_str = dt_kst.strftime("%m.%d %H:%M") 
                 
@@ -361,7 +359,7 @@ def run_news_page(supabase):
                     
                     if st.button(" ", key=f"list_btn_{current_sector}_{news['id']}", use_container_width=True):
                         st.session_state.modal_view = "detail"
-                        st.session_state.dialog_news_list = tab_filtered_news
+                        st.session_state.dialog_news_list = news_list
                         st.session_state.dialog_news_index = actual_idx
                         st.session_state.modal_back_visible = False
                         master_news_dialog(news_list)
