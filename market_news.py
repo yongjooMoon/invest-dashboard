@@ -23,36 +23,46 @@ def get_kst_time(utc_time_str):
     except Exception as e:
         return datetime.utcnow()
 
-# 달력 버튼 콜백 (세션 직접 제어)
+# ==========================================
+# 팝업 상태 컨트롤 및 콜백 (튕김 현상 완벽 해결)
+# ==========================================
 def prev_history_day(): 
     st.session_state.history_date -= timedelta(days=1)
+
 def next_history_day(): 
     st.session_state.history_date += timedelta(days=1)
 
+def go_prev_news(): 
+    st.session_state.dialog_news_index -= 1
+    st.session_state.show_detail_dialog = True # 팝업 유지
+
+def go_next_news(): 
+    st.session_state.dialog_news_index += 1
+    st.session_state.show_detail_dialog = True # 팝업 유지
+
 
 # ==========================================
-# 팝업: 뉴스 상세 브리핑 (단일 팝업으로 에러 100% 원천 차단)
+# 팝업: 뉴스 상세 브리핑 (단일 팝업으로 단순화)
 # ==========================================
 @st.dialog("📰 뉴스 상세 브리핑")
 def news_detail_dialog():
     st.markdown("""
     <style>
     div[role="dialog"] {
-        width: 80vw !important; max-width: 850px !important; min-height: 500px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
+        width: 80vw !important; max-width: 850px !important; min-height: 600px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
     }
     div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.5rem 1rem; }
     div[role="dialog"] ::-webkit-scrollbar { width: 8px; }
     div[role="dialog"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
     
-    /* 하단 좌우 이동 이모지 버튼 투명화 디자인 */
-    div[role="dialog"] div[data-testid="stButton"] > button {
+    /* 하단 이모지 버튼 투명화 디자인 */
+    .emoji-btn-container div[data-testid="stButton"] button {
         background: transparent !important; border: none !important; box-shadow: none !important;
         transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important; padding: 0 !important;
     }
-    div[role="dialog"] div[data-testid="stButton"] > button::before, 
-    div[role="dialog"] div[data-testid="stButton"] > button::after { display: none !important; }
-    div[role="dialog"] div[data-testid="stButton"] > button:hover { transform: scale(1.3) !important; background: transparent !important; border: none !important; color: inherit !important; }
-    div[role="dialog"] div[data-testid="stButton"] p { font-size: 36px !important; margin: 0 !important; text-align: center !important; }
+    .emoji-btn-container div[data-testid="stButton"] button::before, .emoji-btn-container div[data-testid="stButton"] button::after { display: none !important; }
+    .emoji-btn-container div[data-testid="stButton"] button:hover { transform: scale(1.3) !important; background: transparent !important; border: none !important; color: inherit !important; }
+    .emoji-btn-container div[data-testid="stButton"] p { font-size: 36px !important; margin: 0 !important; text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -104,31 +114,36 @@ def news_detail_dialog():
     </div>
     """, unsafe_allow_html=True)
     
-    # 팝업 내부 콜백: 다이얼로그 안에서 인덱스만 바꾸고 Rerun (절대 안 튕김)
+    # 하단 이모지 전용 네비게이션
     nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
     with nav_col1:
         if idx > 0: 
-            if st.button("⬅️", use_container_width=True):
-                st.session_state.dialog_news_index -= 1
-                st.rerun()
+            st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
+            st.button("⬅️", on_click=go_prev_news, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
     with nav_col2:
         if idx < len(news_list) - 1: 
-            if st.button("➡️", use_container_width=True):
-                st.session_state.dialog_news_index += 1
-                st.rerun()
+            st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
+            st.button("➡️", on_click=go_next_news, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ==========================================
 # 메인 뉴스 페이지
 # ==========================================
 def run_news_page(supabase):
+    
+    if st.session_state.get("show_detail_dialog", False):
+        st.session_state.show_detail_dialog = False 
+        news_detail_dialog()
+
     st.markdown("""
     <style>
     /* 공통 레이아웃 */
     .block-container { max-width: 950px !important; padding-top: 4.5rem !important; padding-bottom: 4rem !important; margin: 0 auto !important; }
     div[data-baseweb="input"] { border-radius: 12px !important; background-color: rgba(255, 255, 255, 0.03) !important; border: 1px solid rgba(255, 255, 255, 0.1) !important; padding: 4px; }
     
-    /* 🌟 투명 클릭 카드 CSS */
+    /* 투명 클릭 카드 */
     .clickable-card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; background-color: rgba(15, 23, 42, 0.3); transition: all 0.3s ease; position: relative; }
     div[data-testid="stVerticalBlock"]:has(.clickable-card) { position: relative; gap: 0 !important; }
     div[data-testid="stVerticalBlock"]:has(.clickable-card) > div[data-testid="stButton"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
@@ -138,7 +153,7 @@ def run_news_page(supabase):
     .news-divider { height: 1px; background-color: rgba(255, 255, 255, 0.05); margin: 6px 0; }
     button[data-baseweb="tab"] { font-size: 16px !important; font-weight: 600 !important; }
     
-    /* 메인 슬라이더 네비게이션 버튼 디자인 */
+    /* 슬라이드 화살표 버튼 커스텀 */
     .slider-btn div[data-testid="stButton"] > button {
         background-color: rgba(255,255,255,0.05) !important; border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 8px !important; padding: 0 !important; font-size: 14px !important; height: 35px !important;
@@ -173,34 +188,33 @@ def run_news_page(supabase):
         return
 
     # ==========================================
-    # 🔥 상단 고정: 오늘 주요뉴스 (파이썬 기반 안정적 슬라이드 구현)
+    # 🔥 상단 고정: 오늘 주요뉴스 (DB is_major 연동)
     # ==========================================
     now_kst = datetime.utcnow() + timedelta(hours=9)
     cutoff_time = now_kst.replace(hour=8, minute=30, second=0, microsecond=0)
     if now_kst < cutoff_time:
         cutoff_time -= timedelta(days=1)
         
-    # 하드코딩 제거: DB에서 is_major가 True인 오늘자 뉴스만 가져옵니다.
+    # 🌟 하드코딩 제거: 08:30 이후 데이터 중 is_major 필드가 True인 것만 가져오기
     today_news = [n for n in news_list if get_kst_time(n['created_at']) >= cutoff_time]
     today_major_news = [n for n in today_news if n.get('is_major') == True]
     
     if "carousel_idx" not in st.session_state:
         st.session_state.carousel_idx = 0
         
-    # 헤더 및 좌우 버튼 (전체보기 팝업 버튼 제거 완료)
-    col_h1, col_h2, col_h3 = st.columns([8.6, 0.7, 0.7], vertical_alignment="bottom")
+    # 헤더 및 슬라이드 버튼 (주요 뉴스가 없을 경우 버튼 숨김 처리)
+    col_h1, col_h2, col_h3 = st.columns([7.6, 0.7, 0.7], vertical_alignment="bottom")
     with col_h1:
         st.markdown("<h3 style='margin-bottom: 0px; font-weight: 800;'>🔥 오늘 주요뉴스</h3>", unsafe_allow_html=True)
-        
-    # 주요 뉴스가 있을 때만 우측 슬라이드 버튼 렌더링
-    if today_major_news:
-        with col_h2:
+    with col_h2:
+        if today_major_news: # 🌟 주요 뉴스가 있을 때만 버튼 렌더링
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
             if st.button("◀", disabled=(st.session_state.carousel_idx <= 0), use_container_width=True):
                 st.session_state.carousel_idx -= 2
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
-        with col_h3:
+    with col_h3:
+        if today_major_news: # 🌟 주요 뉴스가 있을 때만 버튼 렌더링
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
             max_idx = max(0, len(today_major_news) - 2)
             if st.button("▶", disabled=(st.session_state.carousel_idx >= max_idx), use_container_width=True):
@@ -211,7 +225,6 @@ def run_news_page(supabase):
     st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
     
     if today_major_news:
-        # 🌟 무조건 2열(st.columns(2))로 고정 렌더링하여 카드가 찌그러지지 않음
         display_top_news = today_major_news[st.session_state.carousel_idx : st.session_state.carousel_idx + 2]
         cols = st.columns(2)
         
@@ -230,7 +243,7 @@ def run_news_page(supabase):
                             <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{region_text}</span>
                             <span style="color: #64748B; font-size: 12px; font-weight: 600;">{time_str}</span>
                         </div>
-                        <div style="font-size: 17px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+                        <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
                             {news['title']}
                         </div>
                         <div>
@@ -240,17 +253,18 @@ def run_news_page(supabase):
                     """, unsafe_allow_html=True)
                     
                     if st.button(" ", key=f"main_top_{news['id']}", use_container_width=True):
+                        st.session_state.show_detail_dialog = True
                         st.session_state.dialog_news_list = news_list
                         st.session_state.dialog_news_index = actual_idx
-                        news_detail_dialog()
+                        st.rerun() 
     else:
-        # 주요 뉴스가 없으면 찌그러진 카드 대신 이 안내문만 딱 나옵니다.
+        # 🌟 주요 뉴스가 없을 경우 빈 카드 대신 깔끔한 안내문 표출
         st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
         
     st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         
     # ==========================================
-    # 📄 하단: 탭 영역 (🔥 주요뉴스 탭 신설 및 달력 연동)
+    # 📄 하단: 탭 영역 (🔥 주요뉴스 탭 연동)
     # ==========================================
     st.markdown("<h3 style='margin-bottom: 20px; font-weight: 800;'>📌 섹터별 최신 뉴스</h3>", unsafe_allow_html=True)
     
@@ -265,7 +279,7 @@ def run_news_page(supabase):
             current_sector = sectors[i]
             
             # ----------------------------------------
-            # [탭 A] 주요뉴스 히스토리 및 실제 달력 조회
+            # [탭 A] 주요뉴스 히스토리 및 달력 조회
             # ----------------------------------------
             if current_sector == "🔥 주요뉴스":
                 if "history_date" not in st.session_state:
@@ -277,7 +291,6 @@ def run_news_page(supabase):
                     st.button("◀ 이전일", on_click=prev_history_day, key="btn_prev_day", use_container_width=True)
                     st.markdown("</div>", unsafe_allow_html=True)
                 with c2: 
-                    # 🌟 팝업이 아닌 실제 탭 화면 안에서 달력이 작동합니다.
                     selected_date = st.date_input("날짜 선택", value=st.session_state.history_date, label_visibility="collapsed")
                     if selected_date != st.session_state.history_date:
                         st.session_state.history_date = selected_date
@@ -292,7 +305,7 @@ def run_news_page(supabase):
                 target_date = st.session_state.history_date
                 day_news = [n for n in news_list if get_kst_time(n['created_at']).date() == target_date]
                 
-                # DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
+                # 🌟 하드코딩 제거: DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
                 major_news_list = [n for n in day_news if n.get('is_major') == True]
                 
                 if not major_news_list:
@@ -321,11 +334,12 @@ def run_news_page(supabase):
                             </div>
                             """, unsafe_allow_html=True)
                             
-                            # 상세 보기 호출 (단일 팝업 열기)
+                            # 상세 보기 호출 (단일 팝업)
                             if st.button(" ", key=f"hist_card_btn_{news['id']}", use_container_width=True):
-                                st.session_state.dialog_news_list = news_list # 전체 리스트 전달
+                                st.session_state.show_detail_dialog = True
+                                st.session_state.dialog_news_list = news_list # 네비게이션을 위해 전체 리스트 전달
                                 st.session_state.dialog_news_index = actual_idx
-                                news_detail_dialog()
+                                st.rerun() 
 
             # ----------------------------------------
             # [탭 B] 일반 섹터별 뉴스
@@ -367,6 +381,7 @@ def run_news_page(supabase):
                         """, unsafe_allow_html=True)
                         
                         if st.button(" ", key=f"list_btn_{current_sector}_{news['id']}", use_container_width=True):
+                            st.session_state.show_detail_dialog = True
                             st.session_state.dialog_news_list = news_list
                             st.session_state.dialog_news_index = actual_idx
-                            news_detail_dialog()
+                            st.rerun()
