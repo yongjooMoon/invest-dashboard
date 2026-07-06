@@ -63,11 +63,22 @@ def news_detail_dialog():
     <style>
     div[role="dialog"] {
         width: 80vw !important; max-width: 850px !important; min-height: 600px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
+        overflow-y: auto !important;
     }
     div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.5rem 1rem; }
     div[role="dialog"] ::-webkit-scrollbar { width: 8px; }
     div[role="dialog"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
-    
+
+    /* 🌟 모바일: 팝업 사이즈가 내용과 안 맞던 문제 수정 (고정 min-height 해제, 화면 폭에 맞춤, 넘치면 스크롤) */
+    @media (max-width: 640px) {
+        div[role="dialog"] {
+            width: 94vw !important; min-height: unset !important; max-height: 88vh !important;
+            border-radius: 14px !important;
+        }
+        div[role="dialog"] h2 { font-size: 22px !important; margin-bottom: 18px !important; }
+        div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.25rem 0.5rem; }
+    }
+
     /* 하단 이모지 버튼 투명화 디자인 */
     .emoji-btn-container div[data-testid="stButton"] button {
         background: transparent !important; border: none !important; box-shadow: none !important;
@@ -155,13 +166,13 @@ def render_news_row(news, key_prefix, news_list):
 
     with st.container():
         st.markdown(f"""
-        <div class="clickable-card" style="padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <div style="display: flex; align-items: center; gap: 14px; flex: 1; overflow: hidden;">
-                <span style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px; white-space: nowrap;">{region_text}</span>
-                <span style="color: #94A3B8; font-size: 14px; font-weight: 700; white-space: nowrap;">· {news['sector_asset']}</span>
-                <span style="font-size: 17px; font-weight: 700; color: #E2E8F0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 5px;">{news['title']}</span>
+        <div class="clickable-card news-row" style="padding: 16px 20px; margin-bottom: 8px;">
+            <div class="news-row-left">
+                <span class="row-badge" style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px;">{region_text}</span>
+                <span class="row-sector" style="color: #94A3B8; font-size: 14px; font-weight: 700;">· {news['sector_asset']}</span>
+                <span class="row-title" style="font-size: 17px; font-weight: 700; color: #E2E8F0; margin-left: 5px;">{news['title']}</span>
             </div>
-            <div style="color: #64748B; font-size: 13px; font-weight: 600; white-space: nowrap; margin-left: 16px;">
+            <div class="row-time" style="color: #64748B; font-size: 13px; font-weight: 600;">
                 {time_str}
             </div>
         </div>
@@ -222,6 +233,29 @@ def run_news_page(supabase):
     .carousel-card { animation-duration: 0.38s; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; }
     .carousel-card.dir-right { animation-name: slideInRight; }
     .carousel-card.dir-left  { animation-name: slideInLeft; }
+
+    /* 🌟 섹터별 뉴스 리스트 한 줄 카드 (기본: PC에서는 한 줄 유지) */
+    .news-row { display: flex; justify-content: space-between; align-items: center; }
+    .news-row-left { display: flex; align-items: center; gap: 14px; flex: 1; overflow: hidden; }
+    .row-badge, .row-sector, .row-time { white-space: nowrap; flex: none; }
+    .row-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+    .row-time { margin-left: 16px; }
+
+    /* 🌟 모바일: 제목이 통째로 잘리던 문제 수정 — 배지/시간 줄과 제목 줄을 분리하고 제목은 2줄까지 자동 줄바꿈 */
+    @media (max-width: 640px) {
+        .news-row { flex-wrap: wrap; row-gap: 8px; }
+        .news-row-left { flex-wrap: wrap; width: 100%; order: 2; }
+        .row-title {
+            white-space: normal !important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden; font-size: 15px !important; width: 100%; margin-left: 0 !important; order: 3;
+        }
+        .row-badge, .row-sector { order: 1; }
+        .row-time { width: 100%; text-align: right; font-size: 11px !important; margin-left: 0 !important; order: 0; }
+
+        /* 상단 캐러셀 카드: 고정 높이 대신 컴팩트하게 */
+        .carousel-card { height: auto !important; min-height: 118px !important; padding: 14px !important; }
+        .carousel-card div[style*="font-size: 18px"] { font-size: 15px !important; }
+    }
     </style>
     """, unsafe_allow_html=True)
     
