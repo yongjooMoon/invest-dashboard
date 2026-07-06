@@ -45,7 +45,7 @@ def start_background_scheduler():
 
     # 8:32, 15:32, 22:32에 뉴스 수합 스크립트 실행
     schedule.every().day.at("08:32").do(sync_news_to_supabase.run_sync)
-    schedule.every().day.at("15:32").do(sync_news_to_supabase.run_sync)
+    schedule.every().day.at("16:50").do(sync_news_to_supabase.run_sync)
     schedule.every().day.at("22:32").do(sync_news_to_supabase.run_sync)
 
     # UI를 멈추지 않게 백그라운드 스레드(Daemon)로 분리 실행
