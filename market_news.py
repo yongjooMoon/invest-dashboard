@@ -15,16 +15,16 @@ def get_region_style(region):
     else: return "#94A3B8", "rgba(148, 163, 184, 0.15)"             # 기타: 그레이
 
 def get_kst_time(utc_time_str):
-    """DB의 UTC 시간을 KST(한국 시간, +9시간)로 정확하게 변환합니다."""
+    """DB의 시간을 변환 없이 원래 시간대로 파싱하여 가져옵니다."""
     try:
         ts = str(utc_time_str).split(".")[0][:19].replace("T", " ")
         dt_utc = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-        return dt_utc + timedelta(hours=9)
+        return dt_utc
     except Exception as e:
-        return datetime.utcnow() + timedelta(hours=9)
-
+        return datetime.utcnow()
 
 # ==========================================
+# 상태 컨트롤 콜백 함수
 # 팝업 상태 컨트롤 및 콜백 (튕김 현상 완벽 해결)
 # ==========================================
 def prev_history_day(): 
@@ -260,7 +260,7 @@ def run_news_page(supabase):
                         st.rerun() 
     else:
         # 🌟 주요 뉴스가 없을 경우 빈 카드 대신 깔끔한 안내문 표출
-        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다.")
+        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
         
     st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         
