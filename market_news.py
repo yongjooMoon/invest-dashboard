@@ -7,8 +7,8 @@ from datetime import datetime
 # ==========================================
 def get_region_style(region):
     r = str(region).upper()
-    if "US" in r: return "#60A5FA", "rgba(96, 165, 250, 0.15)"      # 미국: 블루
-    elif "KR" in r: return "#F87171", "rgba(248, 113, 113, 0.15)"    # 한국: 레드
+    if "US" in r: return "#F87171", "rgba(248, 113, 113, 0.15)"      # 미국: 레드 (변경됨)
+    elif "KR" in r: return "#60A5FA", "rgba(96, 165, 250, 0.15)"    # 한국: 블루 (변경됨)
     elif "JP" in r: return "#34D399", "rgba(52, 211, 153, 0.15)"    # 일본: 그린
     elif "HK" in r or "CN" in r: return "#FBBF24", "rgba(251, 191, 36, 0.15)" # 홍콩/중국: 옐로우
     elif "GLOBAL" in r: return "#A78BFA", "rgba(167, 139, 250, 0.15)"# 글로벌: 퍼플
@@ -55,17 +55,6 @@ def news_detail_dialog():
     # 🌟 팝업이 닫히지 않는 콜백 방식의 네비게이션 함수
     def go_prev(): st.session_state.dialog_news_index -= 1
     def go_next(): st.session_state.dialog_news_index += 1
-
-    # 상단 네비게이션 버튼 (이모지 & 깔끔한 레이아웃)
-    nav_col1, empty_col, nav_col2 = st.columns([1, 4, 1])
-    with nav_col1:
-        if idx > 0:
-            st.button("⬅️ 이전 기사", on_click=go_prev, use_container_width=True)
-    with nav_col2:
-        if idx < len(news_list) - 1:
-            st.button("다음 기사 ➡️", on_click=go_next, use_container_width=True)
-
-    st.markdown("<hr style='margin: 10px 0 25px 0; border-color: rgba(255,255,255,0.08);'>", unsafe_allow_html=True)
 
     # 시간 및 지역 스타일 포맷팅
     try:
@@ -119,6 +108,16 @@ def news_detail_dialog():
         </span>
     </div>
     """, unsafe_allow_html=True)
+
+    # 🌟 하단 네비게이션 버튼 (이모지만 작고 깔끔하게 배치)
+    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+    nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
+    with nav_col1:
+        if idx > 0:
+            st.button("⬅️", on_click=go_prev, use_container_width=True)
+    with nav_col2:
+        if idx < len(news_list) - 1:
+            st.button("➡️", on_click=go_next, use_container_width=True)
 
 
 # ==========================================
