@@ -12,9 +12,9 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 # 파일 대신 st.secrets에서 구글 인증 정보 가져오기
-GOOGLE_CLIENT_ID = st.secrets["GOOGLE_OAUTH"]["client_id"]
-GOOGLE_CLIENT_SECRET = st.secrets["GOOGLE_OAUTH"]["client_secret"]
-GOOGLE_REFRESH_TOKEN = st.secrets["GOOGLE_OAUTH"]["refresh_token"]
+GOOGLE_CLIENT_ID = st.secrets["client_id"]
+GOOGLE_CLIENT_SECRET = st.secrets["client_secret"]
+GOOGLE_REFRESH_TOKEN = st.secrets["refresh_token"]
 
 SCOPES = [
     'https://www.googleapis.com/auth/documents.readonly',
