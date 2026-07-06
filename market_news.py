@@ -260,7 +260,7 @@ def run_news_page(supabase):
                         st.rerun() 
     else:
         # 🌟 주요 뉴스가 없을 경우 빈 카드 대신 깔끔한 안내문 표출
-        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
+        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다.")
         
     st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         
