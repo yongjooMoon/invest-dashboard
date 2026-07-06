@@ -42,6 +42,17 @@ def go_next_news():
     st.session_state.dialog_news_index += 1
     st.session_state.show_detail_dialog = True # 팝업 유지
 
+# 🌟 캐러셀 전용 콜백: 인덱스 이동 + "이동 방향"을 기록해서 슬라이드 애니메이션에 사용합니다.
+def carousel_prev():
+    if st.session_state.carousel_idx > 0:
+        st.session_state.carousel_idx -= 1
+        st.session_state.carousel_dir = "left"
+
+def carousel_next(max_idx):
+    if st.session_state.carousel_idx < max_idx:
+        st.session_state.carousel_idx += 1
+        st.session_state.carousel_dir = "right"
+
 
 # ==========================================
 # 팝업: 뉴스 상세 브리핑 (단일 팝업으로 단순화)
@@ -131,6 +142,39 @@ def news_detail_dialog():
 
 
 # ==========================================
+# 뉴스 한 줄(리스트형) 카드를 그리는 공용 함수
+# 섹터 탭과 검색결과 뷰에서 동일하게 재사용합니다.
+# ==========================================
+def render_news_row(news, key_prefix, news_list):
+    actual_idx = news_list.index(news)
+    dt_kst = get_kst_time(news['created_at'])
+    time_str = dt_kst.strftime("%m.%d %H:%M")
+
+    region_text = news.get('region', 'Global')
+    reg_color, reg_bg = get_region_style(region_text)
+
+    with st.container():
+        st.markdown(f"""
+        <div class="clickable-card" style="padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 14px; flex: 1; overflow: hidden;">
+                <span style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px; white-space: nowrap;">{region_text}</span>
+                <span style="color: #94A3B8; font-size: 14px; font-weight: 700; white-space: nowrap;">· {news['sector_asset']}</span>
+                <span style="font-size: 17px; font-weight: 700; color: #E2E8F0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 5px;">{news['title']}</span>
+            </div>
+            <div style="color: #64748B; font-size: 13px; font-weight: 600; white-space: nowrap; margin-left: 16px;">
+                {time_str}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button(" ", key=f"{key_prefix}_{news['id']}", use_container_width=True):
+            st.session_state.show_detail_dialog = True
+            st.session_state.dialog_news_list = news_list
+            st.session_state.dialog_news_index = actual_idx
+            st.rerun()
+
+
+# ==========================================
 # 메인 뉴스 페이지
 # ==========================================
 def run_news_page(supabase):
@@ -171,6 +215,13 @@ def run_news_page(supabase):
         background-color: rgba(51, 65, 85, 1) !important; border-color: rgba(56, 189, 248, 0.6) !important;
         transform: translateY(-2px) !important; color: white !important;
     }
+
+    /* 🌟 캐러셀 슬라이드 애니메이션: 매 rerun마다 카드가 방향에 맞춰 부드럽게 들어오는 것처럼 보이게 처리 */
+    @keyframes slideInRight { from { opacity: 0; transform: translateX(36px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes slideInLeft  { from { opacity: 0; transform: translateX(-36px); } to { opacity: 1; transform: translateX(0); } }
+    .carousel-card { animation-duration: 0.38s; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; }
+    .carousel-card.dir-right { animation-name: slideInRight; }
+    .carousel-card.dir-left  { animation-name: slideInLeft; }
     </style>
     """, unsafe_allow_html=True)
     
@@ -192,14 +243,18 @@ def run_news_page(supabase):
     # ==========================================
     # 🔥 상단 고정: 오늘 주요뉴스 (자정 기준 오늘 날짜 데이터 전체 조회)
     # ==========================================
-    # 달력의 "오늘 하루"와 데이터 기준을 완전히 일치시켜 혼선을 차단하고 좌우 슬라이더를 정상 연동합니다.
     today_date = (datetime.utcnow() + timedelta(hours=9)).date()
     today_news = [n for n in news_list if get_kst_time(n['created_at']).date() == today_date]
     today_major_news = [n for n in today_news if n.get('is_major') == True]
     
     if "carousel_idx" not in st.session_state:
         st.session_state.carousel_idx = 0
-        
+    if "carousel_dir" not in st.session_state:
+        st.session_state.carousel_dir = "right"
+
+    # 헤더/버튼에서도 동일하게 쓸 수 있도록 max_idx를 미리 계산
+    max_idx = max(0, len(today_major_news) - 2)
+
     # 헤더 및 슬라이드 버튼 (주요 뉴스가 없을 경우 버튼 숨김 처리)
     col_h1, col_h2, col_h3 = st.columns([7.6, 0.7, 0.7], vertical_alignment="bottom")
     with col_h1:
@@ -207,19 +262,18 @@ def run_news_page(supabase):
     with col_h2:
         if today_major_news: # 주요 뉴스가 있을 때만 버튼 렌더링
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
-            # 🌟 슬라이더 감도를 1칸씩 움직이게 개선하여 카드 탐색이 100% 원활해집니다!
-            if st.button("◀", disabled=(st.session_state.carousel_idx <= 0), use_container_width=True):
-                st.session_state.carousel_idx -= 1
-                st.rerun()
+            st.button(
+                "◀", disabled=(st.session_state.carousel_idx <= 0),
+                use_container_width=True, on_click=carousel_prev,
+            )
             st.markdown("</div>", unsafe_allow_html=True)
     with col_h3:
         if today_major_news: # 주요 뉴스가 있을 때만 버튼 렌더링
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
-            max_idx = max(0, len(today_major_news) - 2)
-            # 🌟 슬라이더 감도를 1칸씩 움직이게 개선하여 카드 탐색이 100% 원활해집니다!
-            if st.button("▶", disabled=(st.session_state.carousel_idx >= max_idx), use_container_width=True):
-                st.session_state.carousel_idx += 1
-                st.rerun()
+            st.button(
+                "▶", disabled=(st.session_state.carousel_idx >= max_idx),
+                use_container_width=True, on_click=carousel_next, args=(max_idx,),
+            )
             st.markdown("</div>", unsafe_allow_html=True)
             
     st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
@@ -227,6 +281,7 @@ def run_news_page(supabase):
     if today_major_news:
         display_top_news = today_major_news[st.session_state.carousel_idx : st.session_state.carousel_idx + 2]
         cols = st.columns(2)
+        dir_class = "dir-right" if st.session_state.carousel_dir == "right" else "dir-left"
         
         for idx, news in enumerate(display_top_news):
             actual_idx = news_list.index(news)
@@ -238,7 +293,7 @@ def run_news_page(supabase):
             with cols[idx]:
                 with st.container():
                     st.markdown(f"""
-                    <div class="clickable-card" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
+                    <div class="clickable-card carousel-card {dir_class}" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{region_text}</span>
                             <span style="color: #64748B; font-size: 12px; font-weight: 600;">{time_str}</span>
@@ -265,125 +320,115 @@ def run_news_page(supabase):
         
     # ==========================================
     # 📄 하단: 탭 영역 (기본 활성 탭: "전체" 설정 완료)
+    # 🌟 검색어가 있으면 탭 자체를 숨기고, 항상 "전체" 기준 통합 검색결과를 보여줍니다.
+    #    (st.tabs는 어느 탭이 열려있는지를 코드에서 강제로 바꿀 수 없어서,
+    #     검색 중에는 탭 UI 대신 통합 뷰로 전환하는 방식으로 처리했습니다.)
     # ==========================================
     st.markdown("<h3 style='margin-bottom: 20px; font-weight: 800;'>📌 섹터별 최신 뉴스</h3>", unsafe_allow_html=True)
-    
-    # 🌟 "전체" 탭을 가장 첫 번째 위치로 정렬하고 "🔥 주요뉴스" 탭을 가장 마지막으로 정렬!
-    sectors = ["전체"]
-    unique_sectors = set([n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset'] for n in news_list])
-    sectors.extend(sorted(list(unique_sectors)))
-    sectors.append("🔥 주요뉴스") # 주요 뉴스를 맨 뒤로 배치 완료
-    
-    tabs = st.tabs(sectors)
-    
-    for i, tab in enumerate(tabs):
-        with tab:
-            current_sector = sectors[i]
-            
-            # ----------------------------------------
-            # [탭 A] 주요뉴스 히스토리 및 달력 조회 (가장 뒤에 위치함)
-            # ----------------------------------------
-            if current_sector == "🔥 주요뉴스":
-                if "history_date" not in st.session_state:
-                    st.session_state.history_date = (datetime.utcnow() + timedelta(hours=9)).date()
-                    
-                c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
-                with c1: 
-                    st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
-                    st.button("◀ 이전일", on_click=prev_history_day, key="btn_prev_day", use_container_width=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
-                with c2: 
-                    selected_date = st.date_input("날짜 선택", value=st.session_state.history_date, label_visibility="collapsed")
-                    if selected_date != st.session_state.history_date:
-                        st.session_state.history_date = selected_date
-                        st.rerun()
-                with c3: 
-                    st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
-                    st.button("다음일 ▶", on_click=next_history_day, key="btn_next_day", use_container_width=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
-                
-                st.markdown("<hr style='margin: 15px 0 20px 0; border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
-                
-                target_date = st.session_state.history_date
-                day_news = [n for n in news_list if get_kst_time(n['created_at']).date() == target_date]
-                
-                # DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
-                major_news_list = [n for n in day_news if n.get('is_major') == True]
-                
-                if not major_news_list:
-                    st.info(f"{target_date.strftime('%Y년 %m월 %d일')}에 수집된 주요 뉴스가 없습니다.")
-                else:
-                    for idx_in_day, news in enumerate(major_news_list):
-                        actual_idx = news_list.index(news)
-                        dt_kst = get_kst_time(news['created_at'])
-                        time_str = dt_kst.strftime("%H:%M")
-                        region_text = news.get('region', 'Global')
-                        reg_color, reg_bg = get_region_style(region_text)
-                        
-                        with st.container():
-                            st.markdown(f"""
-                            <div class="clickable-card" style="padding: 18px 24px; margin-bottom: 12px;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                    <div>
-                                        <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 800;">SAVE · {region_text}</span>
-                                        <span style="color: #94A3B8; font-size: 13px; font-weight: 600; margin-left: 8px;">· {news['sector_asset']}</span>
-                                    </div>
-                                    <span style="color: #64748B; font-size: 13px; font-weight: 600;">{time_str}</span>
-                                </div>
-                                <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4;">
-                                    {news['title']}
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-                            # 상세 보기 호출 (단일 팝업)
-                            if st.button(" ", key=f"hist_card_btn_{news['id']}", use_container_width=True):
-                                st.session_state.show_detail_dialog = True
-                                st.session_state.dialog_news_list = news_list # 네비게이션을 위해 전체 리스트 전달
-                                st.session_state.dialog_news_index = actual_idx
-                                st.rerun() 
 
-            # ----------------------------------------
-            # [탭 B] 일반 섹터별 뉴스
-            # ----------------------------------------
-            else:
-                tab_filtered_news = []
-                for n in news_list:
-                    n_sector_group = n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset']
-                    match_category = current_sector == "전체" or n_sector_group == current_sector
-                    match_search = not search_query or search_query.lower() in n['title'].lower() or search_query.lower() in n['summary'].lower()
-                    
-                    if match_category and match_search:
-                        tab_filtered_news.append(n)
-                
-                if not tab_filtered_news:
-                    st.warning(f"'{search_query}' 검색어에 해당하는 뉴스가 없습니다." if search_query else "해당 섹터의 뉴스가 없습니다.")
-                    continue
+    if search_query:
+        q = search_query.lower()
+        matched = [
+            n for n in news_list
+            if q in n['title'].lower() or q in n['summary'].lower()
+        ]
+        st.caption(f"🔍 '{search_query}' 검색결과 {len(matched)}건 · 전체 섹터 기준")
 
-                for news in tab_filtered_news:
-                    actual_idx = news_list.index(news)
-                    dt_kst = get_kst_time(news['created_at'])
-                    time_str = dt_kst.strftime("%m.%d %H:%M") 
-                    
-                    region_text = news.get('region', 'Global')
-                    reg_color, reg_bg = get_region_style(region_text)
-                    
-                    with st.container():
-                        st.markdown(f"""
-                        <div class="clickable-card" style="padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <div style="display: flex; align-items: center; gap: 14px; flex: 1; overflow: hidden;">
-                                <span style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px; white-space: nowrap;">{region_text}</span>
-                                <span style="color: #94A3B8; font-size: 14px; font-weight: 700; white-space: nowrap;">· {news['sector_asset']}</span>
-                                <span style="font-size: 17px; font-weight: 700; color: #E2E8F0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 5px;">{news['title']}</span>
-                            </div>
-                            <div style="color: #64748B; font-size: 13px; font-weight: 600; white-space: nowrap; margin-left: 16px;">
-                                {time_str}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        if st.button(" ", key=f"list_btn_{current_sector}_{news['id']}", use_container_width=True):
-                            st.session_state.show_detail_dialog = True
-                            st.session_state.dialog_news_list = news_list
-                            st.session_state.dialog_news_index = actual_idx
+        if not matched:
+            st.warning(f"'{search_query}' 검색어에 해당하는 뉴스가 없습니다.")
+        else:
+            for news in matched:
+                render_news_row(news, key_prefix="search", news_list=news_list)
+
+    else:
+        # 🌟 "전체" 탭을 가장 첫 번째 위치로 정렬하고 "🔥 주요뉴스" 탭을 가장 마지막으로 정렬!
+        sectors = ["전체"]
+        unique_sectors = set([n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset'] for n in news_list])
+        sectors.extend(sorted(list(unique_sectors)))
+        sectors.append("🔥 주요뉴스") # 주요 뉴스를 맨 뒤로 배치 완료
+
+        tabs = st.tabs(sectors)
+
+        for i, tab in enumerate(tabs):
+            with tab:
+                current_sector = sectors[i]
+
+                # ----------------------------------------
+                # [탭 A] 주요뉴스 히스토리 및 달력 조회 (가장 뒤에 위치함)
+                # ----------------------------------------
+                if current_sector == "🔥 주요뉴스":
+                    if "history_date" not in st.session_state:
+                        st.session_state.history_date = (datetime.utcnow() + timedelta(hours=9)).date()
+
+                    c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
+                    with c1:
+                        st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
+                        st.button("◀ 이전일", on_click=prev_history_day, key="btn_prev_day", use_container_width=True)
+                        st.markdown("</div>", unsafe_allow_html=True)
+                    with c2:
+                        selected_date = st.date_input("날짜 선택", value=st.session_state.history_date, label_visibility="collapsed")
+                        if selected_date != st.session_state.history_date:
+                            st.session_state.history_date = selected_date
                             st.rerun()
+                    with c3:
+                        st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
+                        st.button("다음일 ▶", on_click=next_history_day, key="btn_next_day", use_container_width=True)
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    st.markdown("<hr style='margin: 15px 0 20px 0; border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
+
+                    target_date = st.session_state.history_date
+                    day_news = [n for n in news_list if get_kst_time(n['created_at']).date() == target_date]
+
+                    # DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
+                    major_news_list = [n for n in day_news if n.get('is_major') == True]
+
+                    if not major_news_list:
+                        st.info(f"{target_date.strftime('%Y년 %m월 %d일')}에 수집된 주요 뉴스가 없습니다.")
+                    else:
+                        for idx_in_day, news in enumerate(major_news_list):
+                            actual_idx = news_list.index(news)
+                            dt_kst = get_kst_time(news['created_at'])
+                            time_str = dt_kst.strftime("%H:%M")
+                            region_text = news.get('region', 'Global')
+                            reg_color, reg_bg = get_region_style(region_text)
+
+                            with st.container():
+                                st.markdown(f"""
+                                <div class="clickable-card" style="padding: 18px 24px; margin-bottom: 12px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                        <div>
+                                            <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 800;">SAVE · {region_text}</span>
+                                            <span style="color: #94A3B8; font-size: 13px; font-weight: 600; margin-left: 8px;">· {news['sector_asset']}</span>
+                                        </div>
+                                        <span style="color: #64748B; font-size: 13px; font-weight: 600;">{time_str}</span>
+                                    </div>
+                                    <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4;">
+                                        {news['title']}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                                # 상세 보기 호출 (단일 팝업)
+                                if st.button(" ", key=f"hist_card_btn_{news['id']}", use_container_width=True):
+                                    st.session_state.show_detail_dialog = True
+                                    st.session_state.dialog_news_list = news_list # 네비게이션을 위해 전체 리스트 전달
+                                    st.session_state.dialog_news_index = actual_idx
+                                    st.rerun()
+
+                # ----------------------------------------
+                # [탭 B] 일반 섹터별 뉴스 (검색 중이 아닐 때만 이 분기로 들어옴)
+                # ----------------------------------------
+                else:
+                    tab_filtered_news = []
+                    for n in news_list:
+                        n_sector_group = n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset']
+                        if current_sector == "전체" or n_sector_group == current_sector:
+                            tab_filtered_news.append(n)
+
+                    if not tab_filtered_news:
+                        st.warning("해당 섹터의 뉴스가 없습니다.")
+                        continue
+
+                    for news in tab_filtered_news:
+                        render_news_row(news, key_prefix=f"list_{current_sector}", news_list=news_list)
