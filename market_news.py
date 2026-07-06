@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit st
 import re
 from datetime import datetime, timedelta
 
@@ -23,7 +23,9 @@ def get_kst_time(utc_time_str):
     except Exception as e:
         return datetime.utcnow()
 
+
 # ==========================================
+# 상태 컨트롤 콜백 함수
 # 팝업 상태 컨트롤 및 콜백 (튕김 현상 완벽 해결)
 # ==========================================
 def prev_history_day(): 
@@ -188,15 +190,11 @@ def run_news_page(supabase):
         return
 
     # ==========================================
-    # 🔥 상단 고정: 오늘 주요뉴스 (DB is_major 연동)
+    # 🔥 상단 고정: 오늘 주요뉴스 (자정 기준 오늘 날짜 데이터 전체 조회)
     # ==========================================
-    now_kst = datetime.utcnow() + timedelta(hours=9)
-    cutoff_time = now_kst.replace(hour=8, minute=30, second=0, microsecond=0)
-    if now_kst < cutoff_time:
-        cutoff_time -= timedelta(days=1)
-        
-    # 🌟 하드코딩 제거: 08:30 이후 데이터 중 is_major 필드가 True인 것만 가져오기
-    today_news = [n for n in news_list if get_kst_time(n['created_at']) >= cutoff_time]
+    # 달력의 "오늘 하루"와 데이터 기준을 완전히 일치시켜 혼선을 차단하고 좌우 슬라이더를 정상 연동합니다.
+    today_date = (datetime.utcnow() + timedelta(hours=9)).date()
+    today_news = [n for n in news_list if get_kst_time(n['created_at']).date() == today_date]
     today_major_news = [n for n in today_news if n.get('is_major') == True]
     
     if "carousel_idx" not in st.session_state:
@@ -207,18 +205,20 @@ def run_news_page(supabase):
     with col_h1:
         st.markdown("<h3 style='margin-bottom: 0px; font-weight: 800;'>🔥 오늘 주요뉴스</h3>", unsafe_allow_html=True)
     with col_h2:
-        if today_major_news: # 🌟 주요 뉴스가 있을 때만 버튼 렌더링
+        if today_major_news: # 주요 뉴스가 있을 때만 버튼 렌더링
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
+            # 🌟 슬라이더 감도를 1칸씩 움직이게 개선하여 카드 탐색이 100% 원활해집니다!
             if st.button("◀", disabled=(st.session_state.carousel_idx <= 0), use_container_width=True):
-                st.session_state.carousel_idx -= 2
+                st.session_state.carousel_idx -= 1
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
     with col_h3:
-        if today_major_news: # 🌟 주요 뉴스가 있을 때만 버튼 렌더링
+        if today_major_news: # 주요 뉴스가 있을 때만 버튼 렌더링
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
             max_idx = max(0, len(today_major_news) - 2)
+            # 🌟 슬라이더 감도를 1칸씩 움직이게 개선하여 카드 탐색이 100% 원활해집니다!
             if st.button("▶", disabled=(st.session_state.carousel_idx >= max_idx), use_container_width=True):
-                st.session_state.carousel_idx += 2
+                st.session_state.carousel_idx += 1
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
             
@@ -259,18 +259,20 @@ def run_news_page(supabase):
                         st.rerun() 
     else:
         # 🌟 주요 뉴스가 없을 경우 빈 카드 대신 깔끔한 안내문 표출
-        st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
+        st.info("오늘 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
         
     st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         
     # ==========================================
-    # 📄 하단: 탭 영역 (🔥 주요뉴스 탭 연동)
+    # 📄 하단: 탭 영역 (기본 활성 탭: "전체" 설정 완료)
     # ==========================================
     st.markdown("<h3 style='margin-bottom: 20px; font-weight: 800;'>📌 섹터별 최신 뉴스</h3>", unsafe_allow_html=True)
     
-    sectors = ["🔥 주요뉴스", "전체"]
+    # 🌟 "전체" 탭을 가장 첫 번째 위치로 정렬하고 "🔥 주요뉴스" 탭을 가장 마지막으로 정렬!
+    sectors = ["전체"]
     unique_sectors = set([n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset'] for n in news_list])
     sectors.extend(sorted(list(unique_sectors)))
+    sectors.append("🔥 주요뉴스") # 주요 뉴스를 맨 뒤로 배치 완료
     
     tabs = st.tabs(sectors)
     
@@ -279,7 +281,7 @@ def run_news_page(supabase):
             current_sector = sectors[i]
             
             # ----------------------------------------
-            # [탭 A] 주요뉴스 히스토리 및 달력 조회
+            # [탭 A] 주요뉴스 히스토리 및 달력 조회 (가장 뒤에 위치함)
             # ----------------------------------------
             if current_sector == "🔥 주요뉴스":
                 if "history_date" not in st.session_state:
@@ -305,7 +307,7 @@ def run_news_page(supabase):
                 target_date = st.session_state.history_date
                 day_news = [n for n in news_list if get_kst_time(n['created_at']).date() == target_date]
                 
-                # 🌟 하드코딩 제거: DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
+                # DB에서 해당 날짜에 수집된 뉴스 중 is_major가 True인 것만 표출
                 major_news_list = [n for n in day_news if n.get('is_major') == True]
                 
                 if not major_news_list:
