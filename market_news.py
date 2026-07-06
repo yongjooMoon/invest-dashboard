@@ -7,8 +7,8 @@ from datetime import datetime
 # ==========================================
 def get_region_style(region):
     r = str(region).upper()
-    if "US" in r: return "#F87171", "rgba(248, 113, 113, 0.15)"      # 미국: 레드 (변경됨)
-    elif "KR" in r: return "#60A5FA", "rgba(96, 165, 250, 0.15)"    # 한국: 블루 (변경됨)
+    if "US" in r: return "#F87171", "rgba(248, 113, 113, 0.15)"      # 미국: 레드 
+    elif "KR" in r: return "#60A5FA", "rgba(96, 165, 250, 0.15)"    # 한국: 블루 
     elif "JP" in r: return "#34D399", "rgba(52, 211, 153, 0.15)"    # 일본: 그린
     elif "HK" in r or "CN" in r: return "#FBBF24", "rgba(251, 191, 36, 0.15)" # 홍콩/중국: 옐로우
     elif "GLOBAL" in r: return "#A78BFA", "rgba(167, 139, 250, 0.15)"# 글로벌: 퍼플
@@ -20,58 +20,71 @@ def get_region_style(region):
 # ==========================================
 @st.dialog("📰 뉴스 상세 브리핑")
 def news_detail_dialog():
-    # 🌟 팝업창 크기 지정 및 하단 버튼(이모지) 투명화 마법 CSS
+    # 🌟 어떤 스트림릿 버전이든 100% 디자인이 적용되도록 CSS 선택자 초강화
     st.markdown("""
     <style>
-    div[data-testid="stModal"] > div[role="dialog"] {
+    div[role="dialog"] {
         width: 90vw !important;
         max-width: 1000px !important;
         height: 85vh !important; 
         min-height: 650px !important;
         border-radius: 16px !important;
     }
-    div[data-testid="stModal"] div[data-testid="stMarkdownContainer"] {
+    div[role="dialog"] div[data-testid="stMarkdownContainer"] {
         padding: 0.5rem 1rem;
     }
-    div[data-testid="stModal"] > div[role="dialog"] ::-webkit-scrollbar {
+    div[role="dialog"] ::-webkit-scrollbar {
         width: 8px;
     }
-    div[data-testid="stModal"] > div[role="dialog"] ::-webkit-scrollbar-thumb {
+    div[role="dialog"] ::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, 0.2);
         border-radius: 4px;
     }
     
-    /* 🔥 하단 네비게이션 버튼을 세련된 색상의 카드형 버튼으로 튜닝 🔥 */
-    div[data-testid="stModal"] div[data-testid="stButton"] button {
-        background-color: rgba(30, 41, 59, 0.8) !important; /* 어두운 슬레이트 배경 */
-        border: 1px solid rgba(255, 255, 255, 0.1) !important; /* 은은한 테두리 */
-        border-radius: 12px !important; /* 둥근 모서리 */
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2) !important;
+    /* 🔥 하단 네비게이션 버튼 (절대 빗나가지 않는 초강력 타겟팅) 🔥 */
+    div[role="dialog"] div[data-testid="stButton"] > button,
+    div[role="dialog"] .stButton > button {
+        background-color: rgba(30, 41, 59, 1) !important; /* 짙은 슬레이트 배경 (투명도 제거) */
+        border: 1px solid rgba(255, 255, 255, 0.15) !important; /* 명확한 테두리 */
+        border-radius: 12px !important;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3) !important;
         display: flex !important;
         justify-content: center !important;
         align-items: center !important;
-        transition: all 0.2s ease-in-out !important;
-        padding: 8px 0 !important; /* 상하 여백으로 버튼 형태(두께) 확보 */
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important; /* 부드럽고 쫀득한 애니메이션 */
+        padding: 10px 0 !important; 
+        height: 55px !important; /* 버튼 높이 고정 */
     }
-    div[data-testid="stModal"] div[data-testid="stButton"] button::before,
-    div[data-testid="stModal"] div[data-testid="stButton"] button::after {
-        display: none !important; /* Streamlit 기본 테두리 효과 차단 */
+    
+    /* 스트림릿 기본 테두리 간섭 완벽 차단 */
+    div[role="dialog"] div[data-testid="stButton"] > button::before,
+    div[role="dialog"] div[data-testid="stButton"] > button::after,
+    div[role="dialog"] .stButton > button::before,
+    div[role="dialog"] .stButton > button::after {
+        display: none !important; 
     }
-    /* 마우스를 올릴 때 디자인 (버튼이 살짝 떠오르며 밝아짐) */
-    div[data-testid="stModal"] div[data-testid="stButton"] button:hover,
-    div[data-testid="stModal"] div[data-testid="stButton"] button:active,
-    div[data-testid="stModal"] div[data-testid="stButton"] button:focus {
-        background-color: rgba(51, 65, 85, 0.95) !important; /* 호버 시 밝아짐 */
-        border: 1px solid rgba(255, 255, 255, 0.25) !important;
-        box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3) !important;
-        transform: translateY(-3px) !important; /* 위로 살짝 떠오르는 애니메이션 */
+    
+    /* 🔥 호버(마우스 올림) 시 통통 튀며 테두리에 빛이 들어오는 애니메이션 🔥 */
+    div[role="dialog"] div[data-testid="stButton"] > button:hover,
+    div[role="dialog"] .stButton > button:hover {
+        background-color: rgba(51, 65, 85, 1) !important; 
+        border: 1px solid rgba(56, 189, 248, 0.6) !important; /* 호버 시 네온 블루 테두리 */
+        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.2) !important; /* 네온 블루 그림자 */
+        transform: translateY(-4px) !important; /* 위로 통통 튀어오름 */
         color: inherit !important;
     }
-    div[data-testid="stModal"] div[data-testid="stButton"] p {
-        font-size: 26px !important; /* 이모지 크기를 버튼 폼 안에 예쁘게 맞춤 */
+    
+    div[role="dialog"] div[data-testid="stButton"] > button:active,
+    div[role="dialog"] .stButton > button:active {
+        transform: translateY(0px) !important; /* 누를 때 살짝 들어가는 효과 */
+    }
+
+    div[role="dialog"] div[data-testid="stButton"] p,
+    div[role="dialog"] .stButton p {
+        font-size: 26px !important; /* 이모지 크기 */
         margin: 0 !important;
+        line-height: 1 !important;
         text-align: center !important;
-        width: 100% !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -142,10 +155,10 @@ def news_detail_dialog():
     </div>
     """, unsafe_allow_html=True)
 
-    # 🌟 하단 네비게이션 버튼 (양끝으로 배치하고, 이모지 자체를 버튼 중앙에 정렬)
+    # 🌟 하단 네비게이션 버튼 (양끝으로 배치)
     st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
     
-    # 양끝 배치 복구 (1:8:1 비율)
+    # 1:8:1 비율로 양끝 배치
     nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
     
     with nav_col1:
