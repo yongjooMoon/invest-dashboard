@@ -241,16 +241,18 @@ def run_news_page(supabase):
     .row-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
     .row-time { margin-left: 16px; }
 
-    /* 🌟 모바일: 제목이 통째로 잘리던 문제 수정 — 배지/시간 줄과 제목 줄을 분리하고 제목은 2줄까지 자동 줄바꿈 */
+    /* 🌟 모바일: 제목이 통째로 잘리던 문제 수정 — 배지/시간 줄과 제목 줄을 분리하고 제목은 자연스럽게 줄바꿈 */
     @media (max-width: 640px) {
-        .news-row { flex-wrap: wrap; row-gap: 8px; }
-        .news-row-left { flex-wrap: wrap; width: 100%; order: 2; }
+        .news-row { flex-wrap: wrap; row-gap: 6px; }
+        .news-row-left { flex-wrap: wrap; width: 100%; order: 2; flex: none; }
+        .row-badge, .row-sector { order: 1; flex: none; }
         .row-title {
-            white-space: normal !important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-            overflow: hidden; font-size: 15px !important; width: 100%; margin-left: 0 !important; order: 3;
+            display: block !important; white-space: normal !important; overflow: visible !important;
+            text-overflow: clip !important; flex: 0 0 100% !important; width: 100% !important;
+            font-size: 15px !important; line-height: 1.45 !important; margin-left: 0 !important; margin-top: 4px !important;
+            order: 3;
         }
-        .row-badge, .row-sector { order: 1; }
-        .row-time { width: 100%; text-align: right; font-size: 11px !important; margin-left: 0 !important; order: 0; }
+        .row-time { flex: none; width: 100%; text-align: right; font-size: 11px !important; margin-left: 0 !important; order: 0; }
 
         /* 상단 캐러셀 카드: 고정 높이 대신 컴팩트하게 */
         .carousel-card { height: auto !important; min-height: 118px !important; padding: 14px !important; }
