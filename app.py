@@ -43,9 +43,12 @@ def start_background_scheduler():
             schedule.run_pending()
             time.sleep(30) # 30초마다 설정된 시간이 되었는지 확인
 
+    # 🌟 핫 리로드 시 스케줄이 중복 등록되거나 꼬이는 현상을 완벽히 방지하기 위해 초기화
+    schedule.clear()
+
     # 8:32, 15:32, 22:32에 뉴스 수합 스크립트 실행
     schedule.every().day.at("08:32").do(sync_news_to_supabase.run_sync)
-    schedule.every().day.at("16:54").do(sync_news_to_supabase.run_sync)
+    schedule.every().day.at("15:32").do(sync_news_to_supabase.run_sync)
     schedule.every().day.at("22:32").do(sync_news_to_supabase.run_sync)
 
     # UI를 멈추지 않게 백그라운드 스레드(Daemon)로 분리 실행
@@ -834,6 +837,20 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
             st.success("✅ 마스터 5대 보안 자산 데이터가 암호화되어 무결점 반영되었습니다.")
         except Exception as e:
             st.error(f"저장 실패: {str(e)}")
+
+    # 🌟 [신규 추가] 뉴스 배치 수동 제어 UI
+    st.markdown("---")
+    st.markdown("### 🔄 뉴스 수동 제어 센터")
+    st.markdown("스케줄러 작동을 대기하지 않고, 구글 드라이브로부터 최신 분석 보고서를 즉시 수집합니다.")
+    if st.button("뉴스 수동 수합 배치 즉시 실행", type="secondary", use_container_width=True):
+        with st.spinner("구글 드라이브 연결 및 뉴스 데이터를 수합하고 있습니다. 잠시만 기다려 주세요..."):
+            try:
+                sync_news_to_supabase.run_sync()
+                st.success("✅ 뉴스 동기화 배치가 성공적으로 수동 즉시 처리되었습니다!")
+                time.sleep(1.5)
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ 수동 동기화 중 에러 발생: {e}")
 
 else:
     # 🌟 라우팅에 마켓 뉴스 화면 추가
