@@ -25,107 +25,16 @@ def get_kst_time(utc_time_str):
 
 
 # ==========================================
-# 팝업 상태 컨트롤 및 콜백 (튕김 현상 완벽 해결)
+# 🌟 통합 팝업 다이얼로그 (중첩 에러 100% 해결)
 # ==========================================
-def prev_history_day(): 
-    st.session_state.history_date -= timedelta(days=1)
-    st.session_state.show_history_dialog = True # 팝업 유지
-
-def next_history_day(): 
-    st.session_state.history_date += timedelta(days=1)
-    st.session_state.show_history_dialog = True # 팝업 유지
-
-def on_date_change():
-    st.session_state.show_history_dialog = True # 달력 선택 시 팝업 유지
-
-def go_prev_news(): 
-    st.session_state.dialog_news_index -= 1
-    st.session_state.show_detail_dialog = True # 팝업 유지
-
-def go_next_news(): 
-    st.session_state.dialog_news_index += 1
-    st.session_state.show_detail_dialog = True # 팝업 유지
-
-
-# ==========================================
-# 팝업 1. 전체 주요뉴스 모아보기 (히스토리)
-# ==========================================
-@st.dialog("🔥 전체 주요뉴스 모아보기")
-def top_news_history_dialog(news_list_full):
+# 두 개의 팝업을 하나로 합쳐서 내부에서 화면만 전환(Rerun)하도록 설계했습니다.
+@st.dialog("📰 마켓 뉴스 센터")
+def master_news_dialog(news_list_full):
     st.markdown("""
     <style>
+    /* 공통 팝업 사이즈 */
     div[role="dialog"] {
-        width: 80vw !important; max-width: 850px !important; min-height: 600px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
-    }
-    div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.5rem 1rem; }
-    div[role="dialog"] ::-webkit-scrollbar { width: 8px; }
-    div[role="dialog"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    if "history_date" not in st.session_state:
-        st.session_state.history_date = (datetime.utcnow() + timedelta(hours=9)).date()
-        
-    c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
-    with c1: 
-        st.button("◀ 이전일", on_click=prev_history_day, use_container_width=True)
-    with c2: 
-        # 🌟 실제 달력 팝업 완벽 연동 (on_change 이벤트로 튕김 방지)
-        st.date_input("날짜 선택", key="history_date", on_change=on_date_change, label_visibility="collapsed")
-    with c3: 
-        st.button("다음일 ▶", on_click=next_history_day, use_container_width=True)
-    
-    st.markdown("<hr style='margin: 15px 0 20px 0; border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
-    
-    target_date = st.session_state.history_date
-    day_news = [n for n in news_list_full if get_kst_time(n['created_at']).date() == target_date]
-    major_news = day_news[:10]
-    
-    if not major_news:
-        st.info(f"{target_date.strftime('%Y년 %m월 %d일')}에 수집된 주요 뉴스가 없습니다.")
-    else:
-        for idx_in_day, news in enumerate(major_news):
-            actual_idx = news_list_full.index(news)
-            dt_kst = get_kst_time(news['created_at'])
-            time_str = dt_kst.strftime("%H:%M")
-            region_text = news.get('region', 'Global')
-            reg_color, reg_bg = get_region_style(region_text)
-            
-            with st.container():
-                st.markdown(f"""
-                <div class="clickable-card" style="padding: 18px 24px; margin-bottom: 12px; background-color: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <div>
-                            <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 800;">SAVE · {region_text}</span>
-                            <span style="color: #94A3B8; font-size: 13px; font-weight: 600; margin-left: 8px;">· {news['sector_asset']}</span>
-                        </div>
-                        <span style="color: #64748B; font-size: 13px; font-weight: 600;">{time_str}</span>
-                    </div>
-                    <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4;">
-                        {news['title']}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # 🔥 스트림릿 다이얼로그 중첩(튕김) 방지 스위칭 로직
-                if st.button(" ", key=f"hist_btn_{news['id']}", use_container_width=True):
-                    st.session_state.show_detail_dialog = True
-                    st.session_state.dialog_news_list = major_news
-                    st.session_state.dialog_news_index = idx_in_day
-                    st.session_state.modal_back_visible = True
-                    st.rerun() 
-
-
-# ==========================================
-# 팝업 2. 뉴스 상세 브리핑 
-# ==========================================
-@st.dialog("📰 뉴스 상세 브리핑")
-def news_detail_dialog():
-    # 🌟 팝업 높이 자동 조절(height:auto)로 하단 이모지 버튼이 밀려나가지 않게 최적화
-    st.markdown("""
-    <style>
-    div[role="dialog"] {
-        width: 80vw !important; max-width: 850px !important; min-height: 600px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
+        width: 85vw !important; max-width: 900px !important; min-height: 650px !important; height: auto !important; max-height: 90vh !important; border-radius: 16px !important;
     }
     div[role="dialog"] div[data-testid="stMarkdownContainer"] { padding: 0.5rem 1rem; }
     div[role="dialog"] ::-webkit-scrollbar { width: 8px; }
@@ -137,104 +46,188 @@ def news_detail_dialog():
         transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important; padding: 0 !important;
     }
     .emoji-btn-container div[data-testid="stButton"] button::before, .emoji-btn-container div[data-testid="stButton"] button::after { display: none !important; }
-    .emoji-btn-container div[data-testid="stButton"] button:hover { transform: scale(1.3) !important; background: transparent !important; border: none !important; }
+    .emoji-btn-container div[data-testid="stButton"] button:hover { transform: scale(1.3) !important; background: transparent !important; border: none !important; color: inherit !important;}
     .emoji-btn-container div[data-testid="stButton"] p { font-size: 36px !important; margin: 0 !important; text-align: center !important; }
+    
+    /* 텍스트 버튼 디자인 */
+    .text-btn-container div[data-testid="stButton"] > button {
+        background-color: rgba(30, 41, 59, 1) !important; border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        border-radius: 12px !important; height: 45px !important; transition: all 0.2s ease !important;
+    }
+    .text-btn-container div[data-testid="stButton"] > button:hover {
+        background-color: rgba(51, 65, 85, 1) !important; border-color: rgba(56, 189, 248, 0.6) !important;
+        transform: translateY(-2px) !important; color: white !important;
+    }
+    
+    /* 투명 클릭 카드 */
+    .dialog-clickable-card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; background-color: rgba(255, 255, 255, 0.02); transition: all 0.3s ease; position: relative; }
+    div[data-testid="stVerticalBlock"]:has(.dialog-clickable-card) { position: relative; gap: 0 !important; }
+    div[data-testid="stVerticalBlock"]:has(.dialog-clickable-card) > div[data-testid="stButton"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
+    div[data-testid="stVerticalBlock"]:has(.dialog-clickable-card) > div[data-testid="stButton"] button { width: 100%; height: 100%; opacity: 0; cursor: pointer; background: transparent; border: none; }
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stButton"] button:hover) .dialog-clickable-card { background-color: rgba(255, 255, 255, 0.08) !important; border-color: rgba(255, 255, 255, 0.3) !important; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
     </style>
     """, unsafe_allow_html=True)
 
-    news_list = st.session_state.get("dialog_news_list", [])
-    idx = st.session_state.get("dialog_news_index", 0)
-    
-    if not news_list:
-        st.error("뉴스를 찾을 수 없습니다.")
-        return
-        
-    news = news_list[idx]
+    # 팝업 내비게이션 상태 (history or detail)
+    view = st.session_state.get("modal_view", "detail")
 
-    # 히스토리 창에서 넘어왔을 경우, 뒤로 가기 버튼
-    if st.session_state.get("modal_back_visible", False):
-        if st.button("🔙 전체 목록으로 돌아가기"):
-            st.session_state.show_history_dialog = True
-            st.rerun() 
-        st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
-
-    dt_kst = get_kst_time(news['created_at'])
-    time_str = dt_kst.strftime("%y.%m.%d. %H:%M")
-
-    region_text = news.get('region', 'Global')
-    reg_color, reg_bg = get_region_style(region_text)
-    sector = news.get('sector_asset', 'News')
-    
-    st.markdown(f"""
-    <div style="color: #94A3B8; font-size: 15px; margin-bottom: 20px; display:flex; gap: 12px; align-items:center;">
-        <span style="background-color: {reg_bg}; color: {reg_color}; padding: 4px 12px; border-radius: 6px; font-weight: 800;">{region_text}</span>
-        <span>·</span><span style="font-weight: 700;">{sector}</span><span>·</span><span>{time_str}</span>
-    </div>
-    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 30px; font-weight: 900; line-height: 1.4; font-size: 32px;">{news['title']}</h2>
-    """, unsafe_allow_html=True)
-    
-    summary_text = re.sub(r'(\d\.)', r'<br><br>\1', news['summary'])
-    if summary_text.startswith('<br><br>'): summary_text = summary_text[8:]
-        
-    st.markdown(f"""
-    <div style="background: linear-gradient(145deg, rgba(30,58,138,0.2), rgba(15,23,42,0.6)); border: 1px solid rgba(56,189,248,0.2); padding: 30px; border-radius: 12px; margin-bottom: 35px;">
-        <h4 style="color: #38BDF8; margin-top: 0; margin-bottom: 15px; font-size: 18px;">✨ AI 핵심 요약</h4>
-        <div style="color: #E2E8F0; line-height: 1.8; font-size: 17px;">{summary_text}</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    score = news['sentiment_score']
-    if score <= 2: color, status = "#EF4444", "Bearish (부정적)"
-    elif score == 3: color, status = "#F59E0B", "Neutral (중립)"
-    else: color, status = "#10B981", "Bullish (긍정적)"
-        
-    st.markdown(f"""
-    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-        <span style="color: #94A3B8; font-size: 16px; font-weight: 700;">AI Sentiment Score</span>
-        <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 10px 20px; border-radius: 30px; font-size: 17px;">
-            {score} / 5 &nbsp;·&nbsp; {status}
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # 하단 이모지 전용 네비게이션 (on_click 이벤트를 걸어서 팝업 튕김 현상 100% 방지)
-    nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
-    with nav_col1:
-        if idx > 0: 
-            st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
-            st.button("⬅️", on_click=go_prev_news, use_container_width=True)
+    # ----------------------------------------
+    # [뷰 A] 날짜별 전체 주요뉴스 히스토리 화면
+    # ----------------------------------------
+    if view == "history":
+        if "history_date" not in st.session_state:
+            st.session_state.history_date = (datetime.utcnow() + timedelta(hours=9)).date()
+            
+        c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
+        with c1: 
+            st.markdown("<div class='text-btn-container'>", unsafe_allow_html=True)
+            if st.button("◀ 이전일", use_container_width=True):
+                st.session_state.history_date -= timedelta(days=1)
+                st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
-    with nav_col2:
-        if idx < len(news_list) - 1: 
-            st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
-            st.button("➡️", on_click=go_next_news, use_container_width=True)
+        with c2: 
+            # 🌟 달력 팝업 완벽 연동
+            selected_date = st.date_input("날짜 선택", value=st.session_state.history_date, label_visibility="collapsed")
+            if selected_date != st.session_state.history_date:
+                st.session_state.history_date = selected_date
+                st.rerun()
+        with c3: 
+            st.markdown("<div class='text-btn-container'>", unsafe_allow_html=True)
+            if st.button("다음일 ▶", use_container_width=True):
+                st.session_state.history_date += timedelta(days=1)
+                st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.markdown("<hr style='margin: 15px 0 20px 0; border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
+        
+        target_date = st.session_state.history_date
+        day_news = [n for n in news_list_full if get_kst_time(n['created_at']).date() == target_date]
+        major_news = day_news[:10]
+        
+        if not major_news:
+            st.info(f"{target_date.strftime('%Y년 %m월 %d일')}에 수집된 주요 뉴스가 없습니다.")
+        else:
+            for idx_in_day, news in enumerate(major_news):
+                dt_kst = get_kst_time(news['created_at'])
+                time_str = dt_kst.strftime("%H:%M")
+                region_text = news.get('region', 'Global')
+                reg_color, reg_bg = get_region_style(region_text)
+                
+                with st.container():
+                    st.markdown(f"""
+                    <div class="dialog-clickable-card" style="padding: 18px 24px; margin-bottom: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <div>
+                                <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 800;">SAVE · {region_text}</span>
+                                <span style="color: #94A3B8; font-size: 13px; font-weight: 600; margin-left: 8px;">· {news['sector_asset']}</span>
+                            </div>
+                            <span style="color: #64748B; font-size: 13px; font-weight: 600;">{time_str}</span>
+                        </div>
+                        <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4;">
+                            {news['title']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # 🔥 히스토리 카드 클릭 시, '상세보기' 모드로 팝업 내부 스위칭
+                    if st.button(" ", key=f"hist_btn_{news['id']}", use_container_width=True):
+                        st.session_state.modal_view = "detail"
+                        st.session_state.dialog_news_list = major_news
+                        st.session_state.dialog_news_index = idx_in_day
+                        st.session_state.modal_back_visible = True
+                        st.rerun() 
+
+    # ----------------------------------------
+    # [뷰 B] 특정 뉴스 상세 브리핑 화면
+    # ----------------------------------------
+    elif view == "detail":
+        news_list = st.session_state.get("dialog_news_list", [])
+        idx = st.session_state.get("dialog_news_index", 0)
+        
+        if not news_list:
+            st.error("뉴스를 찾을 수 없습니다.")
+            return
+            
+        news = news_list[idx]
+
+        # 🌟 히스토리 창에서 넘어온 경우, 뒤로 가기 버튼 제공
+        if st.session_state.get("modal_back_visible", False):
+            st.markdown("<div class='text-btn-container'>", unsafe_allow_html=True)
+            if st.button("🔙 전체 목록으로 돌아가기"):
+                st.session_state.modal_view = "history"
+                st.rerun() 
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+
+        dt_kst = get_kst_time(news['created_at'])
+        time_str = dt_kst.strftime("%y.%m.%d. %H:%M")
+
+        region_text = news.get('region', 'Global')
+        reg_color, reg_bg = get_region_style(region_text)
+        sector = news.get('sector_asset', 'News')
+        
+        st.markdown(f"""
+        <div style="color: #94A3B8; font-size: 15px; margin-bottom: 20px; display:flex; gap: 12px; align-items:center;">
+            <span style="background-color: {reg_bg}; color: {reg_color}; padding: 4px 12px; border-radius: 6px; font-weight: 800;">{region_text}</span>
+            <span>·</span><span style="font-weight: 700;">{sector}</span><span>·</span><span>{time_str}</span>
+        </div>
+        <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 30px; font-weight: 900; line-height: 1.4; font-size: 32px;">{news['title']}</h2>
+        """, unsafe_allow_html=True)
+        
+        summary_text = re.sub(r'(\d\.)', r'<br><br>\1', news['summary'])
+        if summary_text.startswith('<br><br>'): summary_text = summary_text[8:]
+            
+        st.markdown(f"""
+        <div style="background: linear-gradient(145deg, rgba(30,58,138,0.2), rgba(15,23,42,0.6)); border: 1px solid rgba(56,189,248,0.2); padding: 30px; border-radius: 12px; margin-bottom: 35px;">
+            <h4 style="color: #38BDF8; margin-top: 0; margin-bottom: 15px; font-size: 18px;">✨ AI 핵심 요약</h4>
+            <div style="color: #E2E8F0; line-height: 1.8; font-size: 17px;">{summary_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        score = news['sentiment_score']
+        if score <= 2: color, status = "#EF4444", "Bearish (부정적)"
+        elif score == 3: color, status = "#F59E0B", "Neutral (중립)"
+        else: color, status = "#10B981", "Bullish (긍정적)"
+            
+        st.markdown(f"""
+        <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 25px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #94A3B8; font-size: 16px; font-weight: 700;">AI Sentiment Score</span>
+            <span style="color: {color}; font-weight: 900; background-color: {color}1A; padding: 10px 20px; border-radius: 30px; font-size: 17px;">
+                {score} / 5 &nbsp;·&nbsp; {status}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 하단 이모지 전용 네비게이션
+        nav_col1, empty_col, nav_col2 = st.columns([1, 8, 1])
+        with nav_col1:
+            if idx > 0: 
+                st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
+                if st.button("⬅️", use_container_width=True):
+                    st.session_state.dialog_news_index -= 1
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+        with nav_col2:
+            if idx < len(news_list) - 1: 
+                st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
+                if st.button("➡️", use_container_width=True):
+                    st.session_state.dialog_news_index += 1
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ==========================================
-# 메인 뉴스 페이지 (화면 UI 및 모달 제어 루프)
+# 메인 뉴스 페이지 (화면 UI 로우)
 # ==========================================
 def run_news_page(supabase):
     
-    # 🌟 메인루프 최상단에서 팝업(모달) 오픈 신호를 감지하고 처리합니다. 🌟
-    if st.session_state.get("show_history_dialog", False):
-        st.session_state.show_history_dialog = False # 무한 반복 방지
-        res = supabase.table("market_news").select("*").order("created_at", desc=True).limit(100).execute()
-        top_news_history_dialog(res.data)
-        
-    if st.session_state.get("show_detail_dialog", False):
-        st.session_state.show_detail_dialog = False 
-        news_detail_dialog()
-
-    # ----------------------------------------
-    # 메인 페이지 CSS 및 검색 UI
-    # ----------------------------------------
     st.markdown("""
     <style>
-    /* 🌟 공통 CSS (너비 최적화 및 투명 오버레이 클릭 마법) */
+    /* 공통 레이아웃 */
     .block-container { max-width: 950px !important; padding-top: 4.5rem !important; padding-bottom: 4rem !important; margin: 0 auto !important; }
     div[data-baseweb="input"] { border-radius: 12px !important; background-color: rgba(255, 255, 255, 0.03) !important; border: 1px solid rgba(255, 255, 255, 0.1) !important; padding: 4px; }
     
+    /* 투명 클릭 카드 */
     .clickable-card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; background-color: rgba(15, 23, 42, 0.3); transition: all 0.3s ease; position: relative; }
     div[data-testid="stVerticalBlock"]:has(.clickable-card) { position: relative; gap: 0 !important; }
     div[data-testid="stVerticalBlock"]:has(.clickable-card) > div[data-testid="stButton"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
@@ -244,30 +237,12 @@ def run_news_page(supabase):
     .news-divider { height: 1px; background-color: rgba(255, 255, 255, 0.05); margin: 6px 0; }
     button[data-baseweb="tab"] { font-size: 16px !important; font-weight: 600 !important; }
     
-    /* 🔥 오늘 주요뉴스 가로 스크롤(Slider) 강제 적용 마법 CSS 🔥 */
-    /* id가 horizontal-scroll-anchor 인 마크다운 바로 다음 형제(HorizontalBlock)를 타겟팅 */
-    div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-wrap: nowrap !important;
-        overflow-x: auto !important;
-        padding-bottom: 20px !important;
-        scroll-behavior: smooth;
+    /* 슬라이드 화살표 버튼 커스텀 */
+    .slider-btn div[data-testid="stButton"] > button {
+        background-color: rgba(255,255,255,0.05) !important; border: 1px solid rgba(255,255,255,0.1) !important;
+        border-radius: 8px !important; padding: 0 !important; font-size: 14px !important; height: 35px !important;
     }
-    /* 스크롤 영역 내부 컬럼(카드)의 너비를 픽셀 단위로 완벽하게 고정!! */
-    div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-        width: 320px !important;
-        min-width: 320px !important;
-        max-width: 320px !important;
-        flex: 0 0 320px !important;
-    }
-    /* 가로 스크롤바 디자인 */
-    div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"]::-webkit-scrollbar {
-        height: 10px;
-    }
-    div[data-testid="stMarkdownContainer"]:has(#horizontal-scroll-anchor) + div[data-testid="stHorizontalBlock"]::-webkit-scrollbar-thumb {
-        background: rgba(255,255,255,0.2);
-        border-radius: 5px;
-    }
+    .slider-btn div[data-testid="stButton"] > button:hover { background-color: rgba(56, 189, 248, 0.2) !important; border-color: rgba(56, 189, 248, 0.5) !important; color: white !important;}
     </style>
     """, unsafe_allow_html=True)
     
@@ -287,7 +262,7 @@ def run_news_page(supabase):
         return
 
     # ==========================================
-    # 🔥 상단 고정: 오늘 주요뉴스 (가로 슬라이드 스크롤 적용)
+    # 🔥 상단 고정: 오늘 주요뉴스 (파이썬 기반 안정적 슬라이드 구현)
     # ==========================================
     now_kst = datetime.utcnow() + timedelta(hours=9)
     cutoff_time = now_kst.replace(hour=8, minute=30, second=0, microsecond=0)
@@ -295,23 +270,40 @@ def run_news_page(supabase):
         cutoff_time -= timedelta(days=1)
         
     today_news = [n for n in news_list if get_kst_time(n['created_at']) >= cutoff_time]
-    display_top_news = today_news[:6] # 가로 스크롤을 위해 넉넉히 최대 6개 추출
     
-    col_h1, col_h2 = st.columns([8, 2], vertical_alignment="bottom")
+    if "carousel_idx" not in st.session_state:
+        st.session_state.carousel_idx = 0
+        
+    # 헤더 및 슬라이드 버튼 (좌우 넘기기)
+    col_h1, col_h2, col_h3, col_h4 = st.columns([6.5, 0.7, 0.7, 2.1], vertical_alignment="bottom")
     with col_h1:
         st.markdown("<h3 style='margin-bottom: 0px; font-weight: 800;'>🔥 오늘 주요뉴스</h3>", unsafe_allow_html=True)
     with col_h2:
+        st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
+        if st.button("◀", disabled=(st.session_state.carousel_idx == 0), use_container_width=True):
+            st.session_state.carousel_idx -= 2
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col_h3:
+        st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
+        # 2개씩 보여주므로 max index 체크
+        max_idx = max(0, len(today_news) - 2)
+        if st.button("▶", disabled=(not today_news or st.session_state.carousel_idx >= max_idx), use_container_width=True):
+            st.session_state.carousel_idx += 2
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col_h4:
         if st.button("전체보기 🔍", use_container_width=True):
-            st.session_state.show_history_dialog = True
-            st.rerun() # 클릭 시 팝업을 열도록 재실행
+            st.session_state.modal_view = "history"
+            master_news_dialog(news_list)
             
     st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
     
-    if display_top_news:
-        # 🌟 가로 스크롤 레이아웃을 발동시키는 CSS 앵커 삽입
-        st.markdown('<div id="horizontal-scroll-anchor"></div>', unsafe_allow_html=True)
+    if today_news:
+        # 현재 인덱스 기준으로 딱 2개의 카드만 보여줌 (완벽하고 부드러운 UI)
+        display_top_news = today_news[st.session_state.carousel_idx : st.session_state.carousel_idx + 2]
+        cols = st.columns(2)
         
-        cols = st.columns(len(display_top_news))
         for idx, news in enumerate(display_top_news):
             actual_idx = news_list.index(news)
             dt_kst = get_kst_time(news['created_at'])
@@ -322,12 +314,12 @@ def run_news_page(supabase):
             with cols[idx]:
                 with st.container():
                     st.markdown(f"""
-                    <div class="top-news-card clickable-card" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
+                    <div class="clickable-card" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{region_text}</span>
                             <span style="color: #64748B; font-size: 12px; font-weight: 600;">{time_str}</span>
                         </div>
-                        <div style="font-size: 17px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+                        <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
                             {news['title']}
                         </div>
                         <div>
@@ -337,11 +329,11 @@ def run_news_page(supabase):
                     """, unsafe_allow_html=True)
                     
                     if st.button(" ", key=f"main_top_{news['id']}", use_container_width=True):
-                        st.session_state.show_detail_dialog = True
+                        st.session_state.modal_view = "detail"
                         st.session_state.dialog_news_list = news_list
                         st.session_state.dialog_news_index = actual_idx
                         st.session_state.modal_back_visible = False
-                        st.rerun() # 클릭 시 상세 팝업을 열도록 재실행
+                        master_news_dialog(news_list)
     else:
         st.info("오늘 오전 8:30 이후 수집된 새로운 주요 뉴스를 대기 중입니다.")
         
@@ -398,8 +390,8 @@ def run_news_page(supabase):
                     """, unsafe_allow_html=True)
                     
                     if st.button(" ", key=f"list_btn_{current_sector}_{news['id']}", use_container_width=True):
-                        st.session_state.show_detail_dialog = True
+                        st.session_state.modal_view = "detail"
                         st.session_state.dialog_news_list = news_list
                         st.session_state.dialog_news_index = actual_idx
                         st.session_state.modal_back_visible = False
-                        st.rerun() # 클릭 시 상세 팝업을 열도록 재실행
+                        master_news_dialog(news_list)
