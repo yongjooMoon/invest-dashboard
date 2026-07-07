@@ -178,22 +178,23 @@ def live_evaluate_stock(supabase, symbol, name=""):
     f_break  = curr >= (metrics["high_60d"] * 0.90)
     f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5)
 
-    gates = {
-        'A': {'name': 'Growth Composite', 'pass': f_growth, 'reason': f"Comp {metrics['growth_composite']:+.1f}%"},
-        'B': {'name': 'Dynamic MDD', 'pass': f_mdd, 'reason': f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
-        'C': {'name': 'Liquidity', 'pass': f_liq, 'reason': f"{metrics['liquidity_20d']:,.0f}억"},
-        'D': {'name': 'Trend Alignment', 'pass': f_trend, 'reason': "Price > 20MA > 60MA" if f_trend else "추세 미달"},
-        'E': {'name': 'Price Breakout', 'pass': f_break, 'reason': f"고점대비 {(curr/metrics['high_60d'])*100:.1f}%" if metrics.get('high_60d') else "-"},
-        'F': {'name': 'Volume Surge', 'pass': f_vol, 'reason': f"Vol {metrics['vol_5d']/metrics['vol_60d']:.1f}x 급증" if metrics.get('vol_60d') else "-"}
+    # 💡 [버그 수정] 팝업창에서 키값을 인식할 수 있도록 quant_core.py와 동일한 포맷의 딕셔너리로 반환합니다.
+    filter_details = {
+        "Growth Composite": {"pass": f_growth, "reason": f"Comp {metrics['growth_composite']:+.1f}%"},
+        "Dynamic MDD": {"pass": f_mdd, "reason": f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
+        "Liquidity": {"pass": f_liq, "reason": f"{metrics['liquidity_20d']:,.0f}억"},
+        "Trend Alignment": {"pass": f_trend, "reason": "Price > 20MA > 60MA" if f_trend else "추세 미달"},
+        "Price Breakout": {"pass": f_break, "reason": f"고점대비 {(curr/metrics['high_60d'])*100:.1f}%" if metrics.get('high_60d') else "-"},
+        "Volume Surge": {"pass": f_vol, "reason": f"Vol {metrics['vol_5d']/metrics['vol_60d']:.1f}x 급증" if metrics.get('vol_60d') else "-"}
     }
 
-    pass_count = sum([1 for g in gates.values() if g['pass']])
+    pass_count = sum([1 for g in filter_details.values() if g['pass']])
 
     mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
     net_yoy = metrics.get("net_yoy", 0)
     factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
 
-    return df, fund, factor_score, gates
+    return df, fund, factor_score, filter_details
 
 # ══════════════════════════════════════════
 # [Component] Popovers & Shared Renderers
@@ -295,7 +296,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     safe_market = html.escape(str(sel.get('market') or 'KOSPI'))
     safe_sector = html.escape(str(sel.get('sector') or ''))
 
-    # 💡 [버그 수정] 중첩된 <span> 태그로 인해 Streamlit의 탭 레이아웃이 붕괴되는 현상을 막기 위해 HTML을 평면화(Flatten) 시켰습니다.
     sector_str = f" &nbsp;|&nbsp; <span style='color:#F8B12A;'>{safe_sector}</span>" if safe_sector and safe_sector != "미분류" else ""
 
     st.markdown(f"## {safe_name} <span style='font-size:18px; color:#AEC1D4;'>{safe_symbol} &nbsp;|&nbsp; {safe_market}</span>{sector_str}", unsafe_allow_html=True)
@@ -361,7 +361,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
             </div>
             """, unsafe_allow_html=True)
 
-    # 💡 [버그 수정] 마크다운 변환 에러 방지를 위해 줄바꿈 태그(<br>)와 샵(#)을 서로 분리
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("### 📊 Financials & Valuation")
     if fund is None: fund = sel
@@ -815,48 +814,36 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         if selected_stock_str:
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
             stock_name = selected_stock_str.split(" (")[0]
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # 💡 [핵심 패치] 탭 렌더링 붕괴 방지를 위해 즉시 렌더링하지 않고 팝업 다이얼로그 호출 버튼을 생성합니다!
+            if st.button(f"📊 '{stock_name}' 실시간 분석 리포트 열기", type="primary", width="stretch"):
+                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
-            all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
-
-            if search_query in all_cached_stocks:
-                with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
+                if search_query in all_cached_stocks:
                     sel = all_cached_stocks[search_query]
-
-                    if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-                    if search_query not in st.session_state.price_cache:
-                        df_price = load_price_from_db(supabase, search_query)
-                        if df_price.empty:
-                            df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-                        st.session_state.price_cache[search_query] = df_price
-
-                    df_price = st.session_state.price_cache[search_query]
-
-                    if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-                        if df_price is not None and len(df_price) >= 21:
-                            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-                    st.divider()
-                    st.success("✅ 캐시된 퀀트 분석 데이터를 로드했습니다. (API 호출 0)")
-                    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=None)
-            else:
-                with st.spinner(f"'{selected_stock_str}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
-                    df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
-
-                if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    show_detail_dialog(sel, supabase)
                 else:
-                    st.divider()
-                    st.success("✅ 실시간 퀀트 분석 데이터를 로드했습니다.")
-                    sel = {
-                        'symbol': search_query, 'name': stock_name,
-                        'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
-                        'ret_1m': 0.0, # 기본값
-                        'region': 'KR'
-                    }
-                    if len(df_price) >= 21:
-                        sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-                    if live_fund: sel.update(live_fund)
-                    render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
+                    with st.spinner(f"'{stock_name}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
+                        df_price, live_fund, live_score, live_filter_details = live_evaluate_stock(supabase, search_query, stock_name)
+
+                    if df_price is None or df_price.empty:
+                        st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    else:
+                        sel = {
+                            'symbol': search_query, 'name': stock_name,
+                            'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
+                            'ret_1m': 0.0, # 기본값
+                            'region': 'KR',
+                            'factor_score': live_score,
+                            'filter_details': live_filter_details # 라이브 분석 결과를 팝업창으로 바로 패스
+                        }
+                        if len(df_price) >= 21:
+                            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+                        if live_fund: sel.update(live_fund)
+                        
+                        show_detail_dialog(sel, supabase)
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
