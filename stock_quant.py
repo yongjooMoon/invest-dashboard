@@ -1,884 +1,841 @@
-"""
-quant_screener_ui.py — Streamlit UI
-"""
 import streamlit as st
-import pandas as pd
-import numpy as np
-import json
-import requests
+import streamlit.components.v1 as components
+from supabase import create_client, Client
 import re
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
-import FinanceDataReader as fdr
-import time # 로딩 애니메이션 지연용
+import html # 🛡️ XSS 방어용 파이썬 내장 라이브러리 추가
+import real_estate
+import stock_quant # 💡 [수정 완료] 경로 에러 해결: 같은 폴더에 있으므로 직접 import 합니다.
 
-from quant_core import (
-    load_price_from_db, load_screening_result,
-    now_kst, fetch_naver_fundamental,
-    load_fundamental_from_db, save_fundamental_to_db,
-    calc_quant_metrics
-)
+# 🌟 신규 모듈 추가
+import market_news
+import sync_news_to_supabase
 
-# ══════════════════════════════════════════
-# [Helper] 공통 데이터 & 종목 캐싱
-# ══════════════════════════════════════════
-def load_portfolio_data(supabase):
-    holdings, trades, history = [], [], []
+# 🛡️ 강력한 보안 암호화 라이브러리 추가
+import bcrypt
+from cryptography.fernet import Fernet
+import time  # ⏳ 토큰 만료 시간 계산용 추가
+
+# 초기 설정 (가장 먼저 실행되어야 함)
+st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
+
+# --- [1. Supabase & 암호화 연동 설정 (네트워크 안정성 강화)] ---
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+# [핵심 최적화] DB 연결을 캐싱하여 Connection Lost(연결 끊김) 원천 차단
+@st.cache_resource
+def init_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase: Client = init_supabase()
+
+# 대칭키 암호화 (API Key 보관용) 마스터 키 세팅
+if "ENCRYPTION_KEY" in st.secrets:
+    FERNET_KEY = st.secrets["ENCRYPTION_KEY"].encode()
+else:
+    # 안전을 위한 임시 Fallback 키 (경고: 실제 운영시 반드시 secrets.toml에 고정 키를 넣어야 복호화가 유지됨)
+    FERNET_KEY = b'vS-1_z0qL18r-58lXb0jVwFwJpPZ_X-6N1xG8Zk1w0c='
+cipher_suite = Fernet(FERNET_KEY)
+
+# 🔐 암복호화 도우미 함수
+def encrypt_text(text: str) -> str:
+    if not text: return ""
+    return cipher_suite.encrypt(text.encode('utf-8')).decode('utf-8')
+
+def decrypt_text(encrypted_text: str) -> str:
+    if not encrypted_text: return ""
     try:
-        r1 = supabase.table("quant_screening_cache").select("results").eq("id", 11).execute()
-        if r1.data: holdings = json.loads(r1.data[0]["results"])
-        r2 = supabase.table("quant_screening_cache").select("results").eq("id", 12).execute()
-        if r2.data: trades = json.loads(r2.data[0]["results"])
-        r3 = supabase.table("quant_screening_cache").select("results").eq("id", 13).execute()
-        if r3.data: history = json.loads(r3.data[0]["results"])
+        return cipher_suite.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
+    except:
+        return encrypted_text
+
+def verify_password(plain_pw: str, hashed_pw: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain_pw.encode('utf-8'), hashed_pw.encode('utf-8'))
+    except:
+        return False
+
+# 🌟 [새로고침 방어] 6시간 유지되는 URL 세션 토큰 생성기
+def create_auth_token(username: str, hours: int = 6) -> str:
+    expires_at = int(time.time()) + (hours * 3600)
+    payload = f"{username}::{expires_at}"
+    # 토큰 자체를 Fernet으로 강력하게 암호화하여 유저가 URL을 조작할 수 없게 만듭니다.
+    return cipher_suite.encrypt(payload.encode('utf-8')).decode('utf-8')
+
+def verify_auth_token(token: str) -> str:
+    if not token: return None
+    try:
+        decrypted = cipher_suite.decrypt(token.encode('utf-8')).decode('utf-8')
+        username, exp_str = decrypted.split("::")
+        if int(time.time()) < int(exp_str):  # 만료시간이 안 지났으면 유저명 반환
+            return username
     except:
         pass
-    return holdings, trades, history
-
-@st.cache_data(ttl=3600)
-def load_krx_list_from_db(_supabase):
-    """UI에서 외부 API 호출을 배제하고 DB(크론이 수집한 캐시)에서 종목 마스터를 안전하게 로드"""
-    try:
-        res = _supabase.table("quant_screening_cache").select("results").eq("id", 99).execute()
-        if res.data:
-            krx_data = json.loads(res.data[0]["results"])
-            return pd.DataFrame(krx_data)
-    except Exception as e:
-        pass
-    return pd.DataFrame(columns=["Symbol", "Name", "SearchStr"])
-
-@st.cache_data(ttl=1800)
-def load_kospi_cached(start_date_str):
-    """KOSPI 지수 데이터는 30분 캐시. 다른 탭 조작으로 인한 rerun마다 재조회되지 않도록 함."""
-    return fdr.DataReader('KS11', start_date_str)
-
-def calculate_exit_risk(curr, entry, stop):
-    if curr <= 0 or entry <= 0 or stop <= 0: return 0
-    buffer = entry - stop if entry > stop else curr * 0.15
-    if buffer <= 0: buffer = 1
-    distance = curr - stop
-    risk = 100 - (distance / buffer * 100)
-    return max(0, min(100, int(risk)))
-
-def format_marcap(marcap_100m):
-    if marcap_100m is None or pd.isna(marcap_100m):
-        return "N/A"
-    try:
-        val = float(marcap_100m)
-        if val == 0: return "0억"
-        
-        is_negative = val < 0
-        abs_val = abs(val)
-        
-        if abs_val >= 10000:
-            jo = int(abs_val // 10000)
-            eok = int(abs_val % 10000)
-            sign = "-" if is_negative else ""
-            if eok > 0:
-                return f"{sign}{jo}조 {eok:,}억"
-            return f"{sign}{jo}조"
-        else:
-            return f"{int(val):,}억"
-    except:
-        return "N/A"
-
-def get_ui_financial_extras(symbol, fund):
-    """quant_core.py의 원래 스크래퍼가 가져오지 않는 UI 리포트 전용 지표들을 보완"""
-    try:
-        url = f"https://finance.naver.com/item/main.naver?code={symbol}"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-
-        # 💡 [추가] 섹터 정보 수집
-        if fund.get('sector') is None:
-            upjong_elem = soup.select_one("a[href*='type=upjong']")
-            if upjong_elem:
-                fund['sector'] = upjong_elem.text.strip()
-
-        table = soup.select_one("div.cop_analysis table")
-        if table:
-            for tr in table.select("tbody tr"):
-                th = tr.select_one("th")
-                if not th: continue
-                label = th.text.strip()
-                tds = tr.select("td")
-                vals = []
-                for td in tds:
-                    clean = re.sub(r"[^\d.\-]", "", td.text)
-                    if clean and clean != '-': vals.append(float(clean))
-                    else: vals.append(None)
-                
-                valid_vals = [v for v in vals if v is not None]
-                if not valid_vals: continue
-                recent_val = valid_vals[-1]
-
-                if "영업이익률" in label and fund.get('op_margin') is None: fund['op_margin'] = recent_val
-                elif "ROA" in label and fund.get('roa') is None: fund['roa'] = recent_val
-                elif "PER" in label and fund.get('per') is None: fund['per'] = recent_val
-                elif "PBR" in label and fund.get('pbr') is None: fund['pbr'] = recent_val
-
-        if fund.get('marcap_억') is None:
-            marcap_elem = soup.select_one("#_market_sum")
-            if marcap_elem:
-                txt = marcap_elem.text.strip().replace(',', '').replace('\t', '').replace('\n', '')
-                if '조' in txt:
-                    parts = txt.split('조')
-                    jo = int(re.sub(r'\D', '', parts[0])) if parts[0] else 0
-                    eok_str = re.sub(r'\D', '', parts[1]) if len(parts)>1 else ''
-                    eok = int(eok_str) if eok_str else 0
-                    fund['marcap_억'] = jo * 10000 + eok
-                else:
-                    eok_str = re.sub(r'\D', '', txt)
-                    fund['marcap_억'] = int(eok_str) if eok_str else 0
-    except:
-        pass
-    return fund
-
-def live_evaluate_stock(supabase, symbol, name=""):
-    df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-    if df.empty: return None, {}, 0, {}
-
-    # 1. DB에서 캐싱된 펀더멘털 데이터 조회
-    fund = load_fundamental_from_db(supabase, symbol)
-    if not fund: fund = {}
-
-    # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목) - sector 추가!
-    required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억', 'sector']
-    needs_update = not fund or any(fund.get(k) is None for k in required_keys)
-
-    # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
-    if needs_update:
-        scraped_fund = fetch_naver_fundamental(symbol) # core 원본 함수 호출
-        for k, v in scraped_fund.items():
-            if v is not None:
-                fund[k] = v
-        
-        # UI 리포트에 보여주기 위한 전용 데이터 보완 스크래핑
-        fund = get_ui_financial_extras(symbol, fund)
-    
-        if fund:
-            try:
-                save_fundamental_to_db(supabase, symbol, name, fund)
-            except Exception as e:
-                print(f"DB 저장 오류 (DB 스키마에 신규 컬럼 추가 필요 시 무시됨): {e}")
-
-    # 3. 누락되었던 YoY (전년동기대비 성장률) 리포트 출력을 위한 보완 계산
-    c_net = fund.get('net_income_cur')
-    p_net = fund.get('net_income_prev')
-    if c_net is not None and p_net is not None and p_net != 0:
-        fund['net_income_yoy'] = ((c_net - p_net) / abs(p_net)) * 100
-        
-    c_rev = fund.get('revenue_cur')
-    p_rev = fund.get('revenue_prev')
-    if c_rev is not None and p_rev is not None and p_rev != 0:
-        fund['revenue_yoy'] = ((c_rev - p_rev) / abs(p_rev)) * 100
-
-    c_op = fund.get('op_profit_cur')
-    if fund.get('op_margin') is None and c_op is not None and c_rev:
-        fund['op_margin'] = (c_op / c_rev) * 100
-
-    # 4. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
-    metrics = calc_quant_metrics(df, fund)
-    
-    if "ma20" not in metrics or metrics.get("ma20", 0) == 0:
-        return df, fund, 0, {}
-
-    curr = df['Close'].iloc[-1]
-
-    # 5. quant_core.py의 절대 조건 6가지와 완벽하게 동일한 조건식 적용
-    f_growth = metrics["growth_composite"] > 0
-    f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
-    f_liq    = metrics["liquidity_20d"] >= 50
-    f_trend  = (curr > metrics["ma20"]) and (metrics["ma20"] > metrics["ma60"])
-    f_break  = curr >= (metrics["high_60d"] * 0.90)
-    f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5)
-
-    gates = {
-        'A': {'name': 'Growth Composite', 'pass': f_growth, 'reason': f"Comp {metrics['growth_composite']:+.1f}%"},
-        'B': {'name': 'Dynamic MDD', 'pass': f_mdd, 'reason': f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
-        'C': {'name': 'Liquidity', 'pass': f_liq, 'reason': f"{metrics['liquidity_20d']:,.0f}억"},
-        'D': {'name': 'Trend Alignment', 'pass': f_trend, 'reason': "Price > 20MA > 60MA" if f_trend else "추세 미달"},
-        'E': {'name': 'Price Breakout', 'pass': f_break, 'reason': f"고점대비 {(curr/metrics['high_60d'])*100:.1f}%" if metrics.get('high_60d') else "-"},
-        'F': {'name': 'Volume Surge', 'pass': f_vol, 'reason': f"Vol {metrics['vol_5d']/metrics['vol_60d']:.1f}x 급증" if metrics.get('vol_60d') else "-"}
-    }
-
-    pass_count = sum([1 for g in gates.values() if g['pass']])
-    
-    # 6. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
-    mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
-    net_yoy = metrics.get("net_yoy", 0)
-    factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
-
-    return df, fund, factor_score, gates
-
-# ══════════════════════════════════════════
-# [Component] Popovers & Shared Renderers
-# ══════════════════════════════════════════
-def render_exit_risk_content(h, supabase):
-    """HTML을 사용하지 않고 Streamlit 네이티브 컴포넌트로 구현된 안전하고 깔끔한 팝업"""
-    curr = h.get("current_price", 0)
-    entry = h.get("entry_price", curr)
-    stop = h.get("stop_price", entry * 0.85)
-    ret = h.get("return_rate", 0.0)
-
-    if "price_cache" not in st.session_state: 
-        st.session_state.price_cache = {}
-    
-    if h['symbol'] not in st.session_state.price_cache:
-        st.session_state.price_cache[h['symbol']] = load_price_from_db(supabase, h['symbol'])
-        
-    df = st.session_state.price_cache[h['symbol']]
-    ts_risk, ma_risk = 0.0, 0.0
-
-    if not df.empty and len(df) >= 20:
-        high = df.get('High', df['Close'])
-        low = df.get('Low', df['Close'])
-        prev_close = df['Close'].shift(1)
-        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-        atr20 = tr.rolling(20).mean().iloc[-1]
-        ma20 = df['Close'].iloc[-20:].mean()
-
-        try:
-            entry_date_str = h.get('entry_date', now_kst().strftime("%Y-%m-%d"))
-            entry_date = pd.to_datetime(entry_date_str).tz_localize(None)
-        except:
-            entry_date = now_kst().replace(tzinfo=None)
-
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-
-        df_held = df[df.index >= entry_date]
-        highest_close = df_held['Close'].max() if not df_held.empty else curr
-
-        trailing_stop = highest_close - (2.5 * atr20)
-        if curr > 0 and trailing_stop > 0:
-            ts_dist = curr - trailing_stop
-            ts_risk = max(0, min(100, 100 - (ts_dist / (curr * 0.15) * 100)))
-
-        if curr > 0 and ma20 > 0:
-            ma_dist = curr - ma20
-            ma_risk = max(0, min(100, 100 - (ma_dist / (curr * 0.10) * 100)))
-
-    exit_risk = calculate_exit_risk(curr, entry, stop)
-
-    st.markdown(
-        """<style>
-        div[data-testid="stPopoverBody"] { min-width: 350px !important; }
-        </style>""", unsafe_allow_html=True
-    )
-
-    st.subheader(f"🚨 {h['name']} Risk 분석")
-    st.write(f"**현재가:** ₩{curr:,.0f} &nbsp;|&nbsp; **손절가:** ₩{stop:,.0f}")
-
-    st.divider()
-
-    st.markdown(f"**OVERALL EXIT PROXIMITY : {int(exit_risk)}%**")
-    st.progress(int(exit_risk))
-    st.write("")
-
-    st.markdown(f"**Trailing Stop (ATR) : {int(ts_risk)}%**")
-    st.progress(int(ts_risk))
-    st.write("")
-
-    st.markdown(f"**Trend Break (MA20) : {int(ma_risk)}%**")
-    st.progress(int(ma_risk))
-
-    st.divider()
-    c1, c2 = st.columns(2)
-    c1.metric("진입가 (Entry)", f"₩{entry:,.0f}")
-    c2.metric("보유 수익률 (P&L)", f"{ret:+.2f}%")
+    return None
 
 
-def render_single_gauge(score):
-    fig = go.Figure()
-    fig.add_trace(go.Indicator(
-        mode = "gauge+number", value = score,
-        number = {'font': {'color': '#00B464', 'size': 45}, 'valueformat': '.1f'},
-        title = {'text': "퀀트 랭킹 스코어", 'font': {'color': '#AEC1D4', 'size': 14}},
-        gauge = {'axis': {'range': [None, 100], 'visible': False}, 'bar': {'color': "#00B464", 'thickness': 0.8}, 'bgcolor': "rgba(255,255,255,0.05)", 'shape': "angular"}
-    ))
-    fig.update_layout(height=220, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
+# --- [2. 100% 안전한 브라우저 독립형 세션 (무한 리다이렉트 방지)] ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = None
+if "api_keys" not in st.session_state:
+    st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+if "current_view" not in st.session_state:
+    st.session_state.current_view = "main"
+if "current_menu" not in st.session_state:
+    st.session_state.current_menu = "news"  # 🌟 기본 메뉴를 뉴스로 변경
 
-def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=None, gates=None):
-    curr = sel.get('current_price', 0)
-    ret_1m = sel.get('ret_1m', 0)
-
-    # 💡 [추가] 섹터 정보가 있으면 노란색 파이프(|)와 함께 추가
-    sector_str = f" &nbsp;|&nbsp; <span style='color:#F8B12A;'>{sel.get('sector')}</span>" if sel.get('sector') and sel.get('sector') != "미분류" else ""
-
-    st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('market', 'KOSPI')}{sector_str}</span>", unsafe_allow_html=True)
-    st.markdown(f"<h1>{curr:,.0f} 원 <span style='font-size:20px; color:{'#F04452' if ret_1m>0 else '#3182F6'};'>{ret_1m:+.2f}% (1M)</span></h1>", unsafe_allow_html=True)
-    st.divider()
-
-    if factor_score is None: factor_score = sel.get('factor_score', 0)
-    
-    if gates is None:
-        gates_data = sel.get("filter_details", {})
-        if not gates_data or "Growth Composite" not in gates_data:
-            gates = {
-                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'}, 
-                'B': {'name': 'Dynamic MDD', 'pass': False, 'reason': '-'},
-                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'}, 
-                'D': {'name': 'Trend Alignment', 'pass': False, 'reason': '-'},
-                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'}, 
-                'F': {'name': 'Volume Surge', 'pass': False, 'reason': '-'}
-            }
-        else:
-            gates = {
-                'A': {'name': 'Growth Composite', 'pass': gates_data.get("Growth Composite", {}).get("pass", False), 'reason': gates_data.get("Growth Composite", {}).get("reason", "-")},
-                'B': {'name': 'Dynamic MDD', 'pass': gates_data.get("Dynamic MDD", {}).get("pass", False), 'reason': gates_data.get("Dynamic MDD", {}).get("reason", "-")},
-                'C': {'name': 'Liquidity', 'pass': gates_data.get("Liquidity", {}).get("pass", False), 'reason': gates_data.get("Liquidity", {}).get("reason", "-")},
-                'D': {'name': 'Trend Alignment', 'pass': gates_data.get("Trend Alignment", {}).get("pass", False), 'reason': gates_data.get("Trend Alignment", {}).get("reason", "-")},
-                'E': {'name': 'Price Breakout', 'pass': gates_data.get("Price Breakout", {}).get("pass", False), 'reason': gates_data.get("Price Breakout", {}).get("reason", "-")},
-                'F': {'name': 'Volume Surge', 'pass': gates_data.get("Volume Surge", {}).get("pass", False), 'reason': gates_data.get("Volume Surge", {}).get("reason", "-")}
-            }
-
-    total_pass = sum([1 for g in gates.values() if g['pass']])
-
-    c_header, c_gauge = st.columns([3, 2])
-    with c_header:
-        st.markdown("### ⚡ Quant Scores")
-        c1, c2 = st.columns(2)
-        c1.metric("실시간 랭킹 스코어", f"{factor_score:.2f}점")
-        c2.metric("현재시점 생존 필터", f"{total_pass} / 6")
-        st.info("💡 과거 배치(Cron) 시점엔 6/6 통과였어도, **현재 실시간 주가 변동**에 따라 지표가 하락(5/6 등)할 수 있습니다.")
-
-    with c_gauge:
-        render_single_gauge(factor_score)
-
-    st.markdown("##### Entry Gates (6 conditions)")
-    cols = st.columns(6)
-    labels = ['A', 'B', 'C', 'D', 'E', 'F']
-    for idx, (col, key) in enumerate(zip(cols, gates.keys())):
-        g = gates[key]
-        passed = g['pass']
-        color = "#00B464" if passed else "#333333"
-        txt_color = "white" if passed else "#888888"
-        with col:
-            st.markdown(f"""
-            <div style="background-color:#1E2329; border:1px solid {color}; border-radius:6px; padding:10px; height:85px;">
-                <div style="display:flex; justify-content:space-between; font-weight:bold; color:{txt_color}; font-size:13px; margin-bottom:8px;">
-                    <span>{labels[idx]}</span> <span style="font-size:11px;">{'✔️' if passed else '❌'}</span>
-                </div>
-                <div style="height:3px; background-color:{color}; border-radius:2px; margin-bottom:8px;"></div>
-                <div style="font-size:10px; color:#AEC1D4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{g['name']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("<br>### 📊 Financials & Valuation", unsafe_allow_html=True)
-    if fund is None: fund = sel
-
-    def safe_fmt(val, is_pct=False, is_eok=False):
-        if val is None or pd.isna(val): return "N/A"
-        try:
-            val = float(val)
-            if is_pct: return f"{val:+.2f}%" if val < 0 else f"{val:.2f}%"
-            if is_eok: return format_marcap(val)
-            return f"{val:,.2f}"
-        except: return "N/A"
-
-    with st.container(border=True):
-        st.markdown("**재무 실적**")
-        r1, r2, r3, r4 = st.columns(4)
-        r1.caption("매출액"); r1.markdown(f"**{safe_fmt(fund.get('revenue_cur'), is_eok=True)}**")
-        r2.caption("영업이익"); r2.markdown(f"**{safe_fmt(fund.get('op_profit_cur'), is_eok=True)}**")
-        r3.caption("당기순이익"); r3.markdown(f"**{safe_fmt(fund.get('net_income_cur'), is_eok=True)}**")
-        r4.caption("영업이익률"); r4.markdown(f"**{safe_fmt(fund.get('op_margin'), is_pct=True)}**")
-
-        st.divider()
-        st.markdown("**수익성 및 성장성 (YoY)**")
-        r5, r6, r7, r8 = st.columns(4)
-        r5.caption("순이익 성장률"); r5.markdown(f"**{safe_fmt(fund.get('net_income_yoy'), is_pct=True)}**")
-        r6.caption("매출 성장률"); r6.markdown(f"**{safe_fmt(fund.get('revenue_yoy'), is_pct=True)}**")
-        r7.caption("ROE"); r7.markdown(f"**<span style='color:#F04452'>{safe_fmt(fund.get('roe'), is_pct=True)}</span>**", unsafe_allow_html=True)
-        r8.caption("ROA"); r8.markdown(f"**{safe_fmt(fund.get('roa'), is_pct=True)}**")
-
-        st.divider()
-        st.markdown("**밸류에이션 및 건전성**")
-        r9, r10, r11, r12 = st.columns(4)
-        r9.caption("시가총액"); r9.markdown(f"**{format_marcap(fund.get('marcap_억'))}**")
-        r10.caption("PER"); r10.markdown(f"**{safe_fmt(fund.get('per'))} 배**")
-        r11.caption("PBR"); r11.markdown(f"**{safe_fmt(fund.get('pbr'))} 배**")
-        r12.caption("부채비율"); r12.markdown(f"**{safe_fmt(fund.get('debt_ratio'), is_pct=True)}**")
-
-    st.markdown("### 📈 가격 차트 (Price History)")
-    if df_price is not None and not df_price.empty:
-        st.line_chart(df_price[["Close"]].tail(252).rename(columns={"Close": "종가"}))
+def update_auth_state(is_logged_in, username, api_keys=None):
+    st.session_state.logged_in = is_logged_in
+    st.session_state.username = username
+    if api_keys:
+        st.session_state.api_keys = api_keys
     else:
-        st.info("가격 데이터가 로드되지 않았습니다.")
+        st.session_state.api_keys = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
 
-@st.dialog("📈 퀀트 평가 상세 리포트", width="large")
-def show_detail_dialog(sel, supabase):
-    with st.spinner("캐시된 데이터를 불러오는 중..."):
-        
-        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
-            c_list, w_list, _ = load_screening_result(supabase)
-            found = False
-            for item in c_list + w_list:
-                if item['symbol'] == sel['symbol']:
-                    sel.update(item)
-                    found = True
-                    break
-            
-            if not found:
-                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
-                if fund_db:
-                    sel.update(fund_db)
+# 🚀 [핵심] 앱 시작 시 URL에 남겨둔 '보안 토큰'을 확인하여 F5(새로고침) 시 세션 자동 복구
+if not st.session_state.logged_in and "auth_token" in st.query_params:
+    token_username = verify_auth_token(st.query_params["auth_token"])
+    
+    if token_username:
+        try:
+            # 토큰이 유효하면 DB에서 API 키를 가져와 세션을 조용히 살려냅니다.
+            admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+            keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
+            if admin_keys.data:
+                keys_to_save = {
+                    "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
+                    "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
+                    "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
+                    "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
+                    "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
+                }
+            update_auth_state(True, token_username, keys_to_save)
+        except:
+            pass
+    else:
+        # 토큰이 6시간이 지났거나 누군가 임의로 조작했다면 가차 없이 URL에서 파기
+        if "auth_token" in st.query_params:
+            del st.query_params["auth_token"]
 
-        original_score = sel.get('factor_score', 0)
 
-        if "price_cache" not in st.session_state: 
-            st.session_state.price_cache = {}
-        if sel['symbol'] not in st.session_state.price_cache:
-            df_price = load_price_from_db(supabase, sel['symbol'])
-            if df_price.empty:
-                df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-            st.session_state.price_cache[sel['symbol']] = df_price
-            
-        df_price = st.session_state.price_cache[sel['symbol']]
-
-        if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-            if df_price is not None and len(df_price) >= 21:
-                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
-
-# ══════════════════════════════════════════
-# [Main Entry Point]
-# ══════════════════════════════════════════
-def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    # 🌟 [버튼 폭&여백 최적화] 비율을 조정해 버튼이 얇아지게 하고, margin-top을 충분히 주어 윗부분 잘림을 방지했습니다.
-    c1, c2, c3 = st.columns([8.2, 0.8, 1.0]) 
-    with c1:
-        st.title("📡 퀀트투자")
-    with c3:
-        # 타이틀 높이와 정확히 맞추고 잘림 현상 방지를 위해 여백을 26px로 확대
-        st.markdown("<div style='margin-top: 26px;'></div>", unsafe_allow_html=True)
-        # 딱딱한 🔄 아이콘을 트렌디하고 귀여운 ✨ 반짝이 마법 이모지로 변경!
-        if st.button("✨ Refresh", width="stretch"):
-            loading_overlay = st.empty()
-            # 💡 [핵심] CSS 애니메이션 타이밍(0.9s, 0.8s)과 Python의 대기시간(1.0초)을 완벽하게 맞물리게 조절했습니다.
-            overlay_html = (
-                "<style>"
-                ".custom-overlay { position: fixed !important; top: 0px !important; left: 0px !important; right: 0px !important; bottom: 0px !important; width: 100vw !important; height: 100vh !important; background: rgba(3, 7, 18, 0.8) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important; z-index: 9999999 !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; pointer-events: all !important; }"
-                ".chart-box { position: relative; width: 160px; height: 130px; margin-bottom: 25px; }"
-                ".chart-line { fill: none; stroke: #F04452; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 400; stroke-dashoffset: 400; animation: drawLine 0.9s cubic-bezier(0.4, 0, 0.2, 1) forwards; filter: drop-shadow(0px 0px 8px rgba(240, 68, 82, 0.7)); }"
-                ".chart-point { fill: #F04452; opacity: 0; animation: fadeIn 0.2s ease-out 0.8s forwards; filter: drop-shadow(0px 0px 12px rgba(240, 68, 82, 1)); }"
-                ".chart-grid { stroke: rgba(255,255,255,0.08); stroke-width: 1.5; stroke-dasharray: 4 6; }"
-                "@keyframes drawLine { to { stroke-dashoffset: 0; } }"
-                "@keyframes fadeIn { to { opacity: 1; } }"
-                ".refresh-title { color: #FFFFFF !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 5px !important; margin: 0 0 10px 0 !important; text-shadow: 0 0 15px rgba(255,255,255,0.3) !important; }"
-                ".refresh-desc { color: #F04452 !important; font-size: 14px !important; font-weight: 600 !important; letter-spacing: 1.5px !important; margin: 0 !important; }"
-                "</style>"
-                "<div class='custom-overlay'>"
-                "<div class='chart-box'>"
-                "<svg viewBox='0 0 160 130' style='width:100%; height:100%; overflow:visible;'>"
-                "<line x1='0' y1='35' x2='160' y2='35' class='chart-grid' />"
-                "<line x1='0' y1='85' x2='160' y2='85' class='chart-grid' />"
-                "<line x1='0' y1='130' x2='160' y2='130' class='chart-grid' />"
-                "<path d='M 0,120 L 35,90 L 70,105 L 115,45 L 155,10' class='chart-line' />"
-                "<circle cx='155' cy='10' r='7' class='chart-point' />"
-                "</svg>"
-                "</div>"
-                "<div class='refresh-title'>SYNCHRONIZING</div>"
-                "<div class='refresh-desc'>최신 시장 데이터를 퀀트 엔진에 반영 중입니다 🚀</div>"
-                "</div>"
-            )
-            loading_overlay.markdown(overlay_html, unsafe_allow_html=True)
-            
-            # 애니메이션 타이머 시작
-            start_time = time.time()
-            
-            # 💡 기존 메모리(캐시) 폭파
-            for key in ["quant_portfolio", "quant_screening", "price_cache"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-            
-            # 애니메이션이 뒤를 덮고 있는 동안 DB에서 최신 데이터 조용히 호출
-            st.session_state.quant_portfolio = load_portfolio_data(supabase)
-            st.session_state.quant_screening = load_screening_result(supabase)
-            
-            elapsed = time.time() - start_time
-            # 💡 애니메이션이 화면에 그려지는 시간(0.9s ~ 1.0s)과 파이썬의 대기시간을 1.0초로 완벽하게 동일하게 맞춥니다.
-            # 선이 그려지고 빛나는 포인트가 생기는 그 즉시 화면이 리프레쉬됩니다!
-            if elapsed < 1.0:
-                time.sleep(1.0 - elapsed)
-            
-            # 애니메이션 완료 직후 화면 다시 그리기 
-            st.rerun()
-
-    # 💡 [핵심 메모리 캐싱] 로그인 후 처음 진입할 때 딱 1번만 DB 조회 후 세션에 영구저장. 
-    # 이후 화면을 아무리 다시 그리거나 팝업을 열고 닫아도 0초만에 캐시를 재활용합니다!
-    if "quant_portfolio" not in st.session_state:
-        with st.spinner("💼 포트폴리오 데이터를 최초 1회 로드 중입니다..."):
-            st.session_state.quant_portfolio = load_portfolio_data(supabase)
-            
-    if "quant_screening" not in st.session_state:
-        with st.spinner("👀 스크리닝 데이터를 최초 1회 로드 중입니다..."):
-            st.session_state.quant_screening = load_screening_result(supabase)
-
-    holdings, trades, history = st.session_state.quant_portfolio
-    confirmed, watchlist, last_updated = st.session_state.quant_screening
-
-    holding_syms = set([h['symbol'] for h in holdings])
-    filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
-    filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
-
+# --- [3. 로그인 화면 (오로라 글래스모피즘 + 찐 설인 애니메이션 UI 원본 복구)] ---
+if not st.session_state.logged_in:
     st.markdown("""
     <style>
-    .grid-header { font-size: 13px; font-weight: bold; color: #8B95A1; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 8px; }
-    .grid-row { padding-top: 10px; padding-bottom: 10px; font-size: 14px; border-bottom: 1px solid #1E2329; display: flex; align-items: center;}
-    .popover-btn > button { padding: 0 !important; background: none !important; border: none !important; color: #AEC1D4 !important; }
+    /* 전체 배경: 칠흑 같은 우주 공간 */
+    .stApp {
+        background-color: #030712 !important;
+        overflow: hidden !important;
+    }
+    
+    /* 기존 헤더, 사이드바, 푸터 완전 숨김 */
+    [data-testid="stSidebar"], [data-testid="stHeader"], footer {
+        display: none !important;
+    }
+
+    /* 🔥 Flexbox를 활용한 완벽한 세로/가로 정중앙 정렬 🔥 */
+    [data-testid="stAppViewContainer"] {
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        width: 100vw !important;
+        height: 100vh !important;
+    }
+    
+    [data-testid="stMain"] {
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        width: 100% !important;
+        height: 100% !important;
+    }
+
+    /* Streamlit 기본 여백 초기화 및 중앙 정렬 */
+    .block-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        align-items: center !important;
+    }
+    
+    [data-testid="stVerticalBlock"] {
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        align-items: center !important;
+        gap: 0 !important;
+    }
+    
+    /* 보이지 않는 JS/HTML 컴포넌트가 세로 정렬을 방해하지 못하도록 공간 차지 무효화 */
+    div[data-testid="stHtml"] {
+        position: absolute !important;
+        width: 0 !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* 🌟 오로라 메쉬 그라디언트 애니메이션 🌟 */
+    .aurora-bg {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 0;
+        overflow: hidden;
+        background-color: #030712;
+    }
+    .orb {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(100px);
+        opacity: 0.6;
+        animation: float 20s infinite ease-in-out alternate;
+    }
+    .orb-1 {
+        width: 50vw; height: 50vw;
+        background: #20C997; /* 몽환적인 민트 */
+        top: -20%; left: -10%;
+        animation-delay: 0s;
+    }
+    .orb-2 {
+        width: 40vw; height: 40vw;
+        background: #3B82F6; /* 깊은 블루 */
+        bottom: -20%; right: -10%;
+        animation-delay: -5s;
+    }
+    .orb-3 {
+        width: 40vw; height: 40vw;
+        background: #8B5CF6; /* 신비로운 퍼플 */
+        top: 30%; left: 40%;
+        animation-delay: -10s;
+    }
+    @keyframes float {
+        0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+        33% { transform: translate(5vw, -5vh) scale(1.1) rotate(10deg); }
+        66% { transform: translate(-5vw, 5vh) scale(0.9) rotate(-10deg); }
+        100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+    }
+
+    /* 💎 글래스모피즘 로그인 박스 (Flexbox를 통한 완벽한 정중앙 배치) 💎 */
+    [data-testid="stForm"] {
+        background: rgba(15, 23, 42, 0.4) !important;
+        backdrop-filter: blur(30px) !important;
+        -webkit-backdrop-filter: blur(30px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 24px !important;
+        padding: 3rem 3rem 2.5rem 3rem !important;
+        
+        width: 360px !important;
+        min-width: 360px !important;
+        max-width: 360px !important;
+        
+        box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1) !important;
+        z-index: 10;
+        margin: auto !important; /* Flex 항목으로서 자동 중앙 마진 */
+    }
+
+    /* 폼 내부 텍스트 및 라벨 (USERNAME, PASSWORD) */
+    .stTextInput label p {
+        color: #94A3B8 !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        letter-spacing: 2px !important;
+        text-transform: uppercase !important;
+    }
+
+    /* 입력창 디자인 (투명한 유리 느낌) */
+    .stTextInput input {
+        background-color: rgba(0, 0, 0, 0.25) !important;
+        color: #FFFFFF !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 12px !important;
+        padding: 0.9rem 1.2rem !important;
+        transition: all 0.3s ease !important;
+    }
+    .stTextInput input:focus {
+        border-color: #20C997 !important;
+        background-color: rgba(0, 0, 0, 0.4) !important;
+        box-shadow: 0 0 0 1px rgba(32, 201, 151, 0.5) !important;
+    }
+
+    /* 트렌디한 그라디언트 로그인 버튼 */
+    [data-testid="stFormSubmitButton"] button {
+        background: linear-gradient(135deg, #20C997 0%, #007BFF 100%) !important;
+        color: #ffffff !important;
+        font-size: 14px !important;
+        font-weight: 800 !important;
+        letter-spacing: 3px !important;
+        border-radius: 12px !important;
+        border: none !important;
+        margin-top: 2rem !important;
+        padding: 0.8rem !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 0 10px 20px rgba(32, 201, 151, 0.25) !important;
+    }
+    [data-testid="stFormSubmitButton"] button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 30px rgba(32, 201, 151, 0.4) !important;
+    }
+
+    /* 모던 로고 및 Yeti 타이포그래피 */
+    .logo-container {
+        text-align: center;
+        margin-bottom: 2rem;
+        position: relative;
+    }
+    
+    /* 🙈 오리지널 털복숭이 두 손(양팔) 애니메이션 및 까꿍(Peeking) 🙈 */
+    #yeti-wrap .armL, #yeti-wrap .armR {
+        transition: transform 0.45s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        transform-box: fill-box; /* SVG 요소 기준 관절(축) 고정 핵심 속성 */
+    }
+    
+    /* 기본 상태: 아래에 숨어 있음 (-93px 로 정확히 양쪽 눈을 덮을 수 있도록 X축 당김) */
+    #yeti-wrap .armL {
+        transform-origin: top left;
+        transform: translate(-93px, 180px) rotate(105deg);
+    }
+    #yeti-wrap .armR {
+        transform-origin: top right;
+        transform: translate(-93px, 180px) rotate(-105deg);
+    }
+    
+    /* 눈 가리기 상태 (비밀번호 포커스) */
+    #yeti-wrap.yeti-hide .armL {
+        transform: translate(-93px, 10px) rotate(0deg);
+    }
+    #yeti-wrap.yeti-hide .armR {
+        transform: translate(-93px, 10px) rotate(0deg);
+        transition-delay: 0.05s; /* 오른쪽 손이 살짝 늦게 올라오는 디테일 */
+    }
+
+    /* 두 손가락(까꿍용) */
+    #yeti-wrap .twoFingers {
+        transform-origin: bottom left;
+        transform-box: fill-box;
+        transition: transform 0.3s ease-in-out;
+    }
+    
+    /* 지울 때 손가락 사이로 까꿍 (Peeking) */
+    #yeti-wrap.yeti-peek .twoFingers {
+        transform: translate(-9px, -2px) rotate(30deg);
+    }
+
+    /* 🔥 타이틀 색상 가독성 극대화 (화이트 + 빛나는 네온 효과) 🔥 */
+    .logo-title {
+        color: #FFFFFF !important;
+        font-size: 30px !important;
+        font-weight: 900 !important;
+        letter-spacing: 5px !important;
+        margin: 15px 0 8px 0 !important;
+        font-family: 'Arial Black', sans-serif !important;
+        text-shadow: 0 0 15px rgba(255, 255, 255, 0.8), 0 0 30px rgba(32, 201, 151, 0.4) !important;
+    }
+    .logo-subtitle {
+        color: #20C997 !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        letter-spacing: 4px !important;
+        margin: 0 !important;
+        text-shadow: 0 0 5px rgba(32, 201, 151, 0.5) !important;
+    }
+    
+    /* 🚨 오류/경고 메시지 박스 - 글래스모피즘 테마에 어울리는 톤으로 수정 🚨 */
+    [data-testid="stAlert"] {
+        background: rgba(239, 68, 68, 0.1) !important; /* 투명한 붉은 유리 느낌 */
+        border: 1px solid rgba(239, 68, 68, 0.4) !important;
+        backdrop-filter: blur(10px) !important;
+        -webkit-backdrop-filter: blur(10px) !important;
+        border-radius: 12px !important;
+        color: #FECACA !important; /* 밝은 핑크빛 텍스트 */
+        margin-top: 1rem !important;
+    }
+    [data-testid="stAlert"] p {
+        color: #FECACA !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+    }
+    [data-testid="stAlert"] svg {
+        fill: #FCA5A5 !important; /* 아이콘 색상도 맞춤 */
+    }
     </style>
+    
+    <div class="aurora-bg">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
     """, unsafe_allow_html=True)
 
-    # 🌟 [버그 수정] key를 명시적으로 고정하지 않으면, 라벨 안의 숫자(개수)가 리런마다 바뀔 때
-    # Streamlit이 이 탭 위젯을 "다른 위젯"으로 오인해 선택된 탭과 실제 표시되는 내용이 어긋나는
-    # 문제가 생길 수 있습니다. key를 고정해서 라벨이 바뀌어도 같은 탭 상태를 유지하게 합니다.
-    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
-        f"Portfolio ({len(holdings)})",
-        f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
-        "매도 히스토리 (History)",
-        "🔍 Stock Search",
-        "📖 Algo Whitepaper"
-    ], key="quant_main_tabs")
+    # 🌟 폼 내부 레이어 갇힘 버그를 해결하기 위해, 로딩용 도화지를 폼 바깥(위)에 미리 선언
+    loading_overlay = st.empty()
 
-    # ────────────────────────────────────────────────────────
-    # 탭 1: 포트폴리오
-    # ────────────────────────────────────────────────────────
-    with tab_port:
-        with st.container(border=True):
-            if holdings:
-                max_price = max([h.get("current_price", 0) for h in holdings])
-                total_stocks = len(holdings)
-                total_seed = max_price * total_stocks
-                
-                st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
-                st.markdown(f"## {total_seed:,.0f} 원")
-                st.caption(f"종목당 {max_price:,.0f}원 기준 × {total_stocks}종목")
+    # 폼 영역 (clear_on_submit=False 로 변경하여 실패 시에도 입력값 유지)
+    with st.form("login_form", clear_on_submit=False):
+        # 🙈 원본 코드를 그대로 활용한 찐 털복숭이 설인(Yeti) SVG
+        st.markdown(
+            '<div class="logo-container" id="yeti-wrap">'
+            '<svg id="yeti" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="140" height="140" style="overflow: visible; margin-bottom: -15px; position: relative; z-index: 20;">'
+            '<defs><circle id="armMaskPath" cx="100" cy="100" r="100"/></defs>'
+            '<clipPath id="armMask"><use href="#armMaskPath" overflow="visible"/></clipPath>'
+            '<circle cx="100" cy="100" r="100" fill="#E0F2FE"/>'
+            '<g class="body">'
+            '<path stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="#FFFFFF" d="M200,158.5c0-20.2-14.8-36.5-35-36.5h-14.9V72.8c0-27.4-21.7-50.4-49.1-50.8c-28-0.5-50.9,22.1-50.9,50v50H35.8C16,122,0,138,0,157.8L0,213h200L200,158.5z"/>'
+            '<path fill="#DDF1FA" d="M100,156.4c-22.9,0-43,11.1-54.1,27.7c15.6,10,34.2,15.9,54.1,15.9s38.5-5.8,54.1-15.9C143,167.5,122.9,156.4,100,156.4z"/>'
+            '</g>'
+            '<g class="earL">'
+            '<g class="outerEar" fill="#ddf1fa" stroke="#3a5e77" stroke-width="2.5"><circle cx="47" cy="83" r="11.5"/><path d="M46.3 78.9c-2.3 0-4.1 1.9-4.1 4.1 0 2.3 1.9 4.1 4.1 4.1" stroke-linecap="round" stroke-linejoin="round"/></g>'
+            '<g class="earHair"><rect x="51" y="64" fill="#FFFFFF" width="15" height="35"/><path d="M53.4 62.8C48.5 67.4 45 72.2 42.8 77c3.4-.1 6.8-.1 10.1.1-4 3.7-6.8 7.6-8.2 11.6 2.1 0 4.2 0 6.3.2-2.6 4.1-3.8 8.3-3.7 12.5 1.2-.7 3.4-1.4 5.2-1.9" fill="#fff" stroke="#3a5e77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></g>'
+            '</g>'
+            '<g class="earR">'
+            '<g class="outerEar" fill="#DDF1FA" stroke="#3A5E77" stroke-width="2.5"><circle cx="153" cy="83" r="11.5"/><path stroke-linecap="round" stroke-linejoin="round" d="M153.7,78.9c2.3,0,4.1,1.9,4.1,4.1c0,2.3-1.9,4.1-4.1,4.1"/></g>'
+            '<g class="earHair"><rect x="134" y="64" fill="#FFFFFF" width="15" height="35"/><path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M146.6,62.8c4.9,4.6,8.4,9.4,10.6,14.2c-3.4-0.1-6.8-0.1-10.1,0.1c4,3.7,6.8,7.6,8.2,11.6c-2.1,0-4.2,0-6.3,0.2c2.6,4.1,3.8,8.3,3.7,12.5c-1.2-0.7-3.4-1.4-5.2-1.9"/></g>'
+            '</g>'
+            '<path class="chin" d="M84.1 121.6c2.7 2.9 6.1 5.4 9.8 7.5l.9-4.5c2.9 2.5 6.3 4.8 10.2 6.5 0-1.9-.1-3.9-.2-5.8 3 1.2 6.2 2 9.7 2.5-.3-2.1-.7-4.1-1.2-6.1" fill="none" stroke="#3a5e77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />'
+            '<path class="face" fill="#DDF1FA" d="M134.5,46v35.5c0,21.815-15.446,39.5-34.5,39.5s-34.5-17.685-34.5-39.5V46" />'
+            '<path class="hair" fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M81.457,27.929c1.755-4.084,5.51-8.262,11.253-11.77c0.979,2.565,1.883,5.14,2.712,7.723c3.162-4.265,8.626-8.27,16.272-11.235c-0.737,3.293-1.588,6.573-2.554,9.837c4.857-2.116,11.049-3.64,18.428-4.156c-2.403,3.23-5.021,6.391-7.852,9.474"/>'
+            '<g class="eyebrow">'
+            '<path fill="#FFFFFF" d="M138.142,55.064c-4.93,1.259-9.874,2.118-14.787,2.599c-0.336,3.341-0.776,6.689-1.322,10.037c-4.569-1.465-8.909-3.222-12.996-5.226c-0.98,3.075-2.07,6.137-3.267,9.179c-5.514-3.067-10.559-6.545-15.097-10.329c-1.806,2.889-3.745,5.73-5.816,8.515c-7.916-4.124-15.053-9.114-21.296-14.738l1.107-11.768h73.475V55.064z"/>'
+            '<path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M63.56,55.102c6.243,5.624,13.38,10.614,21.296,14.738c2.071-2.785,4.01-5.626,5.816-8.515c4.537,3.785,9.583,7.263,15.097,10.329c1.197-3.043,2.287-6.104,3.267-9.179c4.087,2.004,8.427,3.761,12.996,5.226c0.545-3.348,0.986-6.696,1.322-10.037c4.913-0.481,9.857-1.34,14.787-2.599"/>'
+            '</g>'
+            '<!-- 눈을 더 크고 선명하게 (r=5, r=1.5) -->'
+            '<g id="eyes" style="transition: transform 0.1s ease-out;">'
+            '<g class="eyeL"><circle cx="85.5" cy="78.5" r="5" fill="#3a5e77"/><circle cx="84" cy="76" r="1.5" fill="#fff"/></g>'
+            '<g class="eyeR"><circle cx="114.5" cy="78.5" r="5" fill="#3a5e77"/><circle cx="113" cy="76" r="1.5" fill="#fff"/></g>'
+            '</g>'
+            '<g class="mouth">'
+            '<path class="mouthBG" fill="#617E92" d="M100.2,101c-0.4,0-1.4,0-1.8,0c-2.7-0.3-5.3-1.1-8-2.5c-0.7-0.3-0.9-1.2-0.6-1.8 c0.2-0.5,0.7-0.7,1.2-0.7c0.2,0,0.5,0.1,0.6,0.2c3,1.5,5.8,2.3,8.6,2.3s5.7-0.7,8.6-2.3c0.2-0.1,0.4-0.2,0.6-0.2 c0.5,0,1,0.3,1.2,0.7c0.4,0.7,0.1,1.5-0.6,1.9c-2.6,1.4-5.3,2.2-7.9,2.5C101.7,101,100.5,101,100.2,101z" />'
+            '<path class="mouthOutline" fill="none" stroke="#3A5E77" stroke-width="2.5" stroke-linejoin="round" d="M100.2,101c-0.4,0-1.4,0-1.8,0c-2.7-0.3-5.3-1.1-8-2.5c-0.7-0.3-0.9-1.2-0.6-1.8 c0.2-0.5,0.7-0.7,1.2-0.7c0.2,0,0.5,0.1,0.6,0.2c3,1.5,5.8,2.3,8.6,2.3s5.7-0.7,8.6-2.3c0.2-0.1,0.4-0.2,0.6-0.2 c0.5,0,1,0.3,1.2,0.7c0.4,0.7,0.1,1.5-0.6,1.9c-2.6,1.4-5.3,2.2-7.9,2.5C101.7,101,100.5,101,100.2,101z" />'
+            '</g>'
+            '<path class="nose" d="M97.7 79.9h4.7c1.9 0 3 2.2 1.9 3.7l-2.3 3.3c-.9 1.3-2.9 1.3-3.8 0l-2.3-3.3c-1.3-1.6-.2-3.7 1.8-3.7z" fill="#3a5e77" />'
+            '<g class="arms" clip-path="url(#armMask)">'
+            '<g class="armL">'
+            '<polygon fill="#DDF1FA" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" points="121.3,98.4 111,59.7 149.8,49.3 169.8,85.4" />'
+            '<path fill="#DDF1FA" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M134.4,53.5l19.3-5.2c2.7-0.7,5.4,0.9,6.1,3.5v0c0.7,2.7-0.9,5.4-3.5,6.1l-10.3,2.8" />'
+            '<path fill="#DDF1FA" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M150.9,59.4l26-7c2.7-0.7,5.4,0.9,6.1,3.5v0c0.7,2.7-0.9,5.4-3.5,6.1l-21.3,5.7" />'
+            '<g class="twoFingers">'
+            '<path fill="#DDF1FA" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M158.3,67.8l23.1-6.2c2.7-0.7,5.4,0.9,6.1,3.5v0c0.7,2.7-0.9,5.4-3.5,6.1l-23.1,6.2" />'
+            '<path fill="#A9DDF3" d="M180.1,65l2.2-0.6c1.1-0.3,2.2,0.3,2.4,1.4v0c0.3,1.1-0.3,2.2-1.4,2.4l-2.2,0.6L180.1,65z" />'
+            '<path fill="#DDF1FA" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M160.8,77.5l19.4-5.2c2.7-0.7,5.4,0.9,6.1,3.5v0c0.7,2.7-0.9,5.4-3.5,6.1l-18.3,4.9" />'
+            '<path fill="#A9DDF3" d="M178.8,75.7l2.2-0.6c1.1-0.3,2.2,0.3,2.4,1.4v0c0.3,1.1-0.3,2.2-1.4,2.4l-2.2,0.6L178.8,75.7z" />'
+            '</g>'
+            '<path fill="#A9DDF3" d="M175.5,55.9l2.2-0.6c1.1-0.3,2.2,0.3,2.4,1.4v0c0.3,1.1-0.3,2.2-1.4,2.4l-2.2,0.6L175.5,55.9z" />'
+            '<path fill="#A9DDF3" d="M152.1,50.4l2.2-0.6c1.1-0.3,2.2,0.3,2.4,1.4v0c0.3,1.1-0.3,2.2-1.4,2.4l-2.2,0.6L152.1,50.4z" />'
+            '<path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M123.5,97.8 c-41.4,14.9-84.1,30.7-108.2,35.5L1.2,81c33.5-9.9,71.9-16.5,111.9-21.8" />'
+            '<path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M108.5,60.4 c7.7-5.3,14.3-8.4,22.8-13.2c-2.4,5.3-4.7,10.3-6.7,15.1c4.3,0.3,8.4,0.7,12.3,1.3c-4.2,5-8.1,9.6-11.5,13.9 c3.1,1.1,6,2.4,8.7,3.8c-1.4,2.9-2.7,5.8-3.9,8.5c2.5,3.5,4.6,7.2,6.3,11c-4.9-0.8-9-0.7-16.2-2.7" />'
+            '<path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M94.5,103.8 c-0.6,4-3.8,8.9-9.4,14.7c-2.6-1.8-5-3.7-7.2-5.7c-2.5,4.1-6.6,8.8-12.2,14c-1.9-2.2-3.4-4.5-4.5-6.9c-4.4,3.3-9.5,6.9-15.4,10.8 c-0.2-3.4,0.1-7.1,1.1-10.9" />'
+            '<path fill="#FFFFFF" stroke="#3A5E77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M97.5,63.9 c-1.7-2.4-5.9-4.1-12.4-5.2c-0.9,2.2-1.8,4.3-2.5,6.5c-3.8-1.8-9.4-3.1-17-3.8c0.5,2.3,1.2,4.5,1.9,6.8c-5-0.6-11.2-0.9-18.4-1 c2,2.9,0.9,3.5,3.9,6.2" />'
+            '</g>'
+            '<g class="armR">'
+            '<path fill="#ddf1fa" stroke="#3a5e77" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2.5" d="M265.4 97.3l10.4-38.6-38.9-10.5-20 36.1z" />'
+            '<path fill="#ddf1fa" stroke="#3a5e77" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" stroke-width="2.5" d="M252.4 52.4L233 47.2c-2.7-.7-5.4.9-6.1 3.5-.7 2.7.9 5.4 3.5 6.1l10.3 2.8M226 76.4l-19.4-5.2c-2.7-.7-5.4.9-6.1 3.5-.7 2.7.9 5.4 3.5 6.1l18.3 4.9M228.4 66.7l-23.1-6.2c-2.7-.7-5.4.9-6.1 3.5-.7 2.7.9 5.4 3.5 6.1l23.1 6.2M235.8 58.3l-26-7c-2.7-.7-5.4.9-6.1 3.5-.7 2.7.9 5.4 3.5 6.1l21.3 5.7" />'
+            '<path fill="#a9ddf3" d="M207.9 74.7l-2.2-.6c-1.1-.3-2.2.3-2.4 1.4-.3 1.1.3 2.2 1.4 2.4l2.2.6 1-3.8zM206.7 64l-2.2-.6c-1.1-.3-2.2.3-2.4 1.4-.3 1.1.3 2.2 1.4 2.4l2.2.6 1-3.8zM211.2 54.8l-2.2-.6c-1.1-.3-2.2.3-2.4 1.4-.3 1.1.3 2.2 1.4 2.4l2.2.6 1-3.8zM234.6 49.4l-2.2-.6c-1.1-.3-2.2.3-2.4 1.4-.3 1.1.3 2.2 1.4 2.4l2.2.6 1-3.8z" />'
+            '<path fill="#fff" stroke="#3a5e77" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M263.3 96.7c41.4 14.9 84.1 30.7 108.2 35.5l14-52.3C352 70 313.6 63.5 273.6 58.1" />'
+            '<path fill="#fff" stroke="#3a5e77" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M278.2 59.3l-18.6-10 2.5 11.9-10.7 6.5 9.9 8.7-13.9 6.4 9.1 5.9-13.2 9.2 23.1-.9M284.5 100.1c-.4 4 1.8 8.9 6.7 14.8 3.5-1.8 6.7-3.6 9.7-5.5 1.8 4.2 5.1 8.9 10.1 14.1 2.7-2.1 5.1-4.4 7.1-6.8 4.1 3.4 9 7 14.7 11 1.2-3.4 1.8-7 1.7-10.9M314 66.7s5.4-5.7 12.6-7.4c1.7 2.9 3.3 5.7 4.9 8.6 3.8-2.5 9.8-4.4 18.2-5.7.1 3.1.1 6.1 0 9.2 5.5-1 12.5-1.6 20.8-1.9-1.4 3.9-2.5 8.4-2.5 8.4" />'
+            '</g>'
+            '</g>'
+            '</svg>'
+            '<h2 class="logo-title">QUANT DESK</h2>'
+            '<p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        login_username = st.text_input("USERNAME", key="login_id")
+        login_pw = st.text_input("PASSWORD", type="password")
+
+        submitted = st.form_submit_button("ENTER SYSTEM", type="primary", use_container_width=True)
+
+        if submitted:
+            if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
+                st.error("🚨 영문과 숫자만 입력해 주세요.")
+            elif login_username.strip() == "" or login_pw.strip() == "":
+                st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
             else:
-                st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
-                st.markdown("## 0 원")
-                st.caption("보유 중인 종목이 없습니다.")
+                # 🌟 [UI 업데이트] 화면 정중앙 전체 블러를 위해 CSS 강제 우선순위(!important)를 부여하여 렌더링
+                loading_overlay.markdown("""
+                <style>
+                /* 블러 배경막과 로딩 애니메이션을 하나의 컨테이너로 묶어서 뷰포트 최상단으로 강제 배치 */
+                .custom-overlay {
+                    position: fixed !important;
+                    top: 0px !important; 
+                    left: 0px !important;
+                    right: 0px !important;
+                    bottom: 0px !important;
+                    width: 100vw !important; 
+                    height: 100vh !important;
+                    background: rgba(3, 7, 18, 0.75) !important;
+                    backdrop-filter: blur(12px) !important;
+                    -webkit-backdrop-filter: blur(12px) !important;
+                    z-index: 9999999 !important; /* Streamlit의 어떤 요소보다도 무조건 위에 배치 */
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: center !important;
+                    justify-content: center !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    pointer-events: all !important; /* 배경 클릭 원천 차단 */
+                }
+                /* 트렌디한 네온 민트 로딩링 */
+                .auth-spinner {
+                    width: 70px !important; height: 70px !important;
+                    border: 5px solid rgba(32, 201, 151, 0.1) !important;
+                    border-top-color: #20C997 !important;
+                    border-radius: 50% !important;
+                    animation: auth-spin 1s linear infinite !important;
+                    margin-bottom: 25px !important;
+                    box-shadow: 0 0 20px rgba(32, 201, 151, 0.25) !important;
+                }
+                @keyframes auth-spin { 
+                    0% { transform: rotate(0deg); } 
+                    100% { transform: rotate(360deg); } 
+                }
+                .auth-title {
+                    color: #FFFFFF !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 5px !important; margin: 0 0 10px 0 !important;
+                    text-shadow: 0 0 15px rgba(255,255,255,0.3) !important;
+                }
+                .auth-desc {
+                    color: #20C997 !important; font-size: 14px !important; font-weight: 600 !important; letter-spacing: 1.5px !important; margin: 0 !important;
+                }
+                </style>
+                <div class="custom-overlay">
+                    <div class="auth-spinner"></div>
+                    <div class="auth-title">AUTHENTICATING</div>
+                    <div class="auth-desc">보안 시스템 접속 및 인증 중입니다 🔐</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-        st.markdown(f"<h4 style='margin-bottom:10px; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
+                # 로딩 애니메이션이 영화처럼 노출되도록 충분한 시간(1.2초) 부여
+                time.sleep(1.2)
 
-        if holdings:
-            c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
-            c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-            c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
-            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-            c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
-            c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
+                try:
+                    user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
+                    if user_query.data:
+                        stored_hash = user_query.data[0].get("password_hash", "")
 
-            dialog_trigger = None
-            dialog_payload = None
+                        login_success = False
+                        # 1. 🛡️ bcrypt 해시 암호 검증
+                        if verify_password(login_pw, stored_hash):
+                            login_success = True
+                        # 2. 🪄 기존 사용자 평문 -> bcrypt 자동 마이그레이션
+                        elif login_pw == stored_hash:
+                            login_success = True
+                            # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
+                            new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                            supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username",
+                                                                                                         login_username).execute()
 
-            for h in holdings:
-                curr = h.get("current_price", 0)
-                entry = h.get("entry_price", curr)
-                stop = h.get("stop_price", entry * 0.85)
-                ret = h.get("return_rate", 0.0)
-                exit_risk = calculate_exit_risk(curr, entry, stop)
+                        if login_success:
+                            # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
+                            st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
 
-                c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
-                c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
-                c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
-                c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
+                            admin_keys = supabase.table("user_api_keys").select("*").eq("username", "admin").execute()
+                            keys_to_save = {}
+                            if admin_keys.data:
+                                # DB에서 가져올 때 복호화하여 세션에 할당 (안전한 평문)
+                                keys_to_save = {
+                                    "rtms_key": decrypt_text(admin_keys.data[0].get("rtms_key", "")),
+                                    "app_key": decrypt_text(admin_keys.data[0].get("app_key", "")),
+                                    "app_secret": decrypt_text(admin_keys.data[0].get("app_secret", "")),
+                                    "naver_id": decrypt_text(admin_keys.data[0].get("naver_id", "")),
+                                    "naver_secret": decrypt_text(admin_keys.data[0].get("naver_secret", ""))
+                                }
+                            else:
+                                supabase.table("user_api_keys").insert({
+                                    "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "",
+                                    "naver_id": "", "naver_secret": ""
+                                }).execute()
+                                keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "",
+                                                "naver_secret": ""}
 
-                pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
-                c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
+                            update_auth_state(True, login_username, keys_to_save)
+                            st.session_state.current_view = "main"
 
-                risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
-                c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
+                            # 🌟 로그인 성공 시 뉴스로 이동
+                            st.session_state.current_menu = "news"
 
-                with c6:
-                    bc1, bc2 = st.columns(2)
-                    with bc1:
-                        with st.popover("🚨 Risk", width="stretch"):
-                            render_exit_risk_content(h, supabase)
-                    with bc2:
-                        if st.button("📊 리포트", key=f"det_{h['symbol']}", width="stretch"):
-                            dialog_trigger = "detail"
-                            dialog_payload = h
+                            # 로그인 성공 시 굳이 overlay.empty()를 안 해도 st.rerun()되면서 알아서 오버레이가 날아감
+                            st.rerun()
+                        else:
+                            loading_overlay.empty()  # 실패 시 오버레이 화면 해제
+                            st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
+                    else:
+                        loading_overlay.empty()  # 실패 시 오버레이 화면 해제
+                        st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
+                except Exception as e:
+                    loading_overlay.empty()  # 실패 시 오버레이 화면 해제
+                    st.error(f"시스템 장애: {html.escape(str(e))}")
 
-            if dialog_trigger == "detail" and dialog_payload:
-                show_detail_dialog(dialog_payload, supabase)
+    # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어 + 까꿍 + 암호 보이기
+    components.html("""
+    <script>
+    function initYetiAnimation() {
+        const parent = window.parent.document;
+        // Streamlit에서 렌더링한 인풋 필드들 모두 가져오기
+        const textInputs = parent.querySelectorAll('.stTextInput input');
+        if (textInputs.length < 2) return;
 
-        else:
-            st.info("현재 보유 중인 종목이 없습니다.")
+        const idInput = textInputs[0];
+        const pwInput = textInputs[1];
 
-        st.divider()
-        st.markdown("#### KOSPI 대비 포트폴리오 성과 (Alpha - 실현수익 기준)")
-        st.caption("※ 보유 중인 종목의 미실현 수익은 제외되며, 매도(Exit)가 완료된 종목의 실현 수익률만 차트에 반영됩니다.")
+        const yetiWrap = parent.getElementById('yeti-wrap');
+        const eyes = parent.getElementById('eyes');
+        if (!yetiWrap || !eyes) return;
 
-        end_date = now_kst()
-        start_date = end_date - timedelta(days=30)
+        let pwLength = 0;
+        let peekTimeout;
 
-        df_kospi = load_kospi_cached(start_date.strftime('%Y-%m-%d'))
-        if not df_kospi.empty:
-            df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
-        else:
-            df_kospi = pd.DataFrame(columns=['Close', 'kospi_cum'])
+        // 1. 눈동자가 입력된 텍스트 길이에 따라 움직이는 공통 함수
+        const trackEyes = (e) => {
+            let len = Math.min(e.target.value.length, 25);
+            let moveX = (len / 25) * 12 - 6; // 눈동자가 더 시원하게 좌우로 이동 (-6px ~ +6px)
+            eyes.style.transform = `translateX(${moveX}px)`;
+        };
 
-        chart_df = pd.DataFrame(index=df_kospi.index)
-        chart_df['KOSPI'] = df_kospi['kospi_cum']
+        // 2. ID 필드 이벤트
+        idInput.addEventListener('input', trackEyes);
+        idInput.addEventListener('focus', trackEyes);
+        idInput.addEventListener('blur', () => {
+            eyes.style.transform = `translateX(0px)`;
+        });
 
-        sell_trades = [t for t in trades if t.get('type') == 'SELL']
-        if sell_trades:
-            t_df = pd.DataFrame(sell_trades)
-            t_df['date'] = pd.to_datetime(t_df['trade_date']).dt.tz_localize(None)
+        // 🎯 ID 입력창에서 Enter 입력 시: 비밀번호가 비었으면 제출 차단하고 포커스 이동
+        idInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (pwInput && pwInput.value.trim() === '') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    pwInput.focus();
+                }
+            }
+        }, true);
 
-            daily_ret = t_df.groupby('date')['return_rate'].mean()
-            df_hist = pd.DataFrame({'sold_return': daily_ret})
+        // 3. Password 필드 상태 및 텍스트/패스워드 노출 판단 함수
+        const handlePwState = () => {
+            if (parent.activeElement === pwInput) {
+                // 타입이 'password'이면 눈을 가린다
+                if (pwInput.type === 'password') {
+                    yetiWrap.classList.add('yeti-hide');
+                    eyes.style.transform = `translateX(0px)`; // 눈동자는 중앙으로
+                } 
+                // 타입이 'text'(비밀번호 노출버튼 눌림)이면 손을 치우고 글자를 쳐다본다
+                else {
+                    yetiWrap.classList.remove('yeti-hide');
+                    yetiWrap.classList.remove('yeti-peek');
+                    trackEyes({target: pwInput}); // 글자 길이에 맞춰 눈동자 이동
+                }
+            }
+        };
 
-            chart_df = chart_df.join(df_hist['sold_return'], how='left')
-            chart_df['sold_return'] = chart_df['sold_return'].fillna(0)
-            chart_df['Portfolio'] = chart_df['sold_return'].cumsum()
+        // 패스워드 필드 포커스/아웃
+        pwInput.addEventListener('focus', () => {
+            pwLength = pwInput.value.length;
+            handlePwState();
+        });
+        pwInput.addEventListener('blur', () => {
+            yetiWrap.classList.remove('yeti-hide');
+            yetiWrap.classList.remove('yeti-peek'); // 까꿍 상태도 해제
+            eyes.style.transform = `translateX(0px)`;
+        });
 
-            cum_ret = chart_df['Portfolio'].iloc[-1]
-            day_ret = chart_df['sold_return'].iloc[-1]
-        else:
-            chart_df['Portfolio'] = 0.0
-            cum_ret = 0.0
-            day_ret = 0.0
+        // 💡 비밀번호 타이핑 중 '까꿍(Peeking)' 로직 및 눈동자 트래킹 통합
+        pwInput.addEventListener('input', (e) => {
+            // 눈 모양 아이콘이 활성화되어 텍스트가 노출되는 상태면 눈동자를 굴림
+            if (pwInput.type === 'text') {
+                trackEyes(e);
+            } 
+            // 가려진 상태일 때는 지울 때 까꿍 애니메이션 재생
+            else {
+                const currentLength = e.target.value.length;
+                if (currentLength < pwLength) {
+                    // 글자를 지우는 중 -> 손가락을 벌려 까꿍!
+                    yetiWrap.classList.add('yeti-peek');
+                    clearTimeout(peekTimeout);
+                    // 1.2초 뒤에 포커스가 유지중이고 여전히 암호모드면 다시 가리기
+                    peekTimeout = setTimeout(() => {
+                        if (parent.activeElement === pwInput && pwInput.type === 'password') {
+                            yetiWrap.classList.remove('yeti-peek');
+                        }
+                    }, 1200);
+                } else {
+                    // 글자를 입력하는 중 -> 손가락 닫고 철저히 가리기!
+                    yetiWrap.classList.remove('yeti-peek');
+                }
+                pwLength = currentLength;
+            }
+        });
 
-        k_cum_ret = chart_df['KOSPI'].iloc[-1] if not chart_df['KOSPI'].empty else 0.0
-        k_day_ret = df_kospi['Close'].pct_change().iloc[-1] * 100 if not df_kospi.empty else 0.0
-        alpha = cum_ret - k_cum_ret
+        // 4. 우측 눈 모양 아이콘(비밀번호 노출 버튼) 클릭 감지
+        // Streamlit의 눈 아이콘은 input 컨테이너 안에 존재하므로 부모 컨테이너에 클릭 이벤트를 위임
+        const pwContainer = pwInput.closest('[data-baseweb="input"]');
+        if (pwContainer) {
+            pwContainer.addEventListener('click', () => {
+                // Streamlit이 클릭 이벤트를 받아 type='text'로 전환하는 짧은 시간을 기다렸다가 상태 판단
+                setTimeout(() => {
+                    handlePwState();
+                }, 50);
+            });
+        }
+    }
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Portfolio 실현 누적", f"{cum_ret:+.2f}%", f"Day {day_ret:+.2f}%")
-        col2.metric("KOSPI 누적", f"{k_cum_ret:+.2f}%", f"Day {k_day_ret:+.2f}%")
-        col3.metric("Alpha (초과수익)", f"{alpha:+.2f}%")
+    // 컴포넌트 렌더링 딜레이를 고려하여 두 번 초기화 시도
+    setTimeout(initYetiAnimation, 300);
+    setTimeout(initYetiAnimation, 1000);
+    </script>
+    """, height=0, width=0)
 
-        if not chart_df.empty:
-            chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
-            chart_df['Alpha_Color'] = chart_df['Alpha'].apply(lambda x: '#00B464' if x >= 0 else '#F04452')
-            fig = go.Figure()
-            custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Portfolio'], mode='lines+markers', name='Portfolio', line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)', customdata=custom_data, hovertemplate="<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br><span style='color:#3182F6;'>●</span> Portfolio &nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br><span style='color:#8B95A1;'>●</span> KOSPI &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{customdata[0]:.2f}%</b><br>─────────────────<br><span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b><extra></extra>"))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
-            fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
-            if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
+    st.stop()
 
-    # ────────────────────────────────────────────────────────
-    # 탭 2: Watchlist & Confirmed
-    # ────────────────────────────────────────────────────────
-    with tab_watch:
-        st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
+# --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
 
-        def render_watchlist_grid(items, title, color_code):
-            st.markdown(f"#### {title}")
+st.markdown("""
+<style>
+    /* 메인 화면 슬림 사이드바 CSS */
+    section[data-testid="stSidebar"] {
+        width: 80px !important;
+        min-width: 80px !important;
+        max-width: 80px !important;
+        /* 다크모드/라이트모드 자동 대응을 위해 하드코딩된 색상 제거 후 변수 사용 */
+        background-color: var(--secondary-background-color) !important;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding: 2rem 0.5rem !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button {
+        font-size: 22px !important;
+        height: 50px !important;
+        padding: 0 !important;
+        border-radius: 12px !important;
+    }
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-            c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-            c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
-            c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-            c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
-            c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
 
-            for idx, w in enumerate(items):
-                curr = w.get('current_price', 0)
+# 🚪 로그아웃 Confirm을 위한 모달 다이얼로그 (트렌디한 방식)
+@st.dialog("🚪 시스템 로그아웃")
+def logout_confirm_dialog():
+    st.markdown("정말로 로그아웃 하시겠습니까?")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("로그아웃", use_container_width=True, type="primary"):
+            # 🌟 [추가] 로그아웃 시 토큰 파기
+            if "auth_token" in st.query_params:
+                del st.query_params["auth_token"]
+            update_auth_state(False, None)
+            st.session_state.current_view = "main"
+            st.rerun()
+    with c2:
+        if st.button("취소", use_container_width=True):
+            # 💡 [버그 수정] 취소를 누르면 팝업이 닫혀야 하므로 st.rerun()을 호출하는 것이 정상입니다.
+            # 대신 포트폴리오가 다시 조회되지 않도록 stock_quant.py에서 캐시 검증을 합니다.
+            st.rerun()
 
-                c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-                c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
-                c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
-                c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
-                c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
-                c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
-                with c6:
-                    if st.button("📊 리포트", key=f"w_det_{w['symbol']}", width="stretch"):
-                        st.session_state['w_dialog_payload'] = w
 
-        if filtered_confirmed:
-            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
-            st.divider()
+with st.sidebar:
+    st.write("")
 
-        if filtered_watchlist:
-            render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4")
-            if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
-        else:
-            if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
+    # 🌟 [신규 추가] 마켓 뉴스 데스크
+    is_news = st.session_state.current_menu == "news" and st.session_state.current_view == "main"
+    if st.button("📰", help="마켓 뉴스 데스크", use_container_width=True, type="primary" if is_news else "secondary"):
+        st.session_state.current_menu = "news"
+        st.session_state.current_view = "main"
+        st.rerun()
 
-        if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
-            payload = st.session_state['w_dialog_payload']
-            st.session_state['w_dialog_payload'] = None
-            show_detail_dialog(payload, supabase)
+    st.write("")
 
-    # ────────────────────────────────────────────────────────
-    # 탭 3: 매도 히스토리
-    # ────────────────────────────────────────────────────────
-    with tab_hist:
-        st.markdown("#### 📉 자동 매도 (Exit) 완료 히스토리 & 성과 지표")
+    is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
+    if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
+        st.session_state.current_menu = "quant"
+        st.session_state.current_view = "main"
+        st.rerun()
 
-        sell_trades = [t for t in trades[::-1] if t.get('type') == 'SELL']
-        if sell_trades:
-            wins = [t for t in sell_trades if t.get('return_rate', 0) > 0]
-            losses = [t for t in sell_trades if t.get('return_rate', 0) <= 0]
-            
-            win_rate = (len(wins) / len(sell_trades)) * 100
-            
-            avg_win_pct = sum([t.get('return_rate', 0) for t in wins]) / len(wins) if wins else 0.0
-            avg_loss_pct = sum([t.get('return_rate', 0) for t in losses]) / len(losses) if losses else 0.0
-            
-            rr_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else (99.99 if avg_win_pct > 0 else 0)
+    st.write("")
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("총 매도 횟수", f"{len(sell_trades)}회", f"승 {len(wins)} / 패 {len(losses)}")
-            m2.metric("🎯 승률 (타율)", f"{win_rate:.1f}%")
-            m3.metric("⚖️ 손익비 (RR Ratio)", f"{rr_ratio:.2f}", f"평균수익 {avg_win_pct:+.2f}% / 평균손실 {avg_loss_pct:+.2f}%")
-            
-            total_profit_amt = 0
-            
-            for t in sell_trades:
-                trade_p = t.get('trade_price', 0)
-                ret_pct = t.get('return_rate', 0.0)
-                entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
-                t['entry_price'] = entry
-                
-                profit = trade_p - entry 
-                t['profit_amount'] = profit
-                total_profit_amt += profit
+    is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
+    if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
+        st.session_state.current_menu = "real_estate"
+        st.session_state.current_view = "main"
+        st.rerun()
 
-            m4.metric("💰 주당 누적 실현손익금", f"{total_profit_amt:,.0f}원")
-            
-            st.divider()
-            
-            t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
-            t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
+    if st.session_state.username == "admin":
+        st.write("")
+        is_api_view = st.session_state.current_view == "api_settings"
+        if st.button("⚙️", help="시스템 공통 API 설정", use_container_width=True,
+                     type="primary" if is_api_view else "secondary"):
+            st.session_state.current_view = "api_settings"
+            st.rerun()
 
-            styled_t = t_df.style.map(
-                lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
-            ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
-            st.dataframe(styled_t, hide_index=True, width="stretch")
-        else:
-            st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
+    st.markdown("<div style='height: 40vh;'></div>", unsafe_allow_html=True)
 
-    # ────────────────────────────────────────────────────────
-    # 탭 4: Stock Search (주식 조회)
-    # 🌟 [성능/버그 수정] @st.fragment로 감싸서, 이 탭 안의 셀렉트박스가 rerun을
-    # 일으켜도 Portfolio/Watchlist/History 등 다른 탭의 무거운 코드(특히 KOSPI 데이터
-    # 재조회 등 캐시 없는 외부 API 호출)가 매번 같이 다시 실행되지 않게 합니다.
-    # 이게 바로 "탭이 잠깐 어긋나 보이던" 현상의 근본 원인이었습니다.
-    # ────────────────────────────────────────────────────────
-    @st.fragment
-    def render_stock_search_tab():
-        st.markdown("### 🔍 Stock Search & Report")
-        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
+    # 클릭 시 다이얼로그 함수 호출로 Confirm 창 띄우기
+    safe_username = html.escape(st.session_state.username) if st.session_state.username else "Unknown"
+    if st.button("🔓", help=f"현재 접속자: {safe_username}님\n(클릭 시 로그아웃)", use_container_width=True):
+        logout_confirm_dialog()
 
-        with st.spinner("KRX 종목 마스터 로드 중..."):
-            krx_df = load_krx_list_from_db(supabase)
+# --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
 
-        if krx_df.empty:
-            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
-            options = [""]
-        else:
-            options = [""] + krx_df["SearchStr"].tolist()
+if st.session_state.current_view == "api_settings" and st.session_state.username == "admin":
+    st.title("⚙️ 시스템 공통 API 크레덴셜 관리")
+    st.markdown("전체 시스템이 공통으로 사용하는 마스터 API 키를 설정합니다. (**Admin 전용**)")
 
-        col_search, _ = st.columns([2, 1])
-        with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
+    # st.text_input의 기본값에 암호화되지 않은 세션키를 그대로 넘겨 수정 가능하게 합니다.
+    rtms = st.text_input("1. 국토교통부 실거래 API Key (Decoding)", value=st.session_state.api_keys["rtms_key"],
+                         type="password")
+    a_key = st.text_input("2. 한국투자증권 오픈 API App Key (시세/수급용)", value=st.session_state.api_keys["app_key"])
+    a_sec = st.text_input("3. 한국투자증권 오픈 API App Secret (시세/수급용)", value=st.session_state.api_keys["app_secret"],
+                          type="password")
+    n_id = st.text_input("4. 네이버 오픈 API Client ID (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_id"])
+    n_sec = st.text_input("5. 네이버 오픈 API Client Secret (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_secret"],
+                          type="password")
 
-        if selected_stock_str:
-            search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-            stock_name = selected_stock_str.split(" (")[0]
+    if st.button("마스터 크레덴셜 업데이트", type="primary"):
+        try:
+            # 🛡️ DB 저장 시에는 강력한 대칭키 암호화(Fernet) 처리
+            supabase.table("user_api_keys").upsert({
+                "username": "admin",
+                "rtms_key": encrypt_text(rtms),
+                "app_key": encrypt_text(a_key),
+                "app_secret": encrypt_text(a_sec),
+                "naver_id": encrypt_text(n_id),
+                "naver_secret": encrypt_text(n_sec)
+            }).execute()
 
-            all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
+            # 세션 메모리에는 원래 평문(Plain text)을 그대로 보관하여 앱 내부에서 정상 작동하게 함
+            updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id,
+                            "naver_secret": n_sec}
+            st.session_state.api_keys = updated_keys
 
-            if search_query in all_cached_stocks:
-                with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
-                    sel = all_cached_stocks[search_query]
+            st.success("✅ 마스터 5대 보안 자산 데이터가 암호화되어 무결점 반영되었습니다.")
+        except Exception as e:
+            st.error(f"저장 실패: {html.escape(str(e))}")
 
-                    if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-                    if search_query not in st.session_state.price_cache:
-                        df_price = load_price_from_db(supabase, search_query)
-                        if df_price.empty:
-                            df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-                        st.session_state.price_cache[search_query] = df_price
+    # 🌟 [신규 추가] 뉴스 배치 수동 제어 UI
+    st.markdown("---")
+    st.markdown("### 🔄 뉴스 수동 제어 센터")
+    st.markdown("스케줄러 작동을 대기하지 않고, 구글 드라이브로부터 최신 분석 보고서를 즉시 수집합니다.")
+    if st.button("뉴스 수동 수합 배치 즉시 실행", type="secondary", use_container_width=True):
+        with st.spinner("구글 드라이브 연결 및 뉴스 데이터를 수합하고 있습니다. 잠시만 기다려 주세요..."):
+            try:
+                sync_news_to_supabase.run_sync()
+                st.success("✅ 뉴스 동기화 배치가 성공적으로 수동 즉시 처리되었습니다!")
+                time.sleep(1.5)
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ 수동 동기화 중 에러 발생: {html.escape(str(e))}")
 
-                    df_price = st.session_state.price_cache[search_query]
-
-                    if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-                        if df_price is not None and len(df_price) >= 21:
-                            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-                    st.divider()
-                    st.success("✅ 캐시된 퀀트 분석 데이터를 로드했습니다. (API 호출 0)")
-                    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=None)
-            else:
-                with st.spinner(f"'{selected_stock_str}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
-                    df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
-
-                if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트 데이터를 찾을 수 정를 수 없습니다.")
-                else:
-                    st.divider()
-                    st.success("✅ 실시간 퀀트 분석 데이터를 로드했습니다.")
-                    sel = {
-                        'symbol': search_query, 'name': stock_name,
-                        'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
-                        'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
-                    }
-                    if live_fund: sel.update(live_fund)
-                    render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
-
-    with tab_search:
-        render_stock_search_tab()
-                    
-    # ────────────────────────────────────────────────────────
-    # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
-    # ────────────────────────────────────────────────────────
-    with tab_docs:
-        st.markdown("## 🧠 Chase Momentum Algorithm Whitepaper")
-        st.caption("초보자부터 전문가까지 모두가 쉽게 이해할 수 있는 정통 퀀트 추격매수 & 방어 전략 안내서입니다.")
-        st.divider()
-
-        st.markdown("### 🚀 매수 진입 6대 관문 (Entry Gates)")
-        st.markdown("""
-        **A. 성장성 (Growth Composite)**
-        > **"돈을 더 잘 벌고 있는가?"**
-        * 회사의 기초 체력을 봅니다. 단순히 흑자가 아니라, 매출, 영업이익, 순이익이 작년 동기 대비 얼마나 성장했는지 종합적으로 점수를 매깁니다. 기초가 부실한 회사는 처음부터 걸러냅니다.
-
-        **B. 방어력 (Dynamic MDD)**
-        > **"최근에 심하게 다친 적 없이 튼튼하게 버티고 있는가?"**
-        * 아무리 좋은 회사라도 롤러코스터처럼 고점 대비 심하게 폭락하는 종목은 피합니다. 주식마다 가지고 있는 변동성(ATR)을 계산해, 이 종목이 버틸 수 있는 최대 하락 폭을 넘어서 추락했다면 제외합니다.
-
-        **C. 유동성 (Liquidity)**
-        > **"시장에서 사람들이 많이 찾는 진짜 인기 주식인가?"**
-        * 내가 사고 싶을 때 사고, 팔고 싶을 때 팔 수 있어야 합니다. 최근 20일 동안 하루 평균 거래 대금이 50억 원을 넘는, 시장의 돈이 몰리는 핫한 종목들 사이에서만 싸웁니다.
-
-        **D. 추세 (Trend Alignment)**
-        > **"오르막길을 안정적으로 걷고 있는가?"**
-        * 주가가 미끄럼틀을 타고 내려가고 있는(역배열) 종목은 사지 않습니다. 현재 가격이 단기(20일) 평균 가격보다 위에 있고, 단기 평균 가격이 장기(60일) 평균 가격보다 위에 있는 '정배열' 상태의 상승 기류를 탄 종목만 고릅니다.
-
-        **E. 가격 돌파 (Price Breakout)**
-        > **"신기록을 세우며 천장을 뚫었는가?"**
-        * 최근 3개월(60일) 동안 가장 비쌌던 '최고 기록'의 90% 이상까지 다시 치고 올라온 종목을 잡습니다. 위에 있는 매물대(벽)를 뚫고 언제든 날아갈 폭발적인 에너지를 모은 선수만 뽑는 과정입니다.
-
-        **F. 수급 (Volume Surge)**
-        > **"관중들이 우르르 몰려오며 환호하고 있는가?"**
-        * 단순히 가격만 슬금슬금 오르는 게 아니라, 평소(60일 평균)보다 거래량이 1.5배 이상 '빵!' 터지는 순간이어야 합니다. 시장의 거대한 자금이 쏠리면서 모멘텀이 터졌다는 강력한 증거입니다.
-        """)
-        
-        st.divider()
-        
-        st.markdown("### 🚨 생존 매도 3대 원칙 (Exit Signals)")
-        st.markdown("""
-        **1. Trailing Stop (ATR 기반 동적 손절)**
-        > **"다치기 전에 치고 빠지는 최상위 안전장치"**
-        * 단순히 "-5% 떨어지면 판다"처럼 바보같이 고정된 비율을 쓰지 않습니다. 주식의 성격(변동성)을 파악해, 위아래로 심하게 흔들리는 종목은 넉넉하게, 얌전한 종목은 타이트하게 손절선을 잡습니다. 특히 주가가 오르면 손절선도 같이 따라 올라가서(Trailing) 이익을 철통같이 방어합니다.
-
-        **2. Trend Breakdown (추세 다중붕괴)**
-        > **"상승 엔진이 꺼졌음을 감지"**
-        * 오르막길을 가던 주가가 단기 이평선(10일, 20일) 아래로 뚫고 내려가고, 그 평균선들의 기울기마저 꺾여버리면(미끄럼틀 형성) 미련 없이 팔고 나옵니다. "아, 이제 상승하는 힘이 다 빠졌구나"라고 시스템이 냉정하게 판단합니다.
-
-        **3. Target Take-Profit (목표 달성)**
-        > **"승리를 챙기는 기분 좋은 축하 파티"**
-        * 수익률이 +40%에 도달하면 욕심을 멈추고 안전하게 팔아 지갑에 챙겨 넣습니다. 주식 시장에서 가장 어려운 '익절'을 기계적으로 수행하여 계좌를 우상향 시킵니다.
-        """)
+else:
+    # 🌟 라우팅에 마켓 뉴스 화면 추가
+    if st.session_state.current_menu == "news":
+        market_news.run_news_page(supabase)
+    elif st.session_state.current_menu == "quant":
+        stock_quant.run_stock_quant_page(supabase, st.session_state.username)
+    elif st.session_state.current_menu == "real_estate":
+        real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
