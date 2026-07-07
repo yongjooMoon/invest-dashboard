@@ -420,13 +420,10 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     else:
         st.info("가격 데이터가 로드되지 않았습니다.")
 
-
-# 💡 [핵심 버그 픽스] 캐시 조회 및 실시간 평가(API 조회/DB 저장)를 이 팝업 안에서 안전하게 수행합니다!
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner(f"'{sel.get('name', '종목')}' 실시간 데이터를 불러오고 분석 중입니다..."):
         
-        # 1. 스크리닝 항목(팩터스코어 등)이 없는 경우 (검색창을 통해 신규 진입 시)
         if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
             c_list, w_list, _ = load_screening_result(supabase)
             found = False
@@ -436,7 +433,6 @@ def show_detail_dialog(sel, supabase):
                     found = True
                     break
             
-            # 캐시에조차 없는 완전히 새로운 종목인 경우 실시간 분석 실행
             if not found:
                 df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
                 if df_price is None or df_price.empty:
@@ -458,7 +454,6 @@ def show_detail_dialog(sel, supabase):
 
         original_score = sel.get('factor_score', 0)
 
-        # 2. 가격 차트 데이터 로드 (캐시 우선 확인)
         if "price_cache" not in st.session_state: 
             st.session_state.price_cache = {}
         if sel['symbol'] not in st.session_state.price_cache:
@@ -473,9 +468,7 @@ def show_detail_dialog(sel, supabase):
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    # 3. 데이터 준비가 완벽히 끝나면 예쁘게 리포트를 그려줍니다.
     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
-
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -834,31 +827,29 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         else:
             options = [""] + krx_df["SearchStr"].tolist()
 
-        col_search, _ = st.columns([2, 1])
-        with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
-
-        # 💡 [질문자님의 완벽한 아이디어 적용!] 
-        # 콤보박스 변경 시, 화면이 망가지지 않게 탭(Stock Search)을 깨끗하게 한 번 "다시 호출(rerun)" 한 뒤에 팝업을 띄웁니다.
-        if selected_stock_str:
-            if st.session_state.get("last_searched_stock") != selected_stock_str:
-                st.session_state["last_searched_stock"] = selected_stock_str
-
-                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-                stock_name = selected_stock_str.split(" (")[0]
+        # 💡 [질문자님의 천재적인 아이디어 100% 반영!] 
+        # 콤보박스 변경 시 즉시 가로채는 콜백 함수입니다.
+        def on_search_change():
+            val = st.session_state.get("search_combo", "")
+            if val:
+                search_query = val.split("(")[-1].replace(")", "").strip()
+                stock_name = val.split(" (")[0]
                 
-                # 검색된 종목 정보를 상태에 저장
+                # 팝업에 띄울 정보만 캡쳐해서 저장
                 st.session_state['search_dialog_payload'] = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
                 
-                # 팝업을 호출하기 직전에 화면을 새로고침하여 탭 렌더링 붕괴를 원천 차단!
-                st.rerun()
-        else:
-            st.session_state["last_searched_stock"] = None
+                # 🌟 [핵심] 사용자가 값을 선택하는 순간, 콤보박스를 다시 비워버림!
+                st.session_state["search_combo"] = options[0] 
 
-        # 화면이 새로고침된 직후, 안전하고 깨끗한 탭 위에서 팝업창(Dialog)을 띄웁니다.
+        col_search, _ = st.columns([2, 1])
+        with col_search:
+            # 값이 바뀌면 즉시 on_search_change 함수를 실행하여 화면을 깔끔하게 재시작(Rerun)합니다.
+            st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options, key="search_combo", on_change=on_search_change)
+
+        # 화면이 재시작되어 탭이 완벽하게 유지된 상태에서 팝업창만 띄웁니다!
         if st.session_state.get('search_dialog_payload'):
             payload = st.session_state['search_dialog_payload']
-            st.session_state['search_dialog_payload'] = None # 무한 루프 방지를 위해 바로 비움
+            st.session_state['search_dialog_payload'] = None
             show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
