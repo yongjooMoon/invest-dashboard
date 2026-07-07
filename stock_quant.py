@@ -49,11 +49,6 @@ def load_krx_list_from_db(_supabase):
         pass
     return pd.DataFrame(columns=["Symbol", "Name", "SearchStr"])
 
-@st.cache_data(ttl=1800)
-def load_kospi_cached(start_date_str):
-    """KOSPI 지수 데이터는 30분 캐시. 매 rerun마다 재조회되지 않도록 함."""
-    return fdr.DataReader('KS11', start_date_str)
-
 def calculate_exit_risk(curr, entry, stop):
     if curr <= 0 or entry <= 0 or stop <= 0: return 0
     buffer = entry - stop if entry > stop else curr * 0.15
@@ -300,7 +295,7 @@ def render_single_gauge(score):
         gauge = {'axis': {'range': [None, 100], 'visible': False}, 'bar': {'color': "#00B464", 'thickness': 0.8}, 'bgcolor': "rgba(255,255,255,0.05)", 'shape': "angular"}
     ))
     fig.update_layout(height=220, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=None, gates=None):
     curr = sel.get('current_price', 0)
@@ -420,50 +415,41 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     else:
         st.info("가격 데이터가 로드되지 않았습니다.")
 
-# 🌟 [핵심 변경] Stock Search에서도 인라인 렌더링 대신 이 팝업을 그대로 재사용할 수 있도록,
-# 이미 조회해 둔 데이터(df_price/fund/factor_score/gates)를 넘기면 재조회 없이 바로 그리고,
-# 넘기지 않으면(Holdings/Watchlist의 "리포트" 버튼처럼) 기존 방식대로 DB에서 조회합니다.
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
-def show_detail_dialog(sel, supabase, df_price=None, fund=None, factor_score=None, gates=None):
-    precomputed = (df_price is not None) and (fund is not None) and (factor_score is not None)
+def show_detail_dialog(sel, supabase):
+    with st.spinner("캐시된 데이터를 불러오는 중..."):
+        
+        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
+            c_list, w_list, _ = load_screening_result(supabase)
+            found = False
+            for item in c_list + w_list:
+                if item['symbol'] == sel['symbol']:
+                    sel.update(item)
+                    found = True
+                    break
+            
+            if not found:
+                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
+                if fund_db:
+                    sel.update(fund_db)
 
-    if not precomputed:
-        with st.spinner("캐시된 데이터를 불러오는 중..."):
+        original_score = sel.get('factor_score', 0)
 
-            if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
-                c_list, w_list, _ = load_screening_result(supabase)
-                found = False
-                for item in c_list + w_list:
-                    if item['symbol'] == sel['symbol']:
-                        sel.update(item)
-                        found = True
-                        break
+        if "price_cache" not in st.session_state: 
+            st.session_state.price_cache = {}
+        if sel['symbol'] not in st.session_state.price_cache:
+            df_price = load_price_from_db(supabase, sel['symbol'])
+            if df_price.empty:
+                df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+            st.session_state.price_cache[sel['symbol']] = df_price
+            
+        df_price = st.session_state.price_cache[sel['symbol']]
 
-                if not found:
-                    fund_db = load_fundamental_from_db(supabase, sel['symbol'])
-                    if fund_db:
-                        sel.update(fund_db)
+        if 'ret_1m' not in sel or sel['ret_1m'] == 0:
+            if df_price is not None and len(df_price) >= 21:
+                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-            factor_score = sel.get('factor_score', 0)
-
-            if "price_cache" not in st.session_state:
-                st.session_state.price_cache = {}
-            if sel['symbol'] not in st.session_state.price_cache:
-                df_price = load_price_from_db(supabase, sel['symbol'])
-                if df_price.empty:
-                    df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-                st.session_state.price_cache[sel['symbol']] = df_price
-
-            df_price = st.session_state.price_cache[sel['symbol']]
-
-            if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-                if df_price is not None and len(df_price) >= 21:
-                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-        fund = sel
-        gates = None  # render_detailed_report_content가 sel의 filter_details로부터 다시 유도
-
-    render_detailed_report_content(sel, df_price=df_price, fund=fund, factor_score=factor_score, gates=gates)
+    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -609,7 +595,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         "매도 히스토리 (History)",
         "🔍 Stock Search",
         "📖 Algo Whitepaper"
-    ], key="quant_main_tabs")
+    ])
 
     # ────────────────────────────────────────────────────────
     # 탭 1: 포트폴리오
@@ -668,7 +654,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     with c6:
                         bc1, bc2 = st.columns(2)
                         with bc1:
-                            with st.popover("🚨 Risk", width="stretch"):
+                            with st.popover("🚨 Risk", use_container_width=True):
                                 render_exit_risk_content(h, supabase)
                         with bc2:
                             if st.button("📊 리포트", key=f"det_{h['symbol']}", width="stretch"):
@@ -688,7 +674,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         end_date = now_kst()
         start_date = end_date - timedelta(days=30)
 
-        df_kospi = load_kospi_cached(start_date.strftime('%Y-%m-%d'))
+        df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
         if not df_kospi.empty:
             df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
         else:
@@ -734,7 +720,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
             fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
             if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
     # 탭 2: Watchlist & Confirmed
@@ -802,15 +788,12 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             styled_t = t_df.style.map(
                 lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
             ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
-            st.dataframe(styled_t, hide_index=True, width="stretch")
+            st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
     # 탭 4: Stock Search (주식 조회)
-    # 🌟 [핵심 변경] 콤보박스 아래에 인라인으로 그리지 않고, Holdings/Watchlist의
-    # "리포트" 버튼과 동일하게 팝업(dialog)으로 띄웁니다. 이미 조회한 데이터를 그대로
-    # 넘겨서 재조회 없이 즉시 표시합니다.
     # ────────────────────────────────────────────────────────
     with tab_search:
         st.markdown("### 🔍 Stock Search & Report")
@@ -833,44 +816,38 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
             stock_name = selected_stock_str.split(" (")[0]
 
-            all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            
+            # 💡 [핵심 패치] 버튼을 클릭해야만 팝업 다이얼로그가 뜨게 하여 탭 레이아웃 붕괴를 완벽 방지!
+            if st.button(f"📊 '{html.escape(stock_name)}' 실시간 분석 리포트 열기", type="primary", width="stretch"):
+                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
-            if search_query in all_cached_stocks:
-                with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
+                if search_query in all_cached_stocks:
                     sel = all_cached_stocks[search_query]
-                    
-                    if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-                    if search_query not in st.session_state.price_cache:
-                        df_price = load_price_from_db(supabase, search_query)
-                        if df_price.empty:
-                            df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-                        st.session_state.price_cache[search_query] = df_price
-                        
-                    df_price = st.session_state.price_cache[search_query]
-                    
-                    if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-                        if df_price is not None and len(df_price) >= 21:
-                            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-                st.success("✅ 캐시된 퀀트 분석 데이터를 로드했습니다. (API 호출 0)")
-                show_detail_dialog(sel, supabase, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=None)
-            else:
-                with st.spinner(f"'{selected_stock_str}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
-                    df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
-
-                if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    show_detail_dialog(sel, supabase)
                 else:
-                    sel = {
-                        'symbol': search_query, 'name': stock_name,
-                        'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
-                        'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
-                    }
-                    if live_fund: sel.update(live_fund)
+                    # 차트와 데이터를 먼저 백그라운드에서 조용히 불러옵니다.
+                    with st.spinner(f"'{stock_name}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
+                        df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
 
-                    st.success("✅ 실시간 퀀트 분석 데이터를 로드했습니다.")
-                    show_detail_dialog(sel, supabase, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
-                    
+                    if df_price is None or df_price.empty:
+                        st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    else:
+                        sel = {
+                            'symbol': search_query, 'name': stock_name,
+                            'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
+                            'ret_1m': 0.0,
+                            'region': 'KR',
+                            'factor_score': live_score,
+                            'filter_details': live_gates
+                        }
+                        if len(df_price) >= 21:
+                            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+                        if live_fund: sel.update(live_fund)
+                        
+                        # 스피너가 끝난 뒤, 안전하게 다이얼로그(팝업)를 호출합니다.
+                        show_detail_dialog(sel, supabase)
+
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
