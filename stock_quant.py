@@ -160,6 +160,7 @@ def live_evaluate_stock(supabase, symbol, name=""):
     
         if fund:
             try:
+                # 🔥 여기서 신규 조회된 데이터가 DB에 완벽하게 INSERT(저장) 됩니다!
                 save_fundamental_to_db(supabase, symbol, name, fund)
             except Exception as e:
                 print(f"DB 저장 오류 (DB 스키마에 신규 컬럼 추가 필요 시 무시됨): {e}")
@@ -420,31 +421,35 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     else:
         st.info("가격 데이터가 로드되지 않았습니다.")
 
-# 💡 [핵심 버그 픽스]
-# 탭 구조를 붕괴시키던 원흉인 st.spinner와 무거운 로직을 메인 쓰레드가 아닌 팝업(Dialog) 내부로 모두 이사시켰습니다!
-# 이렇게 하면 바깥 탭은 즉시 안정적으로 그려진 채 팝업창이 뜨며, 그 팝업 안에서 안전하게 빙글빙글 돌아갑니다.
+
+# 💡 [핵심 버그 픽스] 모든 '무거운 작업'과 '스피너'를 팝업창 내부로 완전히 격리했습니다!
+# 이제 메인 탭에서는 오직 show_detail_dialog 함수를 1번 호출하고 즉시 빠져나가므로 절대 탭이 붕괴하지 않습니다.
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
-def show_detail_dialog(sel, supabase):
-    with st.spinner(f"'{sel.get('name', '')}' 실시간 데이터를 분석 중입니다..."):
-        
-        # 1. 팩터 스코어나 필터 디테일이 없는 경우 (검색창을 통해 바로 들어왔을 때)
-        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
-            c_list, w_list, _ = load_screening_result(supabase)
-            found = False
-            for item in c_list + w_list:
-                if item['symbol'] == sel['symbol']:
-                    sel.update(item)
-                    found = True
-                    break
-            
-            # 캐시에 없으면 완전 실시간 API 분석
-            if not found:
+def show_detail_dialog(sel_payload, supabase, all_cached_stocks=None):
+    if all_cached_stocks is None:
+        all_cached_stocks = {}
+
+    # 팝업이 뜬 상태에서, 팝업 내부에서 스피너가 예쁘게 돌기 시작합니다.
+    with st.spinner(f"'{sel_payload.get('name', '')}' 실시간 데이터를 불러오고 분석 중입니다..."):
+        sel = dict(sel_payload) # 원본 오염 방지
+
+        # 1. 팩터 스코어 계산 및 라이브 데이터 로드
+        if 'factor_score' not in sel or 'filter_details' not in sel:
+            if sel['symbol'] in all_cached_stocks:
+                sel.update(all_cached_stocks[sel['symbol']])
+            else:
+                # 💡 캐시에 없는 신규 종목일 경우 이 안에서 API를 호출하고 DB(stock_fundamental)에 저장까지 완료합니다!
                 df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
                 if df_price is None or df_price.empty:
                     st.error("해당 종목의 차트/데이터를 찾을 수 없습니다.")
                     return
                 
                 sel['current_price'] = df_price['Close'].iloc[-1]
+                if len(df_price) >= 21:
+                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+                else:
+                    sel['ret_1m'] = 0.0
+                    
                 if live_fund: sel.update(live_fund)
                 sel['factor_score'] = live_score
                 sel['filter_details'] = live_gates
@@ -454,7 +459,7 @@ def show_detail_dialog(sel, supabase):
 
         original_score = sel.get('factor_score', 0)
 
-        # 2. 가격 데이터 로드 (있으면 재활용, 없으면 fdr 조회)
+        # 2. 가격 데이터 로드 (캐시 우선 확인)
         if "price_cache" not in st.session_state: 
             st.session_state.price_cache = {}
         if sel['symbol'] not in st.session_state.price_cache:
@@ -471,6 +476,7 @@ def show_detail_dialog(sel, supabase):
 
     # 3. 로딩이 끝나면 팝업창 내부에 예쁘게 리포트를 그립니다.
     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
+
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -502,6 +508,7 @@ def render_watchlist_grid(items, title, color_code, anchor_id):
             c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
             with c6:
                 if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
+                    # 💡 Watchlist 탭에서는 기존 방식대로 팝업 호출 시 인자만 맞춤
                     st.session_state['w_dialog_payload'] = w
 
 # ══════════════════════════════════════════
@@ -683,7 +690,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                                 dialog_payload = h
 
             if dialog_trigger == "detail" and dialog_payload:
-                show_detail_dialog(dialog_payload, supabase)
+                # 💡 캐싱된 전체 데이터를 안전하게 넘깁니다.
+                all_cached = {item['symbol']: item for item in holdings + confirmed + watchlist}
+                show_detail_dialog(dialog_payload, supabase, all_cached)
 
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
@@ -762,7 +771,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
             payload = st.session_state['w_dialog_payload']
             st.session_state['w_dialog_payload'] = None
-            show_detail_dialog(payload, supabase)
+            # 💡 캐싱된 전체 데이터를 안전하게 넘깁니다.
+            all_cached = {item['symbol']: item for item in holdings + confirmed + watchlist}
+            show_detail_dialog(payload, supabase, all_cached)
 
     # ────────────────────────────────────────────────────────
     # 탭 3: 매도 히스토리
@@ -820,9 +831,8 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
-        # 💡 [핵심 해결 포인트 1] 탭 안에 있던 st.spinner()를 제거했습니다! 
-        # (로딩은 아주 순식간에 지나가므로 캐시된 데이터를 스피너 없이 불러와도 충분합니다)
-        krx_df = load_krx_list_from_db(supabase)
+        with st.spinner("KRX 종목 마스터 로드 중..."):
+            krx_df = load_krx_list_from_db(supabase)
 
         if krx_df.empty:
             st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
@@ -832,26 +842,28 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
         col_search, _ = st.columns([2, 1])
         with col_search:
-            # 💡 [핵심 해결 포인트 2] key 값을 지정하여 Session State를 활용해 값을 비울 수 있게 셋업합니다.
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options, key="search_combo")
+            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
 
         if selected_stock_str:
-            search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-            stock_name = selected_stock_str.split(" (")[0]
+            # 💡 [핵심 해결 포인트] 무한 팝업을 막고, 탭(Tab) 내부에서 복잡한 로딩이나 렌더링을 일절 금지합니다.
+            # 콤보박스 값이 변경되었을 때, 뼈대 정보만 담아서 곧바로 팝업창(Dialog)을 호출합니다!
+            if st.session_state.get("last_searched_stock") != selected_stock_str:
+                st.session_state["last_searched_stock"] = selected_stock_str
 
-            # 💡 [핵심 해결 포인트 3] 검색 이벤트가 발생하면 무거운 계산을 절대 탭 안에서 하지 않습니다!
-            # 대신 나중에 팝업에서 쓸수 있도록 Payload(보따리)에 담고, 콤보박스를 초기화한 뒤 화면을 깔끔하게 재시작(rerun)합니다.
-            st.session_state['search_dialog_payload'] = {
-                'symbol': search_query, 'name': stock_name, 'region': 'KR'
-            }
-            st.session_state["search_combo"] = "" # 콤보박스 초기화
-            st.rerun()
-
-        # 💡 화면이 재시작되고 나서, 콤보박스가 아닌 이 바깥 영역에서 팝업(Dialog)을 호출합니다!
-        if st.session_state.get('search_dialog_payload'):
-            payload = st.session_state['search_dialog_payload']
-            st.session_state['search_dialog_payload'] = None # 무한루프 방지를 위해 바로 삭제
-            show_detail_dialog(payload, supabase)
+                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+                stock_name = selected_stock_str.split(" (")[0]
+                
+                # 팝업에 넘길 캐시 데이터 뭉치
+                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
+                
+                # 팝업에 넘길 최소한의 데이터 페이로드
+                sel_payload = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
+                
+                # 💡 탭 하단에 직접 그려서 붕괴되는 현상을 막기 위해, 즉시 팝업(Dialog)을 호출합니다!
+                show_detail_dialog(sel_payload, supabase, all_cached_stocks)
+        else:
+            # 선택을 지웠을 때 다음 검색을 위해 상태 초기화
+            st.session_state["last_searched_stock"] = None
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
