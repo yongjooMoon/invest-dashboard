@@ -299,7 +299,7 @@ def render_single_gauge(score):
         gauge = {'axis': {'range': [None, 100], 'visible': False}, 'bar': {'color': "#00B464", 'thickness': 0.8}, 'bgcolor': "rgba(255,255,255,0.05)", 'shape': "angular"}
     ))
     fig.update_layout(height=220, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
 
 def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=None, gates=None):
     curr = sel.get('current_price', 0)
@@ -457,7 +457,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         # 타이틀 높이와 정확히 맞추고 잘림 현상 방지를 위해 여백을 26px로 확대
         st.markdown("<div style='margin-top: 26px;'></div>", unsafe_allow_html=True)
         # 딱딱한 🔄 아이콘을 트렌디하고 귀여운 ✨ 반짝이 마법 이모지로 변경!
-        if st.button("✨ Refresh", use_container_width=True):
+        if st.button("✨ Refresh", width="stretch"):
             loading_overlay = st.empty()
             # 💡 [핵심] CSS 애니메이션 타이밍(0.9s, 0.8s)과 Python의 대기시간(1.0초)을 완벽하게 맞물리게 조절했습니다.
             overlay_html = (
@@ -598,10 +598,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 with c6:
                     bc1, bc2 = st.columns(2)
                     with bc1:
-                        with st.popover("🚨 Risk", use_container_width=True):
+                        with st.popover("🚨 Risk", width="stretch"):
                             render_exit_risk_content(h, supabase)
                     with bc2:
-                        if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
+                        if st.button("📊 리포트", key=f"det_{h['symbol']}", width="stretch"):
                             dialog_trigger = "detail"
                             dialog_payload = h
 
@@ -664,7 +664,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
             fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
             if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
     # 탭 2: Watchlist & Confirmed
@@ -693,7 +693,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
                 c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
                 with c6:
-                    if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
+                    if st.button("📊 리포트", key=f"w_det_{w['symbol']}", width="stretch"):
                         st.session_state['w_dialog_payload'] = w
 
         if filtered_confirmed:
@@ -756,7 +756,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             styled_t = t_df.style.map(
                 lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
             ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
-            st.dataframe(styled_t, hide_index=True, use_container_width=True)
+            st.dataframe(styled_t, hide_index=True, width="stretch")
         else:
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
