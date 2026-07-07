@@ -4,7 +4,7 @@ from supabase import create_client, Client
 import re
 import html # 🛡️ XSS 방어용 파이썬 내장 라이브러리 추가
 import real_estate
-import stock_quant # 💡 [수정 완료] 경로 에러 해결: 같은 폴더에 있으므로 직접 import 합니다.
+import stock_quant
 
 # 🌟 신규 모듈 추가
 import market_news
@@ -449,7 +449,8 @@ if not st.session_state.logged_in:
         login_username = st.text_input("USERNAME", key="login_id")
         login_pw = st.text_input("PASSWORD", type="password")
 
-        submitted = st.form_submit_button("ENTER SYSTEM", type="primary", use_container_width=True)
+        # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+        submitted = st.form_submit_button("ENTER SYSTEM", type="primary", width="stretch")
 
         if submitted:
             if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
@@ -725,7 +726,8 @@ def logout_confirm_dialog():
     st.markdown("정말로 로그아웃 하시겠습니까?")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("로그아웃", use_container_width=True, type="primary"):
+        # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+        if st.button("로그아웃", width="stretch", type="primary"):
             # 🌟 [추가] 로그아웃 시 토큰 파기
             if "auth_token" in st.query_params:
                 del st.query_params["auth_token"]
@@ -733,7 +735,8 @@ def logout_confirm_dialog():
             st.session_state.current_view = "main"
             st.rerun()
     with c2:
-        if st.button("취소", use_container_width=True):
+        # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+        if st.button("취소", width="stretch"):
             # 💡 [버그 수정] 취소를 누르면 팝업이 닫혀야 하므로 st.rerun()을 호출하는 것이 정상입니다.
             # 대신 포트폴리오가 다시 조회되지 않도록 stock_quant.py에서 캐시 검증을 합니다.
             st.rerun()
@@ -744,7 +747,8 @@ with st.sidebar:
 
     # 🌟 [신규 추가] 마켓 뉴스 데스크
     is_news = st.session_state.current_menu == "news" and st.session_state.current_view == "main"
-    if st.button("📰", help="마켓 뉴스 데스크", use_container_width=True, type="primary" if is_news else "secondary"):
+    # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+    if st.button("📰", help="마켓 뉴스 데스크", width="stretch", type="primary" if is_news else "secondary"):
         st.session_state.current_menu = "news"
         st.session_state.current_view = "main"
         st.rerun()
@@ -752,7 +756,8 @@ with st.sidebar:
     st.write("")
 
     is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
-    if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
+    # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+    if st.button("📈", help="주식 포트폴리오 퀀트", width="stretch", type="primary" if is_quant else "secondary"):
         st.session_state.current_menu = "quant"
         st.session_state.current_view = "main"
         st.rerun()
@@ -760,7 +765,8 @@ with st.sidebar:
     st.write("")
 
     is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
-    if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
+    # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+    if st.button("🏢", help="부동산 실거래가 스캔", width="stretch", type="primary" if is_real_estate else "secondary"):
         st.session_state.current_menu = "real_estate"
         st.session_state.current_view = "main"
         st.rerun()
@@ -768,7 +774,8 @@ with st.sidebar:
     if st.session_state.username == "admin":
         st.write("")
         is_api_view = st.session_state.current_view == "api_settings"
-        if st.button("⚙️", help="시스템 공통 API 설정", use_container_width=True,
+        # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+        if st.button("⚙️", help="시스템 공통 API 설정", width="stretch",
                      type="primary" if is_api_view else "secondary"):
             st.session_state.current_view = "api_settings"
             st.rerun()
@@ -777,7 +784,8 @@ with st.sidebar:
 
     # 클릭 시 다이얼로그 함수 호출로 Confirm 창 띄우기
     safe_username = html.escape(st.session_state.username) if st.session_state.username else "Unknown"
-    if st.button("🔓", help=f"현재 접속자: {safe_username}님\n(클릭 시 로그아웃)", use_container_width=True):
+    # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+    if st.button("🔓", help=f"현재 접속자: {safe_username}님\n(클릭 시 로그아웃)", width="stretch"):
         logout_confirm_dialog()
 
 # --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
@@ -796,6 +804,7 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
     n_sec = st.text_input("5. 네이버 오픈 API Client Secret (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_secret"],
                           type="password")
 
+    # 💡 구형 문법은 없었으나 혹시 몰라 확인
     if st.button("마스터 크레덴셜 업데이트", type="primary"):
         try:
             # 🛡️ DB 저장 시에는 강력한 대칭키 암호화(Fernet) 처리
@@ -821,7 +830,8 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
     st.markdown("---")
     st.markdown("### 🔄 뉴스 수동 제어 센터")
     st.markdown("스케줄러 작동을 대기하지 않고, 구글 드라이브로부터 최신 분석 보고서를 즉시 수집합니다.")
-    if st.button("뉴스 수동 수합 배치 즉시 실행", type="secondary", use_container_width=True):
+    # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
+    if st.button("뉴스 수동 수합 배치 즉시 실행", type="secondary", width="stretch"):
         with st.spinner("구글 드라이브 연결 및 뉴스 데이터를 수합하고 있습니다. 잠시만 기다려 주세요..."):
             try:
                 sync_news_to_supabase.run_sync()
