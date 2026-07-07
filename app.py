@@ -9,6 +9,7 @@ import stock_quant
 # 🌟 신규 모듈 추가
 import market_news
 import sync_news_to_supabase
+import stock_search  # 🔍 종목 검색 단독 모듈 추가
 
 # 🛡️ 강력한 보안 암호화 라이브러리 추가
 import bcrypt
@@ -771,6 +772,15 @@ with st.sidebar:
         st.session_state.current_view = "main"
         st.rerun()
 
+    st.write("")
+
+    # 🌟 [신규] 사이드바 종목 검색 단독 메뉴 추가
+    is_search = st.session_state.current_menu == "search" and st.session_state.current_view == "main"
+    if st.button("🔍", help="개별 종목 검색 및 분석", width="stretch", type="primary" if is_search else "secondary"):
+        st.session_state.current_menu = "search"
+        st.session_state.current_view = "main"
+        st.rerun()
+
     if st.session_state.username == "admin":
         st.write("")
         is_api_view = st.session_state.current_view == "api_settings"
@@ -849,3 +859,5 @@ else:
         stock_quant.run_stock_quant_page(supabase, st.session_state.username)
     elif st.session_state.current_menu == "real_estate":
         real_estate.run_real_estate_page(st.session_state.api_keys["rtms_key"])
+    elif st.session_state.current_menu == "search":
+        stock_search.run_stock_search_page(supabase)  # 🔍 신규 검색 화면 라우팅
