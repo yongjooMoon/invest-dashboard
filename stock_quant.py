@@ -178,7 +178,6 @@ def live_evaluate_stock(supabase, symbol, name=""):
     f_break  = curr >= (metrics["high_60d"] * 0.90)
     f_vol    = metrics["vol_5d"] > (metrics["vol_60d"] * 1.5)
 
-    # 💡 [버그 수정] 팝업창에서 키값을 인식할 수 있도록 quant_core.py와 동일한 포맷의 딕셔너리로 반환합니다.
     filter_details = {
         "Growth Composite": {"pass": f_growth, "reason": f"Comp {metrics['growth_composite']:+.1f}%"},
         "Dynamic MDD": {"pass": f_mdd, "reason": f"MDD {metrics['mdd']:.1f}% (Limit: {metrics['dynamic_mdd_limit']:.1f}%)"},
@@ -361,7 +360,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
             </div>
             """, unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
     st.markdown("### 📊 Financials & Valuation")
     if fund is None: fund = sel
 
@@ -469,8 +468,8 @@ def render_watchlist_grid(items, title, color_code, anchor_id):
             c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
             c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
             with c6:
-                # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
-                if st.button("📊 리포트", key=f"w_det_{w['symbol']}", width="stretch"):
+                # 💡 레이아웃을 망가뜨리던 width 파라미터를 안정적인 use_container_width로 원복
+                if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
                     st.session_state['w_dialog_payload'] = w
 
 # ══════════════════════════════════════════
@@ -482,8 +481,8 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.title("📡 퀀트투자")
     with c3:
         st.markdown("<div style='margin-top: 26px;'></div>", unsafe_allow_html=True)
-        # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
-        if st.button("✨ Refresh", width="stretch"):
+        # 💡 레이아웃을 망가뜨리던 width 파라미터를 안정적인 use_container_width로 원복
+        if st.button("✨ Refresh", use_container_width=True):
             loading_overlay = st.empty()
             overlay_html = (
                 "<style>"
@@ -652,8 +651,8 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                             with st.popover("🚨 Risk"):
                                 render_exit_risk_content(h, supabase)
                         with bc2:
-                            # 💡 구형 문법을 최신 문법(width="stretch")으로 교체
-                            if st.button("📊 리포트", key=f"det_{h['symbol']}", width="stretch"):
+                            # 💡 레이아웃을 망가뜨리던 width 파라미터를 안정적인 use_container_width로 원복
+                            if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
                                 dialog_trigger = "detail"
                                 dialog_payload = h
 
@@ -716,7 +715,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
             fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
             if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            # 차트의 use_container_width는 여전히 유효하므로 유지합니다.
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
@@ -786,7 +784,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 lambda x: 'color: #F04452' if x > 0 else 'color: #3182F6', subset=['실현손익(%)', '손익금(원)']
             ).format({"진입가": "{:,.0f}", "매도가": "{:,.0f}", "실현손익(%)": "{:+.2f}%", "손익금(원)": "{:,.0f}"})
             
-            # DataFrame이나 차트의 use_container_width는 그대로 유지합니다. (경고문구는 Button 요소에만 해당)
             st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
@@ -815,10 +812,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
             stock_name = selected_stock_str.split(" (")[0]
             
-            st.markdown("<br>", unsafe_allow_html=True)
+            # 💡 탭 붕괴의 원인이었던 불완전한 <br> 태그를 안전한 div 상자로 교체했습니다.
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
             
-            # 💡 [핵심 패치] 탭 렌더링 붕괴 방지를 위해 즉시 렌더링하지 않고 팝업 다이얼로그 호출 버튼을 생성합니다!
-            if st.button(f"📊 '{stock_name}' 실시간 분석 리포트 열기", type="primary", width="stretch"):
+            # 💡 레이아웃을 망가뜨리던 width 파라미터를 안정적인 use_container_width로 원복
+            if st.button(f"📊 '{stock_name}' 실시간 분석 리포트 열기", type="primary", use_container_width=True):
                 all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
                 if search_query in all_cached_stocks:
