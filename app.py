@@ -3,8 +3,8 @@ import streamlit.components.v1 as components
 from supabase import create_client, Client
 import re
 import html
-import real_estate 
-from 주식 import stock_quant
+import real_estate
+import stock_quant
 
 # 🌟 신규 모듈 추가
 import market_news
