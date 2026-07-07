@@ -1,6 +1,5 @@
 import streamlit as st
 import re
-import html  # 🛡️ XSS 방어용 파이썬 내장 라이브러리 추가
 from datetime import datetime, timedelta
 
 # ==========================================
@@ -106,23 +105,16 @@ def news_detail_dialog():
     region_text = news.get('region', 'Global')
     reg_color, reg_bg = get_region_style(region_text)
     sector = news.get('sector_asset', 'News')
-
-    # 🛡️ XSS 방어: DB에서 가져온 텍스트를 화면에 그리기 전에 이스케이프 처리
-    safe_region = html.escape(region_text)
-    safe_sector = html.escape(sector)
-    safe_title = html.escape(news.get('title', ''))
-    safe_summary_raw = html.escape(news.get('summary', ''))
     
     st.markdown(f"""
     <div style="color: #94A3B8; font-size: 15px; margin-bottom: 20px; display:flex; gap: 12px; align-items:center;">
-        <span style="background-color: {reg_bg}; color: {reg_color}; padding: 4px 12px; border-radius: 6px; font-weight: 800;">{safe_region}</span>
-        <span>·</span><span style="font-weight: 700;">{safe_sector}</span><span>·</span><span>{time_str}</span>
+        <span style="background-color: {reg_bg}; color: {reg_color}; padding: 4px 12px; border-radius: 6px; font-weight: 800;">{region_text}</span>
+        <span>·</span><span style="font-weight: 700;">{sector}</span><span>·</span><span>{time_str}</span>
     </div>
-    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 30px; font-weight: 900; line-height: 1.4; font-size: 32px;">{safe_title}</h2>
+    <h2 style="color: #F8FAFC; margin-top: 0; margin-bottom: 30px; font-weight: 900; line-height: 1.4; font-size: 32px;">{news['title']}</h2>
     """, unsafe_allow_html=True)
     
-    # 이스케이프 처리된 요약 텍스트에만 안전하게 <br> 태그 처리
-    summary_text = re.sub(r'(\d\.)', r'<br><br>\1', safe_summary_raw)
+    summary_text = re.sub(r'(\d\.)', r'<br><br>\1', news['summary'])
     if summary_text.startswith('<br><br>'): summary_text = summary_text[8:]
         
     st.markdown(f"""
@@ -172,18 +164,13 @@ def render_news_row(news, key_prefix, news_list):
     region_text = news.get('region', 'Global')
     reg_color, reg_bg = get_region_style(region_text)
 
-    # 🛡️ XSS 방어: 리스트 항목 이스케이프 처리
-    safe_region = html.escape(region_text)
-    safe_sector = html.escape(news.get('sector_asset', ''))
-    safe_title = html.escape(news.get('title', ''))
-
     with st.container():
         st.markdown(f"""
         <div class="clickable-card news-row" style="padding: 16px 20px; margin-bottom: 8px;">
             <div class="news-row-left">
-                <span class="row-badge" style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px;">{safe_region}</span>
-                <span class="row-sector" style="color: #94A3B8; font-size: 14px; font-weight: 700;">· {safe_sector}</span>
-                <span class="row-title" style="font-size: 17px; font-weight: 700; color: #E2E8F0; margin-left: 5px;">{safe_title}</span>
+                <span class="row-badge" style="background-color: {reg_bg}; color: {reg_color}; font-weight: 800; font-size: 11px; padding: 4px 8px; border-radius: 4px;">{region_text}</span>
+                <span class="row-sector" style="color: #94A3B8; font-size: 14px; font-weight: 700;">· {news['sector_asset']}</span>
+                <span class="row-title" style="font-size: 17px; font-weight: 700; color: #E2E8F0; margin-left: 5px;">{news['title']}</span>
             </div>
             <div class="row-time" style="color: #64748B; font-size: 13px; font-weight: 600;">
                 {time_str}
@@ -285,8 +272,7 @@ def run_news_page(supabase):
         res = supabase.table("market_news").select("*").order("created_at", desc=True).limit(200).execute()
         news_list = res.data
     except Exception as e:
-        # 🛡️ XSS 방어: 에러 메시지도 이스케이프 처리
-        st.error(f"뉴스 데이터를 불러오는 중 오류가 발생했습니다: {html.escape(str(e))}")
+        st.error(f"뉴스 데이터를 불러오는 중 오류가 발생했습니다: {e}")
         return
         
     if not news_list:
@@ -342,25 +328,20 @@ def run_news_page(supabase):
             time_str = dt_kst.strftime("%H:%M")
             region_text = news.get('region', 'Global')
             reg_color, reg_bg = get_region_style(region_text)
-
-            # 🛡️ XSS 방어: 캐러셀 항목 이스케이프 처리
-            safe_region = html.escape(region_text)
-            safe_sector = html.escape(news.get('sector_asset', ''))
-            safe_title = html.escape(news.get('title', ''))
             
             with cols[idx]:
                 with st.container():
                     st.markdown(f"""
                     <div class="clickable-card carousel-card {dir_class}" style="height: 160px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{safe_region}</span>
+                            <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 800;">{region_text}</span>
                             <span style="color: #64748B; font-size: 12px; font-weight: 600;">{time_str}</span>
                         </div>
                         <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
-                            {safe_title}
+                            {news['title']}
                         </div>
                         <div>
-                            <span style="background-color: rgba(255,255,255,0.05); color: #94A3B8; font-size: 11px; padding: 4px 10px; border-radius: 12px; font-weight: 700;">#{safe_sector}</span>
+                            <span style="background-color: rgba(255,255,255,0.05); color: #94A3B8; font-size: 11px; padding: 4px 10px; border-radius: 12px; font-weight: 700;">#{news['sector_asset']}</span>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -390,13 +371,10 @@ def run_news_page(supabase):
             n for n in news_list
             if q in n['title'].lower() or q in n['summary'].lower()
         ]
-        
-        # 🛡️ XSS 방어: 검색어 이스케이프 처리
-        safe_query = html.escape(search_query)
-        st.caption(f"🔍 '{safe_query}' 검색결과 {len(matched)}건 · 전체 섹터 기준")
+        st.caption(f"🔍 '{search_query}' 검색결과 {len(matched)}건 · 전체 섹터 기준")
 
         if not matched:
-            st.warning(f"'{safe_query}' 검색어에 해당하는 뉴스가 없습니다.")
+            st.warning(f"'{search_query}' 검색어에 해당하는 뉴스가 없습니다.")
         else:
             for news in matched:
                 render_news_row(news, key_prefix="search", news_list=news_list)
@@ -454,23 +432,18 @@ def run_news_page(supabase):
                             region_text = news.get('region', 'Global')
                             reg_color, reg_bg = get_region_style(region_text)
 
-                            # 🛡️ XSS 방어
-                            safe_region = html.escape(region_text)
-                            safe_sector = html.escape(news.get('sector_asset', ''))
-                            safe_title = html.escape(news.get('title', ''))
-
                             with st.container():
                                 st.markdown(f"""
                                 <div class="clickable-card" style="padding: 18px 24px; margin-bottom: 12px;">
                                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                                         <div>
-                                            <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 800;">SAVE · {safe_region}</span>
-                                            <span style="color: #94A3B8; font-size: 13px; font-weight: 600; margin-left: 8px;">· {safe_sector}</span>
+                                            <span style="background-color: {reg_bg}; color: {reg_color}; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 800;">SAVE · {region_text}</span>
+                                            <span style="color: #94A3B8; font-size: 13px; font-weight: 600; margin-left: 8px;">· {news['sector_asset']}</span>
                                         </div>
                                         <span style="color: #64748B; font-size: 13px; font-weight: 600;">{time_str}</span>
                                     </div>
                                     <div style="font-size: 18px; font-weight: 800; color: #F8FAFC; line-height: 1.4;">
-                                        {safe_title}
+                                        {news['title']}
                                     </div>
                                 </div>
                                 """, unsafe_allow_html=True)
