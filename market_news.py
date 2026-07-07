@@ -151,12 +151,12 @@ def news_detail_dialog():
     with nav_col1:
         if idx > 0: 
             st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
-            st.button("⬅️", on_click=go_prev_news, use_container_width=True)
+            st.button("⬅️", on_click=go_prev_news, width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
     with nav_col2:
         if idx < len(news_list) - 1: 
             st.markdown("<div class='emoji-btn-container'>", unsafe_allow_html=True)
-            st.button("➡️", on_click=go_next_news, use_container_width=True)
+            st.button("➡️", on_click=go_next_news, width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -191,7 +191,7 @@ def render_news_row(news, key_prefix, news_list):
         </div>
         """, unsafe_allow_html=True)
 
-        if st.button(" ", key=f"{key_prefix}_{news['id']}", use_container_width=True):
+        if st.button(" ", key=f"{key_prefix}_{news['id']}", width="stretch"):
             st.session_state.show_detail_dialog = True
             st.session_state.dialog_news_list = news_list
             st.session_state.dialog_news_index = actual_idx
@@ -317,7 +317,7 @@ def run_news_page(supabase):
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
             st.button(
                 "◀", disabled=(st.session_state.carousel_idx <= 0),
-                use_container_width=True, on_click=carousel_prev,
+                width="stretch", on_click=carousel_prev,
             )
             st.markdown("</div>", unsafe_allow_html=True)
     with col_h3:
@@ -325,7 +325,7 @@ def run_news_page(supabase):
             st.markdown("<div class='slider-btn'>", unsafe_allow_html=True)
             st.button(
                 "▶", disabled=(st.session_state.carousel_idx >= max_idx),
-                use_container_width=True, on_click=carousel_next, args=(max_idx,),
+                width="stretch", on_click=carousel_next, args=(max_idx,),
             )
             st.markdown("</div>", unsafe_allow_html=True)
             
@@ -365,7 +365,7 @@ def run_news_page(supabase):
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    if st.button(" ", key=f"main_top_{news['id']}", use_container_width=True):
+                    if st.button(" ", key=f"main_top_{news['id']}", width="stretch"):
                         st.session_state.show_detail_dialog = True
                         st.session_state.dialog_news_list = news_list
                         st.session_state.dialog_news_index = actual_idx
@@ -424,7 +424,7 @@ def run_news_page(supabase):
                     c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
                     with c1:
                         st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
-                        st.button("◀ 이전일", on_click=prev_history_day, key="btn_prev_day", use_container_width=True)
+                        st.button("◀ 이전일", on_click=prev_history_day, key="btn_prev_day", width="stretch")
                         st.markdown("</div>", unsafe_allow_html=True)
                     with c2:
                         selected_date = st.date_input("날짜 선택", value=st.session_state.history_date, label_visibility="collapsed")
@@ -433,7 +433,7 @@ def run_news_page(supabase):
                             st.rerun()
                     with c3:
                         st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
-                        st.button("다음일 ▶", on_click=next_history_day, key="btn_next_day", use_container_width=True)
+                        st.button("다음일 ▶", on_click=next_history_day, key="btn_next_day", width="stretch")
                         st.markdown("</div>", unsafe_allow_html=True)
 
                     st.markdown("<hr style='margin: 15px 0 20px 0; border-color: rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
@@ -476,7 +476,7 @@ def run_news_page(supabase):
                                 """, unsafe_allow_html=True)
 
                                 # 상세 보기 호출 (단일 팝업)
-                                if st.button(" ", key=f"hist_card_btn_{news['id']}", use_container_width=True):
+                                if st.button(" ", key=f"hist_card_btn_{news['id']}", width="stretch"):
                                     st.session_state.show_detail_dialog = True
                                     st.session_state.dialog_news_list = news_list # 네비게이션을 위해 전체 리스트 전달
                                     st.session_state.dialog_news_index = actual_idx
