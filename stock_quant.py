@@ -529,14 +529,16 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     </style>
     """, unsafe_allow_html=True)
 
-    # 예쁘고 친숙한 기본 탭 구성으로 컴백!
+    # 🌟 [버그 수정] key를 명시적으로 고정하지 않으면, 라벨 안의 숫자(개수)가 리런마다 바뀔 때
+    # Streamlit이 이 탭 위젯을 "다른 위젯"으로 오인해 선택된 탭과 실제 표시되는 내용이 어긋나는
+    # 문제가 생길 수 있습니다. key를 고정해서 라벨이 바뀌어도 같은 탭 상태를 유지하게 합니다.
     tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
         "매도 히스토리 (History)",
         "🔍 Stock Search",
         "📖 Algo Whitepaper"
-    ])
+    ], key="quant_main_tabs")
 
     # ────────────────────────────────────────────────────────
     # 탭 1: 포트폴리오
