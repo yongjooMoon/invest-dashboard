@@ -421,27 +421,30 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
         st.info("가격 데이터가 로드되지 않았습니다.")
 
 # 💡 [핵심 버그 픽스]
-# 탭 구조를 무너뜨렸던 스피너(st.spinner)와 무거운 로직을 이 팝업 안으로 격리했습니다.
-# 콤보박스를 누르면 바깥 탭은 즉시 안정적으로 그려진 채 팝업창이 뜨며, 그 안에서 빙글빙글 돌아갑니다!
+# 탭 구조를 붕괴시키던 원흉인 st.spinner와 무거운 로직을 메인 쓰레드가 아닌 팝업(Dialog) 내부로 모두 이사시켰습니다!
+# 이렇게 하면 바깥 탭은 즉시 안정적으로 그려진 채 팝업창이 뜨며, 그 팝업 안에서 안전하게 빙글빙글 돌아갑니다.
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
-    # 1. 만약 실시간 조회가 필요하다면 여기서 수행합니다.
-    if 'factor_score' not in sel or 'filter_details' not in sel:
-        with st.spinner(f"'{sel.get('name', '종목')}' 실시간 데이터를 분석 중입니다..."):
+    with st.spinner(f"'{sel.get('name', '')}' 실시간 데이터를 분석 중입니다..."):
+        
+        # 1. 팩터 스코어나 필터 디테일이 없는 경우 (검색창을 통해 바로 들어왔을 때)
+        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
             c_list, w_list, _ = load_screening_result(supabase)
-            all_cached = {item['symbol']: item for item in c_list + w_list}
+            found = False
+            for item in c_list + w_list:
+                if item['symbol'] == sel['symbol']:
+                    sel.update(item)
+                    found = True
+                    break
             
-            if sel['symbol'] in all_cached:
-                sel.update(all_cached[sel['symbol']])
-            else:
+            # 캐시에 없으면 완전 실시간 API 분석
+            if not found:
                 df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
                 if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                    st.error("해당 종목의 차트/데이터를 찾을 수 없습니다.")
                     return
                 
                 sel['current_price'] = df_price['Close'].iloc[-1]
-                if len(df_price) >= 21:
-                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
                 if live_fund: sel.update(live_fund)
                 sel['factor_score'] = live_score
                 sel['filter_details'] = live_gates
@@ -449,24 +452,25 @@ def show_detail_dialog(sel, supabase):
                 if "price_cache" not in st.session_state: st.session_state.price_cache = {}
                 st.session_state.price_cache[sel['symbol']] = df_price
 
-    # 2. 캐시된 차트 데이터 로드
-    if "price_cache" not in st.session_state: 
-        st.session_state.price_cache = {}
-    if sel['symbol'] not in st.session_state.price_cache:
-        with st.spinner("캐시 차트를 가져오는 중..."):
+        original_score = sel.get('factor_score', 0)
+
+        # 2. 가격 데이터 로드 (있으면 재활용, 없으면 fdr 조회)
+        if "price_cache" not in st.session_state: 
+            st.session_state.price_cache = {}
+        if sel['symbol'] not in st.session_state.price_cache:
             df_price = load_price_from_db(supabase, sel['symbol'])
             if df_price.empty:
                 df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
             st.session_state.price_cache[sel['symbol']] = df_price
             
-    df_price = st.session_state.price_cache[sel['symbol']]
+        df_price = st.session_state.price_cache[sel['symbol']]
 
-    if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-        if df_price is not None and len(df_price) >= 21:
-            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+        if 'ret_1m' not in sel or sel['ret_1m'] == 0:
+            if df_price is not None and len(df_price) >= 21:
+                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    # 3. 팝업 안에 리포트를 예쁘게 그립니다.
-    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=sel.get('filter_details'))
+    # 3. 로딩이 끝나면 팝업창 내부에 예쁘게 리포트를 그립니다.
+    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -497,7 +501,7 @@ def render_watchlist_grid(items, title, color_code, anchor_id):
             c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
             c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
             with c6:
-                if st.button("📊 리포트", key=f"w_det_{w['symbol']}", width="stretch"):
+                if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
                     st.session_state['w_dialog_payload'] = w
 
 # ══════════════════════════════════════════
@@ -509,7 +513,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.title("📡 퀀트투자")
     with c3:
         st.markdown("<div style='margin-top: 26px;'></div>", unsafe_allow_html=True)
-        if st.button("✨ Refresh", width="stretch"):
+        if st.button("✨ Refresh", use_container_width=True):
             loading_overlay = st.empty()
             overlay_html = (
                 "<style>"
@@ -674,7 +678,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                             with st.popover("🚨 Risk", use_container_width=True):
                                 render_exit_risk_content(h, supabase)
                         with bc2:
-                            if st.button("📊 리포트", key=f"det_{h['symbol']}", width="stretch"):
+                            if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
                                 dialog_trigger = "detail"
                                 dialog_payload = h
 
@@ -737,7 +741,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
             fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
             if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
     # 탭 2: Watchlist & Confirmed
@@ -816,8 +820,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
-        with st.spinner("KRX 종목 마스터 로드 중..."):
-            krx_df = load_krx_list_from_db(supabase)
+        # 💡 [핵심 해결 포인트 1] 탭 안에 있던 st.spinner()를 제거했습니다! 
+        # (로딩은 아주 순식간에 지나가므로 캐시된 데이터를 스피너 없이 불러와도 충분합니다)
+        krx_df = load_krx_list_from_db(supabase)
 
         if krx_df.empty:
             st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
@@ -827,23 +832,26 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
         col_search, _ = st.columns([2, 1])
         with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
+            # 💡 [핵심 해결 포인트 2] key 값을 지정하여 Session State를 활용해 값을 비울 수 있게 셋업합니다.
+            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options, key="search_combo")
 
         if selected_stock_str:
-            # 💡 [핵심 해결 포인트] 탭 안에서 데이터를 불러오지 않고 곧바로 팝업 호출!
-            if st.session_state.get("last_searched_stock") != selected_stock_str:
-                st.session_state["last_searched_stock"] = selected_stock_str
+            search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+            stock_name = selected_stock_str.split(" (")[0]
 
-                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-                stock_name = selected_stock_str.split(" (")[0]
+            # 💡 [핵심 해결 포인트 3] 검색 이벤트가 발생하면 무거운 계산을 절대 탭 안에서 하지 않습니다!
+            # 대신 나중에 팝업에서 쓸수 있도록 Payload(보따리)에 담고, 콤보박스를 초기화한 뒤 화면을 깔끔하게 재시작(rerun)합니다.
+            st.session_state['search_dialog_payload'] = {
+                'symbol': search_query, 'name': stock_name, 'region': 'KR'
+            }
+            st.session_state["search_combo"] = "" # 콤보박스 초기화
+            st.rerun()
 
-                # 팝업이 스스로 분석을 돌릴 수 있도록 최소한의 정보만 건네서 바로 팝업(Dialog)을 호출합니다.
-                # 이러면 탭 렌더링이 즉시 종료되므로 절대 탭이 무너지지 않습니다!
-                sel_payload = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
-                show_detail_dialog(sel_payload, supabase)
-        else:
-            # 선택을 지웠을 때 다음 검색을 위해 상태 초기화
-            st.session_state["last_searched_stock"] = None
+        # 💡 화면이 재시작되고 나서, 콤보박스가 아닌 이 바깥 영역에서 팝업(Dialog)을 호출합니다!
+        if st.session_state.get('search_dialog_payload'):
+            payload = st.session_state['search_dialog_payload']
+            st.session_state['search_dialog_payload'] = None # 무한루프 방지를 위해 바로 삭제
+            show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
