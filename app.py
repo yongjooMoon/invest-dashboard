@@ -2,8 +2,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 from supabase import create_client, Client
 import re
+import html # 🛡️ XSS 방어용 파이썬 내장 라이브러리 추가
 import real_estate
-import stock_quant
+from 주식 import stock_quant
 
 # 🌟 신규 모듈 추가
 import market_news
@@ -441,21 +442,21 @@ if not st.session_state.logged_in:
             '</svg>'
             '<h2 class="logo-title">QUANT DESK</h2>'
             '<p class="logo-subtitle">SECURE INVESTMENT PLATFORM</p>'
-            '</div>', 
+            '</div>',
             unsafe_allow_html=True
         )
-        
+
         login_username = st.text_input("USERNAME", key="login_id")
         login_pw = st.text_input("PASSWORD", type="password")
-        
+
         submitted = st.form_submit_button("ENTER SYSTEM", type="primary", use_container_width=True)
-        
+
         if submitted:
             if re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', login_username):
                 st.error("🚨 영문과 숫자만 입력해 주세요.")
             elif login_username.strip() == "" or login_pw.strip() == "":
                 st.warning("아이디와 비밀번호를 모두 입력해 주세요.")
-            else:            
+            else:
                 # 🌟 [UI 업데이트] 화면 정중앙 전체 블러를 위해 CSS 강제 우선순위(!important)를 부여하여 렌더링
                 loading_overlay.markdown("""
                 <style>
@@ -508,15 +509,15 @@ if not st.session_state.logged_in:
                     <div class="auth-desc">보안 시스템 접속 및 인증 중입니다 🔐</div>
                 </div>
                 """, unsafe_allow_html=True)
-                
+
                 # 로딩 애니메이션이 영화처럼 노출되도록 충분한 시간(1.2초) 부여
-                time.sleep(1.2) 
+                time.sleep(1.2)
 
                 try:
                     user_query = supabase.table("custom_users").select("*").eq("username", login_username).execute()
                     if user_query.data:
                         stored_hash = user_query.data[0].get("password_hash", "")
-                        
+
                         login_success = False
                         # 1. 🛡️ bcrypt 해시 암호 검증
                         if verify_password(login_pw, stored_hash):
@@ -526,8 +527,9 @@ if not st.session_state.logged_in:
                             login_success = True
                             # 입력받은 평문 비밀번호를 즉시 해싱하여 DB 덮어쓰기
                             new_secure_hash = bcrypt.hashpw(login_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                            supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username", login_username).execute()
-                            
+                            supabase.table("custom_users").update({"password_hash": new_secure_hash}).eq("username",
+                                                                                                         login_username).execute()
+
                         if login_success:
                             # 🌟 [추가] 6시간 로그인 유지를 위한 URL 암호화 토큰 발급
                             st.query_params["auth_token"] = create_auth_token(login_username, hours=6)
@@ -545,27 +547,29 @@ if not st.session_state.logged_in:
                                 }
                             else:
                                 supabase.table("user_api_keys").insert({
-                                    "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""
+                                    "username": "admin", "rtms_key": "", "app_key": "", "app_secret": "",
+                                    "naver_id": "", "naver_secret": ""
                                 }).execute()
-                                keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "", "naver_secret": ""}
-                            
+                                keys_to_save = {"rtms_key": "", "app_key": "", "app_secret": "", "naver_id": "",
+                                                "naver_secret": ""}
+
                             update_auth_state(True, login_username, keys_to_save)
                             st.session_state.current_view = "main"
-                            
+
                             # 🌟 로그인 성공 시 뉴스로 이동
                             st.session_state.current_menu = "news"
-                            
+
                             # 로그인 성공 시 굳이 overlay.empty()를 안 해도 st.rerun()되면서 알아서 오버레이가 날아감
                             st.rerun()
                         else:
-                            loading_overlay.empty() # 실패 시 오버레이 화면 해제
+                            loading_overlay.empty()  # 실패 시 오버레이 화면 해제
                             st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                     else:
-                        loading_overlay.empty() # 실패 시 오버레이 화면 해제
+                        loading_overlay.empty()  # 실패 시 오버레이 화면 해제
                         st.error("❌ 등록되지 않은 계정이거나 비밀번호가 불일치합니다.")
                 except Exception as e:
-                    loading_overlay.empty() # 실패 시 오버레이 화면 해제
-                    st.error(f"시스템 장애: {str(e)}")
+                    loading_overlay.empty()  # 실패 시 오버레이 화면 해제
+                    st.error(f"시스템 장애: {html.escape(str(e))}")
 
     # 🔑 자바스크립트 주입: Streamlit 렌더링 후 이벤트 리스너를 결합시켜 설인 애니메이션 동작 + 엔터 키 제어 + 까꿍 + 암호 보이기
     components.html("""
@@ -575,14 +579,14 @@ if not st.session_state.logged_in:
         // Streamlit에서 렌더링한 인풋 필드들 모두 가져오기
         const textInputs = parent.querySelectorAll('.stTextInput input');
         if (textInputs.length < 2) return;
-        
+
         const idInput = textInputs[0];
         const pwInput = textInputs[1];
-        
+
         const yetiWrap = parent.getElementById('yeti-wrap');
         const eyes = parent.getElementById('eyes');
         if (!yetiWrap || !eyes) return;
-        
+
         let pwLength = 0;
         let peekTimeout;
 
@@ -638,7 +642,7 @@ if not st.session_state.logged_in:
             yetiWrap.classList.remove('yeti-peek'); // 까꿍 상태도 해제
             eyes.style.transform = `translateX(0px)`;
         });
-        
+
         // 💡 비밀번호 타이핑 중 '까꿍(Peeking)' 로직 및 눈동자 트래킹 통합
         pwInput.addEventListener('input', (e) => {
             // 눈 모양 아이콘이 활성화되어 텍스트가 노출되는 상태면 눈동자를 굴림
@@ -678,7 +682,7 @@ if not st.session_state.logged_in:
             });
         }
     }
-    
+
     // 컴포넌트 렌더링 딜레이를 고려하여 두 번 초기화 시도
     setTimeout(initYetiAnimation, 300);
     setTimeout(initYetiAnimation, 1000);
@@ -686,7 +690,6 @@ if not st.session_state.logged_in:
     """, height=0, width=0)
 
     st.stop()
-
 
 # --- [4. 로그인 성공 후 프레임워크 가동 (Slim Left Menu 구조)] ---
 
@@ -715,6 +718,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 # 🚪 로그아웃 Confirm을 위한 모달 다이얼로그 (트렌디한 방식)
 @st.dialog("🚪 시스템 로그아웃")
 def logout_confirm_dialog():
@@ -730,47 +734,50 @@ def logout_confirm_dialog():
             st.rerun()
     with c2:
         if st.button("취소", use_container_width=True):
-            # 💡 [버그 수정] 취소를 누르면 팝업이 닫혀야 하므로 st.rerun()을 호출하는 것이 정상입니다. 
+            # 💡 [버그 수정] 취소를 누르면 팝업이 닫혀야 하므로 st.rerun()을 호출하는 것이 정상입니다.
             # 대신 포트폴리오가 다시 조회되지 않도록 stock_quant.py에서 캐시 검증을 합니다.
             st.rerun()
 
+
 with st.sidebar:
-    st.write("") 
-    
+    st.write("")
+
     # 🌟 [신규 추가] 마켓 뉴스 데스크
     is_news = st.session_state.current_menu == "news" and st.session_state.current_view == "main"
     if st.button("📰", help="마켓 뉴스 데스크", use_container_width=True, type="primary" if is_news else "secondary"):
         st.session_state.current_menu = "news"
         st.session_state.current_view = "main"
         st.rerun()
-        
-    st.write("") 
-    
+
+    st.write("")
+
     is_quant = st.session_state.current_menu == "quant" and st.session_state.current_view == "main"
     if st.button("📈", help="주식 포트폴리오 퀀트", use_container_width=True, type="primary" if is_quant else "secondary"):
         st.session_state.current_menu = "quant"
         st.session_state.current_view = "main"
         st.rerun()
-        
-    st.write("") 
-    
+
+    st.write("")
+
     is_real_estate = st.session_state.current_menu == "real_estate" and st.session_state.current_view == "main"
     if st.button("🏢", help="부동산 실거래가 스캔", use_container_width=True, type="primary" if is_real_estate else "secondary"):
         st.session_state.current_menu = "real_estate"
         st.session_state.current_view = "main"
         st.rerun()
-        
+
     if st.session_state.username == "admin":
         st.write("")
         is_api_view = st.session_state.current_view == "api_settings"
-        if st.button("⚙️", help="시스템 공통 API 설정", use_container_width=True, type="primary" if is_api_view else "secondary"):
+        if st.button("⚙️", help="시스템 공통 API 설정", use_container_width=True,
+                     type="primary" if is_api_view else "secondary"):
             st.session_state.current_view = "api_settings"
             st.rerun()
-            
+
     st.markdown("<div style='height: 40vh;'></div>", unsafe_allow_html=True)
-    
+
     # 클릭 시 다이얼로그 함수 호출로 Confirm 창 띄우기
-    if st.button("🔓", help=f"현재 접속자: {st.session_state.username}님\n(클릭 시 로그아웃)", use_container_width=True):
+    safe_username = html.escape(st.session_state.username) if st.session_state.username else "Unknown"
+    if st.button("🔓", help=f"현재 접속자: {safe_username}님\n(클릭 시 로그아웃)", use_container_width=True):
         logout_confirm_dialog()
 
 # --- [5. 화면 라우팅 (API 설정 화면 vs 퀀트/부동산 메인 화면)] ---
@@ -778,14 +785,17 @@ with st.sidebar:
 if st.session_state.current_view == "api_settings" and st.session_state.username == "admin":
     st.title("⚙️ 시스템 공통 API 크레덴셜 관리")
     st.markdown("전체 시스템이 공통으로 사용하는 마스터 API 키를 설정합니다. (**Admin 전용**)")
-    
+
     # st.text_input의 기본값에 암호화되지 않은 세션키를 그대로 넘겨 수정 가능하게 합니다.
-    rtms = st.text_input("1. 국토교통부 실거래 API Key (Decoding)", value=st.session_state.api_keys["rtms_key"], type="password")
+    rtms = st.text_input("1. 국토교통부 실거래 API Key (Decoding)", value=st.session_state.api_keys["rtms_key"],
+                         type="password")
     a_key = st.text_input("2. 한국투자증권 오픈 API App Key (시세/수급용)", value=st.session_state.api_keys["app_key"])
-    a_sec = st.text_input("3. 한국투자증권 오픈 API App Secret (시세/수급용)", value=st.session_state.api_keys["app_secret"], type="password")
+    a_sec = st.text_input("3. 한국투자증권 오픈 API App Secret (시세/수급용)", value=st.session_state.api_keys["app_secret"],
+                          type="password")
     n_id = st.text_input("4. 네이버 오픈 API Client ID (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_id"])
-    n_sec = st.text_input("5. 네이버 오픈 API Client Secret (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_secret"], type="password")
-    
+    n_sec = st.text_input("5. 네이버 오픈 API Client Secret (뉴스 호재 분석용)", value=st.session_state.api_keys["naver_secret"],
+                          type="password")
+
     if st.button("마스터 크레덴셜 업데이트", type="primary"):
         try:
             # 🛡️ DB 저장 시에는 강력한 대칭키 암호화(Fernet) 처리
@@ -797,14 +807,15 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
                 "naver_id": encrypt_text(n_id),
                 "naver_secret": encrypt_text(n_sec)
             }).execute()
-            
+
             # 세션 메모리에는 원래 평문(Plain text)을 그대로 보관하여 앱 내부에서 정상 작동하게 함
-            updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id, "naver_secret": n_sec}
+            updated_keys = {"rtms_key": rtms, "app_key": a_key, "app_secret": a_sec, "naver_id": n_id,
+                            "naver_secret": n_sec}
             st.session_state.api_keys = updated_keys
-            
+
             st.success("✅ 마스터 5대 보안 자산 데이터가 암호화되어 무결점 반영되었습니다.")
         except Exception as e:
-            st.error(f"저장 실패: {str(e)}")
+            st.error(f"저장 실패: {html.escape(str(e))}")
 
     # 🌟 [신규 추가] 뉴스 배치 수동 제어 UI
     st.markdown("---")
@@ -818,7 +829,7 @@ if st.session_state.current_view == "api_settings" and st.session_state.username
                 time.sleep(1.5)
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ 수동 동기화 중 에러 발생: {e}")
+                st.error(f"❌ 수동 동기화 중 에러 발생: {html.escape(str(e))}")
 
 else:
     # 🌟 라우팅에 마켓 뉴스 화면 추가
