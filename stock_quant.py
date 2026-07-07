@@ -608,11 +608,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     </style>
     """, unsafe_allow_html=True)
 
-    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
+    # 💡 5개 탭에서 검색 탭을 제외하고 4개로 줄입니다.
+    tab_port, tab_watch, tab_hist, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
         "매도 히스토리 (History)",
-        "🔍 Stock Search",
         "📖 Algo Whitepaper"
     ])
 
@@ -812,48 +812,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
-    # 탭 4: Stock Search (주식 조회)
-    # ────────────────────────────────────────────────────────
-    with tab_search:
-        st.markdown("### 🔍 Stock Search & Report")
-        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
-
-        with st.spinner("KRX 종목 마스터 로드 중..."):
-            krx_df = load_krx_list_from_db(supabase)
-
-        if krx_df.empty:
-            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
-            options = [""]
-        else:
-            options = [""] + krx_df["SearchStr"].tolist()
-
-        # 💡 [질문자님의 천재적인 아이디어 100% 반영!] 
-        # 콤보박스 변경 시 즉시 가로채는 콜백 함수입니다.
-        def on_search_change():
-            val = st.session_state.get("search_combo", "")
-            if val:
-                search_query = val.split("(")[-1].replace(")", "").strip()
-                stock_name = val.split(" (")[0]
-                
-                # 팝업에 띄울 정보만 캡쳐해서 저장
-                st.session_state['search_dialog_payload'] = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
-                
-                # 🌟 [핵심] 사용자가 값을 선택하는 순간, 콤보박스를 다시 비워버림!
-                st.session_state["search_combo"] = options[0] 
-
-        col_search, _ = st.columns([2, 1])
-        with col_search:
-            # 값이 바뀌면 즉시 on_search_change 함수를 실행하여 화면을 깔끔하게 재시작(Rerun)합니다.
-            st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options, key="search_combo", on_change=on_search_change)
-
-        # 화면이 재시작되어 탭이 완벽하게 유지된 상태에서 팝업창만 띄웁니다!
-        if st.session_state.get('search_dialog_payload'):
-            payload = st.session_state['search_dialog_payload']
-            st.session_state['search_dialog_payload'] = None
-            show_detail_dialog(payload, supabase)
-
-    # ────────────────────────────────────────────────────────
-    # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
+    # 탭 4: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
     with tab_docs:
         st.markdown("## 🧠 Chase Momentum Algorithm Whitepaper")
