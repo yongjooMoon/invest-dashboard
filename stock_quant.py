@@ -91,7 +91,6 @@ def get_ui_financial_extras(symbol, fund):
         res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 💡 [추가] 섹터 정보 수집
         if fund.get('sector') is None:
             upjong_elem = soup.select_one("a[href*='type=upjong']")
             if upjong_elem:
@@ -136,35 +135,33 @@ def get_ui_financial_extras(symbol, fund):
         pass
     return fund
 
+# 💡 [핵심 버그 픽스] 실제로 새로운 데이터를 파싱해서 DB에 저장했는지를 확인하는 플래그(is_newly_saved)를 추가 반환합니다!
 def live_evaluate_stock(supabase, symbol, name=""):
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-    if df.empty: return None, {}, 0, {}
+    if df.empty: return None, {}, 0, {}, False
 
-    # 1. DB에서 캐싱된 펀더멘털 데이터 조회
     fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
 
-    # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목) - sector 추가!
     required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억', 'sector']
     needs_update = not fund or any(fund.get(k) is None for k in required_keys)
+    is_newly_saved = False
 
-    # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
     if needs_update:
-        scraped_fund = fetch_naver_fundamental(symbol) # core 원본 함수 호출
+        scraped_fund = fetch_naver_fundamental(symbol) 
         for k, v in scraped_fund.items():
             if v is not None:
                 fund[k] = v
         
-        # UI 리포트에 보여주기 위한 전용 데이터 보완 스크래핑
         fund = get_ui_financial_extras(symbol, fund)
     
         if fund:
             try:
                 save_fundamental_to_db(supabase, symbol, name, fund)
+                is_newly_saved = True # 🌟 실제로 새롭게 파싱해서 DB에 Insert 했음을 기록
             except Exception as e:
-                print(f"DB 저장 오류 (DB 스키마에 신규 컬럼 추가 필요 시 무시됨): {e}")
+                print(f"DB 저장 오류: {e}")
 
-    # 3. 누락되었던 YoY (전년동기대비 성장률) 리포트 출력을 위한 보완 계산
     c_net = fund.get('net_income_cur')
     p_net = fund.get('net_income_prev')
     if c_net is not None and p_net is not None and p_net != 0:
@@ -179,15 +176,13 @@ def live_evaluate_stock(supabase, symbol, name=""):
     if fund.get('op_margin') is None and c_op is not None and c_rev:
         fund['op_margin'] = (c_op / c_rev) * 100
 
-    # 4. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
     metrics = calc_quant_metrics(df, fund)
     
     if "ma20" not in metrics or metrics.get("ma20", 0) == 0:
-        return df, fund, 0, {}
+        return df, fund, 0, {}, is_newly_saved
 
     curr = df['Close'].iloc[-1]
 
-    # 5. quant_core.py의 절대 조건 6가지와 완벽하게 동일한 조건식 적용
     f_growth = metrics["growth_composite"] > 0
     f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
     f_liq    = metrics["liquidity_20d"] >= 50
@@ -206,12 +201,12 @@ def live_evaluate_stock(supabase, symbol, name=""):
 
     pass_count = sum([1 for g in gates.values() if g['pass']])
     
-    # 6. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
     mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
     net_yoy = metrics.get("net_yoy", 0)
     factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
 
-    return df, fund, factor_score, gates
+    # 🌟 반환값에 플래그 추가!
+    return df, fund, factor_score, gates, is_newly_saved
 
 # ══════════════════════════════════════════
 # [Component] Popovers & Shared Renderers
@@ -422,7 +417,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
-    with st.spinner(f"'{sel.get('name', '종목')}' 실시간 데이터를 불러오고 분석 중입니다..."):
+    with st.spinner("캐시된 데이터를 불러오는 중..."):
         
         if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
             c_list, w_list, _ = load_screening_result(supabase)
@@ -434,23 +429,9 @@ def show_detail_dialog(sel, supabase):
                     break
             
             if not found:
-                df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
-                if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트/데이터를 찾을 수 없습니다.")
-                    return
-                
-                sel['current_price'] = df_price['Close'].iloc[-1]
-                if len(df_price) >= 21:
-                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-                else:
-                    sel['ret_1m'] = 0.0
-                    
-                if live_fund: sel.update(live_fund)
-                sel['factor_score'] = live_score
-                sel['filter_details'] = live_gates
-                
-                if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-                st.session_state.price_cache[sel['symbol']] = df_price
+                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
+                if fund_db:
+                    sel.update(fund_db)
 
         original_score = sel.get('factor_score', 0)
 
@@ -468,7 +449,7 @@ def show_detail_dialog(sel, supabase):
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
+    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -608,7 +589,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     </style>
     """, unsafe_allow_html=True)
 
-    # 💡 5개 탭에서 검색 탭을 제외하고 4개로 줄입니다.
     tab_port, tab_watch, tab_hist, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
