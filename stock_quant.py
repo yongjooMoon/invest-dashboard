@@ -160,7 +160,6 @@ def live_evaluate_stock(supabase, symbol, name=""):
     
         if fund:
             try:
-                # 🔥 여기서 신규 조회된 데이터가 DB에 완벽하게 INSERT(저장) 됩니다!
                 save_fundamental_to_db(supabase, symbol, name, fund)
             except Exception as e:
                 print(f"DB 저장 오류 (DB 스키마에 신규 컬럼 추가 필요 시 무시됨): {e}")
@@ -421,41 +420,6 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     else:
         st.info("가격 데이터가 로드되지 않았습니다.")
 
-@st.dialog("📈 퀀트 평가 상세 리포트", width="large")
-def show_detail_dialog(sel, supabase):
-    with st.spinner("캐시된 데이터를 불러오는 중..."):
-        
-        if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
-            c_list, w_list, _ = load_screening_result(supabase)
-            found = False
-            for item in c_list + w_list:
-                if item['symbol'] == sel['symbol']:
-                    sel.update(item)
-                    found = True
-                    break
-            
-            if not found:
-                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
-                if fund_db:
-                    sel.update(fund_db)
-
-        original_score = sel.get('factor_score', 0)
-
-        if "price_cache" not in st.session_state: 
-            st.session_state.price_cache = {}
-        if sel['symbol'] not in st.session_state.price_cache:
-            df_price = load_price_from_db(supabase, sel['symbol'])
-            if df_price.empty:
-                df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-            st.session_state.price_cache[sel['symbol']] = df_price
-            
-        df_price = st.session_state.price_cache[sel['symbol']]
-
-        if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-            if df_price is not None and len(df_price) >= 21:
-                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -486,8 +450,10 @@ def render_watchlist_grid(items, title, color_code, anchor_id):
             c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
             c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
             with c6:
+                # 💡 "리포트 열기" 버튼을 누르면 상태에 Payload를 저장하고 즉시 화면을 갱신(st.rerun)합니다!
                 if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                    st.session_state['w_dialog_payload'] = w
+                    st.session_state['quant_report_payload'] = w
+                    st.rerun()
 
 # ══════════════════════════════════════════
 # [Main Entry Point]
@@ -530,7 +496,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             
             start_time = time.time()
             
-            for key in ["quant_portfolio", "quant_screening", "price_cache"]:
+            for key in ["quant_portfolio", "quant_screening", "price_cache", "quant_report_payload", "last_searched_stock"]:
                 if key in st.session_state:
                     del st.session_state[key]
             
@@ -551,6 +517,102 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         with st.spinner("👀 스크리닝 데이터를 최초 1회 로드 중입니다..."):
             st.session_state.quant_screening = load_screening_result(supabase)
 
+    # 🌟 [해결의 핵심 1] "탑 메뉴 방식" 리포트 단독 화면 라우터 추가!
+    # 종목 리포트 버튼을 누르거나 검색을 하면 payload가 생성됩니다.
+    # payload가 있으면, 아래에 있는 탭(st.tabs)을 아예 그리지 않고 리포트만 전면(Full View)에 예쁘게 그립니다.
+    if st.session_state.get('quant_report_payload'):
+        payload = st.session_state['quant_report_payload']
+        
+        # --- 🌟 질문자님이 요청하신 작고 세련된 "탑 메뉴 (뒤로 가기)" 버튼 디자인 ---
+        st.markdown("""
+        <style>
+        .back-btn-container button {
+            background-color: rgba(255, 255, 255, 0.05) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            color: #AEC1D4 !important;
+            font-weight: 600 !important;
+            border-radius: 8px !important;
+            height: 35px !important;
+            min-height: 35px !important;
+            padding: 0 15px !important;
+        }
+        .back-btn-container button:hover {
+            background-color: rgba(255, 255, 255, 0.1) !important;
+            color: #FFFFFF !important;
+            border-color: rgba(255, 255, 255, 0.3) !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        col_back, _ = st.columns([1.5, 8.5])
+        with col_back:
+            st.markdown("<div class='back-btn-container'>", unsafe_allow_html=True)
+            if st.button("⬅️ 목록으로 돌아가기", use_container_width=True):
+                # 돌아가기를 누르면 상태를 비우고 새로고침하여 원래의 탭 화면으로 복귀!
+                st.session_state['quant_report_payload'] = None
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.divider()
+
+        # --- 🌟 리포트 본문 로딩 및 렌더링 (탭 밖이므로 에러나 무너짐 절대 없음!) ---
+        sel = dict(payload)
+        with st.spinner(f"'{sel.get('name', '')}' 종목의 데이터를 불러오고 분석 중입니다..."):
+            # 기존 팝업 안에 있던 무거운 로직을 이 탑메뉴 방식 안으로 안전하게 이동
+            c_list, w_list, _ = load_screening_result(supabase)
+            all_cached_stocks = {item['symbol']: item for item in c_list + w_list}
+            
+            if 'factor_score' not in sel or 'filter_details' not in sel:
+                if sel['symbol'] in all_cached_stocks:
+                    sel.update(all_cached_stocks[sel['symbol']])
+                else:
+                    # 완전 신규 종목 실시간 조회 및 DB 저장
+                    df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
+                    if df_price is None or df_price.empty:
+                        st.error("해당 종목의 차트/데이터를 찾을 수 없습니다.")
+                        return
+                    
+                    sel['current_price'] = df_price['Close'].iloc[-1]
+                    if len(df_price) >= 21:
+                        sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+                    else:
+                        sel['ret_1m'] = 0.0
+                        
+                    if live_fund: sel.update(live_fund)
+                    sel['factor_score'] = live_score
+                    sel['filter_details'] = live_gates
+                    
+                    if "price_cache" not in st.session_state: st.session_state.price_cache = {}
+                    st.session_state.price_cache[sel['symbol']] = df_price
+
+            original_score = sel.get('factor_score', 0)
+
+            # 2. 가격 데이터 로드 (캐시 우선 확인)
+            if "price_cache" not in st.session_state: 
+                st.session_state.price_cache = {}
+            if sel['symbol'] not in st.session_state.price_cache:
+                df_price = load_price_from_db(supabase, sel['symbol'])
+                if df_price.empty:
+                    df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+                st.session_state.price_cache[sel['symbol']] = df_price
+                
+            df_price = st.session_state.price_cache[sel['symbol']]
+
+            if 'ret_1m' not in sel or sel['ret_1m'] == 0:
+                if df_price is not None and len(df_price) >= 21:
+                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+
+        # 로딩이 다 끝나면 깨끗하게 리포트 본문 출력
+        render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
+        
+        # 💡 [핵심] 리포트를 그리고 나면 여기서 함수를 강제 종료!
+        # 아래에 있는 탭 그리는 코드는 실행조차 되지 않으므로 화면 무너짐 버그가 원천 차단됩니다.
+        return
+
+
+    # =====================================================================
+    # 여기서부터는 평소에 보이는 "기본 탭 뷰" 입니다. (리포트 열면 안보임)
+    # =====================================================================
     holdings, trades, history = st.session_state.quant_portfolio
     confirmed, watchlist, last_updated = st.session_state.quant_screening
 
@@ -634,9 +696,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
                 c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
 
-                dialog_trigger = None
-                dialog_payload = None
-
                 for h in holdings:
                     curr = h.get("current_price", 0)
                     entry = h.get("entry_price", curr)
@@ -663,12 +722,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                             with st.popover("🚨 Risk", use_container_width=True):
                                 render_exit_risk_content(h, supabase)
                         with bc2:
+                            # 💡 팝업을 띄우지 않고 상태값을 세팅하여 탑메뉴-리포트 화면으로 넘깁니다!
                             if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                                dialog_trigger = "detail"
-                                dialog_payload = h
-
-            if dialog_trigger == "detail" and dialog_payload:
-                show_detail_dialog(dialog_payload, supabase)
+                                st.session_state['quant_report_payload'] = h
+                                st.rerun()
 
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
@@ -744,11 +801,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         else:
             if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
 
-        if 'w_dialog_payload' in st.session_state and st.session_state['w_dialog_payload'] is not None:
-            payload = st.session_state['w_dialog_payload']
-            st.session_state['w_dialog_payload'] = None
-            show_detail_dialog(payload, supabase)
-
     # ────────────────────────────────────────────────────────
     # 탭 3: 매도 히스토리
     # ────────────────────────────────────────────────────────
@@ -803,33 +855,33 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # ────────────────────────────────────────────────────────
     with tab_search:
         st.markdown("### 🔍 Stock Search & Report")
-        st.caption("현재 퀀트 엔진에 캐시된 종목을 검색하여 상세 리포트를 확인합니다.")
+        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
-        # 💡 [1단계 테스트] 질문자님의 요청대로 복잡한 로직을 전부 지우고 "캐시된 종목"만 다룹니다.
-        all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
-        
-        # 콤보박스에 캐시된 종목 리스트만 노출
-        options = [""] + [f"{item['name']} ({item['symbol']})" for item in all_cached_stocks.values()]
+        krx_df = load_krx_list_from_db(supabase)
+
+        if krx_df.empty:
+            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
+            options = [""]
+        else:
+            options = [""] + krx_df["SearchStr"].tolist()
 
         col_search, _ = st.columns([2, 1])
         with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (캐시된 종목 한정)", options=options)
+            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
 
+        # 💡 [핵심] 콤보박스를 선택하는 즉시 팝업이 아니라 "화면" 자체를 전환시킵니다.
         if selected_stock_str:
-            search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-            
-            if search_query in all_cached_stocks:
-                w = all_cached_stocks[search_query]
-                
-                # 💡 [핵심] Watchlist 탭과 100% 완벽하게 동일한 로직(버튼 + 페이로드 전달)으로 처리합니다.
-                if st.button(f"📊 '{w['name']}' 리포트 열기", key=f"s_det_{w['symbol']}", use_container_width=True):
-                    st.session_state['s_dialog_payload'] = w
+            if st.session_state.get("last_searched_stock") != selected_stock_str:
+                st.session_state["last_searched_stock"] = selected_stock_str
 
-        # 💡 Watchlist와 완벽하게 동일한 팝업 트리거 방식
-        if 's_dialog_payload' in st.session_state and st.session_state['s_dialog_payload'] is not None:
-            payload = st.session_state['s_dialog_payload']
-            st.session_state['s_dialog_payload'] = None
-            show_detail_dialog(payload, supabase)
+                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+                stock_name = selected_stock_str.split(" (")[0]
+                
+                # 최소한의 정보만 담아서 메인 화면으로 전송!
+                st.session_state['quant_report_payload'] = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
+                
+                # 탭 렌더링을 완전히 중단하고 전체 화면을 다시 그립니다 (이것이 탭 붕괴를 영원히 막는 핵심 기술입니다)
+                st.rerun()
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
