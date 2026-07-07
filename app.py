@@ -2,9 +2,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 from supabase import create_client, Client
 import re
-import html # 🛡️ XSS 방어용 파이썬 내장 라이브러리 추가
-import real_estate from 주식 
-import stock_quant
+import html
+import real_estate 
+from 주식 import stock_quant
 
 # 🌟 신규 모듈 추가
 import market_news
