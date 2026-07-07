@@ -53,7 +53,7 @@ def run_stock_search_page(supabase):
         
         # [A] 이미 캐시된 종목일 경우 (API 미호출)
         if search_query in all_cached_stocks:
-            with st.spinner(f"'{stock_name}' 캐시 데이터를 분석하여 화면을 구성 중입니다..."):
+            with st.spinner(f"'{stock_name}' 데이터를 준비 중입니다..."):
                 sel = all_cached_stocks[search_query]
                 
                 # 차트 데이터 준비
@@ -70,16 +70,14 @@ def run_stock_search_page(supabase):
                     if df_price is not None and len(df_price) >= 21:
                         sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-            st.success("✅ 일일 배치로 수집된 캐시 데이터를 로드했습니다. (초고속)")
-            
-            # 💡 [핵심] 팝업이 아니라 화면 탭 제약이 없는 상태이므로 기존처럼 화면 아래에 직접 그려줍니다.
+            # 💡 사용자 요청에 따라 불필요한 알림(메시지) 제거
             render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=sel.get('factor_score', 0), gates=sel.get('filter_details'))
             
         # [B] 캐시에 없는 새로운 종목일 경우 (실시간 조회 및 DB 저장)
         else:
             with st.spinner(f"'{stock_name}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
-                # 여기서 코어의 함수가 돌아가며 DB에 펀더멘털 데이터를 안전하게 신규 Insert 합니다!
-                df_price, live_fund, live_score, live_gates, is_newly_saved = live_evaluate_stock(supabase, search_query, stock_name)
+                # 💡 [버그 픽스] live_evaluate_stock은 이제 정확히 4개의 값만 반환합니다.
+                df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
 
             if df_price is None or df_price.empty:
                 st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
@@ -95,11 +93,5 @@ def run_stock_search_page(supabase):
                 if "price_cache" not in st.session_state: st.session_state.price_cache = {}
                 st.session_state.price_cache[search_query] = df_price
 
-                # 💡 리포트 메시지를 상황에 맞게 100% 정직하게 출력하도록 분기 처리했습니다.
-                if is_newly_saved:
-                    st.success("✅ 웹 스크래핑을 통해 기초 데이터를 수집하고 DB에 신규 저장했습니다.")
-                else:
-                    st.success("✅ DB에 저장된 기초 데이터를 바탕으로 실시간 퀀트 분석을 완료했습니다.")
-                
-                # 💡 마찬가지로 화면 아래에 직접 그려줍니다.
+                # 💡 사용자 요청에 따라 불필요한 알림(메시지) 제거
                 render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
