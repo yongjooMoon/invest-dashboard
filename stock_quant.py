@@ -62,10 +62,10 @@ def format_marcap(marcap_100m):
     try:
         val = float(marcap_100m)
         if val == 0: return "0억"
-
+        
         is_negative = val < 0
         abs_val = abs(val)
-
+        
         if abs_val >= 10000:
             jo = int(abs_val // 10000)
             eok = int(abs_val % 10000)
@@ -103,7 +103,7 @@ def get_ui_financial_extras(symbol, fund):
                     clean = re.sub(r"[^\d.\-]", "", td.text)
                     if clean and clean != '-': vals.append(float(clean))
                     else: vals.append(None)
-
+                
                 valid_vals = [v for v in vals if v is not None]
                 if not valid_vals: continue
                 recent_val = valid_vals[-1]
@@ -132,28 +132,38 @@ def get_ui_financial_extras(symbol, fund):
 
 def live_evaluate_stock(supabase, symbol, name=""):
     df = fdr.DataReader(symbol, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-    if df.empty:
-         return None, {}, 0, {}
-         
+    if df.empty: return None, {}, 0, {}
+
+    # 1. DB에서 캐싱된 펀더멘털 데이터 조회
     fund = load_fundamental_from_db(supabase, symbol)
     if not fund: fund = {}
 
+    # 2. 필수 데이터 누락 확인 (UI 리포트 표시용 항목) - sector 추가!
     required_keys = ['op_margin', 'roa', 'per', 'pbr', 'marcap_억', 'sector']
     needs_update = not fund or any(fund.get(k) is None for k in required_keys)
 
+    # 누락된 데이터가 있으면 1회 스크래핑 후 DB에 영구 업데이트
     if needs_update:
-        scraped_fund = fetch_naver_fundamental(symbol)
+        scraped_fund = fetch_naver_fundamental(symbol) # core 원본 함수 호출
         for k, v in scraped_fund.items():
             if v is not None:
                 fund[k] = v
+        
+        # UI 리포트에 보여주기 위한 전용 데이터 보완 스크래핑
         fund = get_ui_financial_extras(symbol, fund)
-        save_fundamental_to_db(supabase, symbol, name, fund)
+    
+        if fund:
+            try:
+                save_fundamental_to_db(supabase, symbol, name, fund)
+            except Exception as e:
+                print(f"DB 저장 오류 (DB 스키마에 신규 컬럼 추가 필요 시 무시됨): {e}")
 
+    # 3. 누락되었던 YoY (전년동기대비 성장률) 리포트 출력을 위한 보완 계산
     c_net = fund.get('net_income_cur')
     p_net = fund.get('net_income_prev')
     if c_net is not None and p_net is not None and p_net != 0:
         fund['net_income_yoy'] = ((c_net - p_net) / abs(p_net)) * 100
-
+        
     c_rev = fund.get('revenue_cur')
     p_rev = fund.get('revenue_prev')
     if c_rev is not None and p_rev is not None and p_rev != 0:
@@ -163,13 +173,15 @@ def live_evaluate_stock(supabase, symbol, name=""):
     if fund.get('op_margin') is None and c_op is not None and c_rev:
         fund['op_margin'] = (c_op / c_rev) * 100
 
+    # 4. quant_core.py의 핵심 메트릭 계산 함수 호출 (100% 코어 로직과 동기화)
     metrics = calc_quant_metrics(df, fund)
-
+    
     if "ma20" not in metrics or metrics.get("ma20", 0) == 0:
         return df, fund, 0, {}
 
     curr = df['Close'].iloc[-1]
 
+    # 5. quant_core.py의 절대 조건 6가지와 완벽하게 동일한 조건식 적용
     f_growth = metrics["growth_composite"] > 0
     f_mdd    = metrics["mdd"] >= metrics["dynamic_mdd_limit"]
     f_liq    = metrics["liquidity_20d"] >= 50
@@ -187,7 +199,8 @@ def live_evaluate_stock(supabase, symbol, name=""):
     }
 
     pass_count = sum([1 for g in gates.values() if g['pass']])
-
+    
+    # 6. UI 단일 종목 조회 시의 스코어 (코어는 전체 상대평가이므로 임시 근사치 사용)
     mom = ((curr - metrics["ma60"]) / metrics["ma60"] * 100) if metrics["ma60"] > 0 else 0
     net_yoy = metrics.get("net_yoy", 0)
     factor_score = min(99.9, max(0, (pass_count/6 * 50) + min(25, max(0, net_yoy/5)) + min(25, max(0, mom))))
@@ -198,17 +211,18 @@ def live_evaluate_stock(supabase, symbol, name=""):
 # [Component] Popovers & Shared Renderers
 # ══════════════════════════════════════════
 def render_exit_risk_content(h, supabase):
+    """HTML을 사용하지 않고 Streamlit 네이티브 컴포넌트로 구현된 안전하고 깔끔한 팝업"""
     curr = h.get("current_price", 0)
     entry = h.get("entry_price", curr)
     stop = h.get("stop_price", entry * 0.85)
     ret = h.get("return_rate", 0.0)
 
-    if "price_cache" not in st.session_state:
+    if "price_cache" not in st.session_state: 
         st.session_state.price_cache = {}
-
+    
     if h['symbol'] not in st.session_state.price_cache:
         st.session_state.price_cache[h['symbol']] = load_price_from_db(supabase, h['symbol'])
-
+        
     df = st.session_state.price_cache[h['symbol']]
     ts_risk, ma_risk = 0.0, 0.0
 
@@ -286,31 +300,67 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     curr = sel.get('current_price', 0)
     ret_1m = sel.get('ret_1m', 0)
 
+    # 💡 [추가] 섹터 정보가 있으면 노란색 파이프(|)와 함께 추가
     sector_str = f" &nbsp;|&nbsp; <span style='color:#F8B12A;'>{sel.get('sector')}</span>" if sel.get('sector') and sel.get('sector') != "미분류" else ""
 
-    st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('region', 'KR')} {sector_str}</span>", unsafe_allow_html=True)
-    st.markdown(f"""
-    <div style="font-size: 24px; font-weight: 800; color: #FFFFFF; margin-bottom: 20px;">
-        ₩{curr:,} 
-        <span style="font-size: 16px; font-weight: 600; color: {'#F04452' if ret_1m >= 0 else '#3182F6'}; margin-left: 10px;">
-            한달 수익률: {ret_1m:+.2f}%
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f"## {sel['name']} <span style='font-size:18px; color:#AEC1D4;'>{sel['symbol']} &nbsp;|&nbsp; {sel.get('market', 'KOSPI')}{sector_str}</span>", unsafe_allow_html=True)
+    st.markdown(f"<h1>{curr:,.0f} 원 <span style='font-size:20px; color:{'#F04452' if ret_1m>0 else '#3182F6'};'>{ret_1m:+.2f}% (1M)</span></h1>", unsafe_allow_html=True)
+    st.divider()
 
-    if factor_score is not None:
-        c_left, c_right = st.columns([4, 6])
-        with c_left:
-            render_single_gauge(factor_score)
-        with c_right:
-            st.markdown("#### 📊 투자 적합성 스크리닝 결과")
-            if gates:
-                for k, g in gates.items():
-                    pass_status = "✅ 통과" if "통과" in g['reason'] or "OK" in g['reason'] or g['pass'] else "❌ 미달"
-                    color = "#00B464" if g['pass'] else "#F04452"
-                    st.markdown(f"**{g['name']}** : <span style='color:{color}; font-weight:bold;'>{pass_status}</span> &nbsp;({g['reason']})", unsafe_allow_html=True)
-            else:
-                st.info("실시간 생존 필터 정보는 개별 조회 시 표출됩니다.")
+    if factor_score is None: factor_score = sel.get('factor_score', 0)
+    
+    if gates is None:
+        gates_data = sel.get("filter_details", {})
+        if not gates_data or "Growth Composite" not in gates_data:
+            gates = {
+                'A': {'name': 'Growth Composite', 'pass': False, 'reason': '-'}, 
+                'B': {'name': 'Dynamic MDD', 'pass': False, 'reason': '-'},
+                'C': {'name': 'Liquidity', 'pass': False, 'reason': '-'}, 
+                'D': {'name': 'Trend Alignment', 'pass': False, 'reason': '-'},
+                'E': {'name': 'Price Breakout', 'pass': False, 'reason': '-'}, 
+                'F': {'name': 'Volume Surge', 'pass': False, 'reason': '-'}
+            }
+        else:
+            gates = {
+                'A': {'name': 'Growth Composite', 'pass': gates_data.get("Growth Composite", {}).get("pass", False), 'reason': gates_data.get("Growth Composite", {}).get("reason", "-")},
+                'B': {'name': 'Dynamic MDD', 'pass': gates_data.get("Dynamic MDD", {}).get("pass", False), 'reason': gates_data.get("Dynamic MDD", {}).get("reason", "-")},
+                'C': {'name': 'Liquidity', 'pass': gates_data.get("Liquidity", {}).get("pass", False), 'reason': gates_data.get("Liquidity", {}).get("reason", "-")},
+                'D': {'name': 'Trend Alignment', 'pass': gates_data.get("Trend Alignment", {}).get("pass", False), 'reason': gates_data.get("Trend Alignment", {}).get("reason", "-")},
+                'E': {'name': 'Price Breakout', 'pass': gates_data.get("Price Breakout", {}).get("pass", False), 'reason': gates_data.get("Price Breakout", {}).get("reason", "-")},
+                'F': {'name': 'Volume Surge', 'pass': gates_data.get("Volume Surge", {}).get("pass", False), 'reason': gates_data.get("Volume Surge", {}).get("reason", "-")}
+            }
+
+    total_pass = sum([1 for g in gates.values() if g['pass']])
+
+    c_header, c_gauge = st.columns([3, 2])
+    with c_header:
+        st.markdown("### ⚡ Quant Scores")
+        c1, c2 = st.columns(2)
+        c1.metric("실시간 랭킹 스코어", f"{factor_score:.2f}점")
+        c2.metric("현재시점 생존 필터", f"{total_pass} / 6")
+        st.info("💡 과거 배치(Cron) 시점엔 6/6 통과였어도, **현재 실시간 주가 변동**에 따라 지표가 하락(5/6 등)할 수 있습니다.")
+
+    with c_gauge:
+        render_single_gauge(factor_score)
+
+    st.markdown("##### Entry Gates (6 conditions)")
+    cols = st.columns(6)
+    labels = ['A', 'B', 'C', 'D', 'E', 'F']
+    for idx, (col, key) in enumerate(zip(cols, gates.keys())):
+        g = gates[key]
+        passed = g['pass']
+        color = "#00B464" if passed else "#333333"
+        txt_color = "white" if passed else "#888888"
+        with col:
+            st.markdown(f"""
+            <div style="background-color:#1E2329; border:1px solid {color}; border-radius:6px; padding:10px; height:85px;">
+                <div style="display:flex; justify-content:space-between; font-weight:bold; color:{txt_color}; font-size:13px; margin-bottom:8px;">
+                    <span>{labels[idx]}</span> <span style="font-size:11px;">{'✔️' if passed else '❌'}</span>
+                </div>
+                <div style="height:3px; background-color:{color}; border-radius:2px; margin-bottom:8px;"></div>
+                <div style="font-size:10px; color:#AEC1D4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{g['name']}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("<br>### 📊 Financials & Valuation", unsafe_allow_html=True)
     if fund is None: fund = sel
@@ -357,7 +407,7 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
 def show_detail_dialog(sel, supabase):
     with st.spinner("캐시된 데이터를 불러오는 중..."):
-
+        
         if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
             c_list, w_list, _ = load_screening_result(supabase)
             found = False
@@ -366,7 +416,7 @@ def show_detail_dialog(sel, supabase):
                     sel.update(item)
                     found = True
                     break
-
+            
             if not found:
                 fund_db = load_fundamental_from_db(supabase, sel['symbol'])
                 if fund_db:
@@ -374,14 +424,14 @@ def show_detail_dialog(sel, supabase):
 
         original_score = sel.get('factor_score', 0)
 
-        if "price_cache" not in st.session_state:
+        if "price_cache" not in st.session_state: 
             st.session_state.price_cache = {}
         if sel['symbol'] not in st.session_state.price_cache:
             df_price = load_price_from_db(supabase, sel['symbol'])
             if df_price.empty:
                 df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
             st.session_state.price_cache[sel['symbol']] = df_price
-
+            
         df_price = st.session_state.price_cache[sel['symbol']]
 
         if 'ret_1m' not in sel or sel['ret_1m'] == 0:
@@ -390,46 +440,21 @@ def show_detail_dialog(sel, supabase):
 
     render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
-# 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
-def render_watchlist_grid(items, title, color_code, anchor_id):
-    st.markdown(f"#### {title}")
-    
-    # 해당 테이블에만 독립적인 가로 스크롤 CSS를 입히기 위해 고유 앵커 ID 주입
-    st.markdown(f'<div id="{anchor_id}"></div>', unsafe_allow_html=True)
-    
-    with st.container():
-        c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-        c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
-        c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-        c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-        c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
-        c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
-        c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
-
-        for idx, w in enumerate(items):
-            curr = w.get('current_price', 0)
-
-            c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
-            c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
-            c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
-            c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
-            c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
-            c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
-            with c6:
-                if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                    st.session_state['w_dialog_payload'] = w
-
 # ══════════════════════════════════════════
 # [Main Entry Point]
 # ══════════════════════════════════════════
 def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
-    c1, c2, c3 = st.columns([8.2, 0.8, 1.0])
+    # 🌟 [버튼 폭&여백 최적화] 비율을 조정해 버튼이 얇아지게 하고, margin-top을 충분히 주어 윗부분 잘림을 방지했습니다.
+    c1, c2, c3 = st.columns([8.2, 0.8, 1.0]) 
     with c1:
         st.title("📡 퀀트투자")
     with c3:
+        # 타이틀 높이와 정확히 맞추고 잘림 현상 방지를 위해 여백을 26px로 확대
         st.markdown("<div style='margin-top: 26px;'></div>", unsafe_allow_html=True)
+        # 딱딱한 🔄 아이콘을 트렌디하고 귀여운 ✨ 반짝이 마법 이모지로 변경!
         if st.button("✨ Refresh", use_container_width=True):
             loading_overlay = st.empty()
+            # 💡 [핵심] CSS 애니메이션 타이밍(0.9s, 0.8s)과 Python의 대기시간(1.0초)을 완벽하게 맞물리게 조절했습니다.
             overlay_html = (
                 "<style>"
                 ".custom-overlay { position: fixed !important; top: 0px !important; left: 0px !important; right: 0px !important; bottom: 0px !important; width: 100vw !important; height: 100vh !important; background: rgba(3, 7, 18, 0.8) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important; z-index: 9999999 !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; pointer-events: all !important; }"
@@ -457,26 +482,34 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 "</div>"
             )
             loading_overlay.markdown(overlay_html, unsafe_allow_html=True)
-
+            
+            # 애니메이션 타이머 시작
             start_time = time.time()
-
+            
+            # 💡 기존 메모리(캐시) 폭파
             for key in ["quant_portfolio", "quant_screening", "price_cache"]:
                 if key in st.session_state:
                     del st.session_state[key]
-
+            
+            # 애니메이션이 뒤를 덮고 있는 동안 DB에서 최신 데이터 조용히 호출
             st.session_state.quant_portfolio = load_portfolio_data(supabase)
             st.session_state.quant_screening = load_screening_result(supabase)
-
+            
             elapsed = time.time() - start_time
+            # 💡 애니메이션이 화면에 그려지는 시간(0.9s ~ 1.0s)과 파이썬의 대기시간을 1.0초로 완벽하게 동일하게 맞춥니다.
+            # 선이 그려지고 빛나는 포인트가 생기는 그 즉시 화면이 리프레쉬됩니다!
             if elapsed < 1.0:
                 time.sleep(1.0 - elapsed)
-
+            
+            # 애니메이션 완료 직후 화면 다시 그리기 
             st.rerun()
 
+    # 💡 [핵심 메모리 캐싱] 로그인 후 처음 진입할 때 딱 1번만 DB 조회 후 세션에 영구저장. 
+    # 이후 화면을 아무리 다시 그리거나 팝업을 열고 닫아도 0초만에 캐시를 재활용합니다!
     if "quant_portfolio" not in st.session_state:
         with st.spinner("💼 포트폴리오 데이터를 최초 1회 로드 중입니다..."):
             st.session_state.quant_portfolio = load_portfolio_data(supabase)
-
+            
     if "quant_screening" not in st.session_state:
         with st.spinner("👀 스크리닝 데이터를 최초 1회 로드 중입니다..."):
             st.session_state.quant_screening = load_screening_result(supabase)
@@ -488,46 +521,15 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     filtered_confirmed = [c for c in confirmed if c['symbol'] not in holding_syms]
     filtered_watchlist = [w for w in watchlist if w['symbol'] not in holding_syms]
 
-    # 🌟 모바일 테이블 세로 붕괴 버그 해결 및 스크롤바 디자인을 위한 CSS 🌟
     st.markdown("""
     <style>
     .grid-header { font-size: 13px; font-weight: bold; color: #8B95A1; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 8px; }
     .grid-row { padding-top: 10px; padding-bottom: 10px; font-size: 14px; border-bottom: 1px solid #1E2329; display: flex; align-items: center;}
     .popover-btn > button { padding: 0 !important; background: none !important; border: none !important; color: #AEC1D4 !important; }
-    
-    /* 🌟 핵심: 지정한 테이블 앵커 하위의 컬럼들이 모바일 가로 붕괴 없이 옆으로 부드럽게 스와이프되도록 강제 설정 */
-    div[data-testid="stMarkdownContainer"]:has(#portfolio-holdings-anchor, #watchlist-confirmed-anchor, #watchlist-reserve-anchor) + div[data-testid="stVerticalBlock"] {
-        overflow-x: auto !important;
-        width: 100% !important;
-        display: block !important;
-        padding-bottom: 12px !important;
-    }
-    
-    div[data-testid="stMarkdownContainer"]:has(#portfolio-holdings-anchor, #watchlist-confirmed-anchor, #watchlist-reserve-anchor) + div[data-testid="stVerticalBlock"] div[data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        min-width: 780px !important; /* 모바일에서도 원본 컬럼 비율 그대로 고정 */
-        width: 100% !important;
-    }
-
-    div[data-testid="stMarkdownContainer"]:has(#portfolio-holdings-anchor, #watchlist-confirmed-anchor, #watchlist-reserve-anchor) + div[data-testid="stVerticalBlock"] div[data-testid="column"] {
-        flex: 1 1 auto !important;
-        min-width: unset !important;
-        width: auto !important;
-    }
-    
-    /* 모바일 테이블 하단 가로 스크롤바 커스텀 */
-    div[data-testid="stMarkdownContainer"]:has(#portfolio-holdings-anchor, #watchlist-confirmed-anchor, #watchlist-reserve-anchor) + div[data-testid="stVerticalBlock"]::-webkit-scrollbar {
-        height: 6px;
-    }
-    div[data-testid="stMarkdownContainer"]:has(#portfolio-holdings-anchor, #watchlist-confirmed-anchor, #watchlist-reserve-anchor) + div[data-testid="stVerticalBlock"]::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.15) !important;
-        border-radius: 3px !important;
-    }
     </style>
     """, unsafe_allow_html=True)
 
+    # 예쁘고 친숙한 기본 탭 구성으로 컴백!
     tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
@@ -545,7 +547,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 max_price = max([h.get("current_price", 0) for h in holdings])
                 total_stocks = len(holdings)
                 total_seed = max_price * total_stocks
-
+                
                 st.caption("Equal-Weight Min Seed (동일비중 최소 시드)")
                 st.markdown(f"## {total_seed:,.0f} 원")
                 st.caption(f"종목당 {max_price:,.0f}원 기준 × {total_stocks}종목")
@@ -557,46 +559,44 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         st.markdown(f"<h4 style='margin-bottom:10px; padding-top:4px;'>Holdings ({len(holdings)})</h4>", unsafe_allow_html=True)
 
         if holdings:
-            st.markdown('<div id="portfolio-holdings-anchor"></div>', unsafe_allow_html=True)
-            with st.container():
+            c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
+            c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
+            c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
+            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
+            c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
+            c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
+            c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
+
+            dialog_trigger = None
+            dialog_payload = None
+
+            for h in holdings:
+                curr = h.get("current_price", 0)
+                entry = h.get("entry_price", curr)
+                stop = h.get("stop_price", entry * 0.85)
+                ret = h.get("return_rate", 0.0)
+                exit_risk = calculate_exit_risk(curr, entry, stop)
+
                 c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
-                c1.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
-                c2.markdown("<div class='grid-header'>진입가</div>", unsafe_allow_html=True)
-                c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
-                c4.markdown("<div class='grid-header'>수익률(P&L)</div>", unsafe_allow_html=True)
-                c5.markdown("<div class='grid-header'>Exit Risk</div>", unsafe_allow_html=True)
-                c6.markdown("<div class='grid-header'>상세 액션</div>", unsafe_allow_html=True)
+                c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
+                c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
+                c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
 
-                dialog_trigger = None
-                dialog_payload = None
+                pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
+                c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
 
-                for h in holdings:
-                    curr = h.get("current_price", 0)
-                    entry = h.get("entry_price", curr)
-                    stop = h.get("stop_price", entry * 0.85)
-                    ret = h.get("return_rate", 0.0)
-                    exit_risk = calculate_exit_risk(curr, entry, stop)
+                risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
+                c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
 
-                    c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2.5])
-                    c1.markdown(f"<div class='grid-row' style='font-weight:bold;'>{h['name']}</div>", unsafe_allow_html=True)
-                    c2.markdown(f"<div class='grid-row'>₩{entry:,.0f}</div>", unsafe_allow_html=True)
-                    c3.markdown(f"<div class='grid-row'>₩{curr:,.0f}</div>", unsafe_allow_html=True)
-
-                    pnl_color = "#F04452" if ret > 0 else ("#3182F6" if ret < 0 else "#AEC1D4")
-                    c4.markdown(f"<div class='grid-row' style='color:{pnl_color}; font-weight:bold;'>{ret:+.2f}%</div>", unsafe_allow_html=True)
-
-                    risk_color = "#E6A23C" if exit_risk < 70 else "#F04452"
-                    c5.markdown(f"<div class='grid-row' style='color:{risk_color}; font-weight:bold;'>{exit_risk}%</div>", unsafe_allow_html=True)
-
-                    with c6:
-                        bc1, bc2 = st.columns(2)
-                        with bc1:
-                            with st.popover("🚨 Risk", use_container_width=True):
-                                render_exit_risk_content(h, supabase)
-                        with bc2:
-                            if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                                dialog_trigger = "detail"
-                                dialog_payload = h
+                with c6:
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        with st.popover("🚨 Risk", use_container_width=True):
+                            render_exit_risk_content(h, supabase)
+                    with bc2:
+                        if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
+                            dialog_trigger = "detail"
+                            dialog_payload = h
 
             if dialog_trigger == "detail" and dialog_payload:
                 show_detail_dialog(dialog_payload, supabase)
@@ -665,12 +665,36 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with tab_watch:
         st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
 
+        def render_watchlist_grid(items, title, color_code):
+            st.markdown(f"#### {title}")
+
+            c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
+            c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
+            c2.markdown("<div class='grid-header'>종목명</div>", unsafe_allow_html=True)
+            c3.markdown("<div class='grid-header'>현재가</div>", unsafe_allow_html=True)
+            c4.markdown("<div class='grid-header'>통과</div>", unsafe_allow_html=True)
+            c5.markdown("<div class='grid-header'>랭킹점수</div>", unsafe_allow_html=True)
+            c6.markdown("<div class='grid-header'>액션</div>", unsafe_allow_html=True)
+
+            for idx, w in enumerate(items):
+                curr = w.get('current_price', 0)
+
+                c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
+                c1.markdown(f"<div class='grid-row'>{idx+1}</div>", unsafe_allow_html=True)
+                c2.markdown(f"<div class='grid-row' style='font-weight:bold;'>{w['name']}</div>", unsafe_allow_html=True)
+                c3.markdown(f"<div class='grid-row'>₩{curr:,}</div>", unsafe_allow_html=True)
+                c4.markdown(f"<div class='grid-row'>{w.get('total_pass', 0)}/6</div>", unsafe_allow_html=True)
+                c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
+                with c6:
+                    if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
+                        st.session_state['w_dialog_payload'] = w
+
         if filtered_confirmed:
-            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464", "watchlist-confirmed-anchor")
+            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464")
             st.divider()
 
         if filtered_watchlist:
-            render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4", "watchlist-reserve-anchor")
+            render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4")
             if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
         else:
             if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
@@ -690,35 +714,35 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         if sell_trades:
             wins = [t for t in sell_trades if t.get('return_rate', 0) > 0]
             losses = [t for t in sell_trades if t.get('return_rate', 0) <= 0]
-
+            
             win_rate = (len(wins) / len(sell_trades)) * 100
-
+            
             avg_win_pct = sum([t.get('return_rate', 0) for t in wins]) / len(wins) if wins else 0.0
             avg_loss_pct = sum([t.get('return_rate', 0) for t in losses]) / len(losses) if losses else 0.0
-
+            
             rr_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct != 0 else (99.99 if avg_win_pct > 0 else 0)
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("총 매도 횟수", f"{len(sell_trades)}회", f"승 {len(wins)} / 패 {len(losses)}")
             m2.metric("🎯 승률 (타율)", f"{win_rate:.1f}%")
             m3.metric("⚖️ 손익비 (RR Ratio)", f"{rr_ratio:.2f}", f"평균수익 {avg_win_pct:+.2f}% / 평균손실 {avg_loss_pct:+.2f}%")
-
+            
             total_profit_amt = 0
-
+            
             for t in sell_trades:
                 trade_p = t.get('trade_price', 0)
                 ret_pct = t.get('return_rate', 0.0)
                 entry = trade_p / (1 + (ret_pct / 100)) if ret_pct != -100 else 0
                 t['entry_price'] = entry
-
-                profit = trade_p - entry
+                
+                profit = trade_p - entry 
                 t['profit_amount'] = profit
                 total_profit_amt += profit
 
             m4.metric("💰 주당 누적 실현손익금", f"{total_profit_amt:,.0f}원")
-
+            
             st.divider()
-
+            
             t_df = pd.DataFrame(sell_trades)[["trade_date", "name", "entry_price", "trade_price", "return_rate", "profit_amount", "reason"]]
             t_df.columns = ["매도 일자", "종목명", "진입가", "매도가", "실현손익(%)", "손익금(원)", "매도 사유"]
 
@@ -758,16 +782,16 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             if search_query in all_cached_stocks:
                 with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
                     sel = all_cached_stocks[search_query]
-
+                    
                     if "price_cache" not in st.session_state: st.session_state.price_cache = {}
                     if search_query not in st.session_state.price_cache:
                         df_price = load_price_from_db(supabase, search_query)
                         if df_price.empty:
                             df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
                         st.session_state.price_cache[search_query] = df_price
-
+                        
                     df_price = st.session_state.price_cache[search_query]
-
+                    
                     if 'ret_1m' not in sel or sel['ret_1m'] == 0:
                         if df_price is not None and len(df_price) >= 21:
                             sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
@@ -787,14 +811,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     sel = {
                         'symbol': search_query, 'name': stock_name,
                         'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
-                        'ret_1m': 0.0, # 기본값
-                        'region': 'KR'
+                        'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
                     }
-                    if len(df_price) >= 21:
-                        sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
                     if live_fund: sel.update(live_fund)
                     render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
-
+                    
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
@@ -829,9 +850,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         > **"관중들이 우르르 몰려오며 환호하고 있는가?"**
         * 단순히 가격만 슬금슬금 오르는 게 아니라, 평소(60일 평균)보다 거래량이 1.5배 이상 '빵!' 터지는 순간이어야 합니다. 시장의 거대한 자금이 쏠리면서 모멘텀이 터졌다는 강력한 증거입니다.
         """)
-
+        
         st.divider()
-
+        
         st.markdown("### 🚨 생존 매도 3대 원칙 (Exit Signals)")
         st.markdown("""
         **1. Trailing Stop (ATR 기반 동적 손절)**
