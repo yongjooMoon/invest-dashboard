@@ -803,40 +803,33 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     # ────────────────────────────────────────────────────────
     with tab_search:
         st.markdown("### 🔍 Stock Search & Report")
-        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
+        st.caption("현재 퀀트 엔진에 캐시된 종목을 검색하여 상세 리포트를 확인합니다.")
 
-        with st.spinner("KRX 종목 마스터 로드 중..."):
-            krx_df = load_krx_list_from_db(supabase)
-
-        if krx_df.empty:
-            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
-            options = [""]
-        else:
-            options = [""] + krx_df["SearchStr"].tolist()
+        # 💡 [1단계 테스트] 질문자님의 요청대로 복잡한 로직을 전부 지우고 "캐시된 종목"만 다룹니다.
+        all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
+        
+        # 콤보박스에 캐시된 종목 리스트만 노출
+        options = [""] + [f"{item['name']} ({item['symbol']})" for item in all_cached_stocks.values()]
 
         col_search, _ = st.columns([2, 1])
         with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
+            selected_stock_str = st.selectbox("🔎 종목 검색 (캐시된 종목 한정)", options=options)
 
         if selected_stock_str:
-            # 💡 [핵심 해결 포인트] 탭 내부에 어떠한 시각적 방해요소(st.divider, st.success 등)도 그리지 않고
-            # 콤보박스의 값만 취해서 즉시 팝업(Dialog) 함수로 넘겨줍니다. 이렇게 하면 Watchlist와 완벽히 동일하게 동작합니다!
-            if st.session_state.get("last_searched_stock") != selected_stock_str:
-                st.session_state["last_searched_stock"] = selected_stock_str
+            search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+            
+            if search_query in all_cached_stocks:
+                w = all_cached_stocks[search_query]
+                
+                # 💡 [핵심] Watchlist 탭과 100% 완벽하게 동일한 로직(버튼 + 페이로드 전달)으로 처리합니다.
+                if st.button(f"📊 '{w['name']}' 리포트 열기", key=f"s_det_{w['symbol']}", use_container_width=True):
+                    st.session_state['s_dialog_payload'] = w
 
-                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-                stock_name = selected_stock_str.split(" (")[0]
-                
-                # Watchlist 버튼처럼 최소한의 정보만 모아서 넘깁니다. 
-                # (진짜 복잡하고 무거운 계산은 이제부터 모조리 팝업 내부에서 알아서 처리됩니다)
-                sel_payload = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
-                
-                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
-                
-                # 오직 팝업만 호출! 탭의 렌더링은 이걸로 종료되어 안전하게 보호됩니다.
-                show_detail_dialog(sel_payload, supabase, all_cached_stocks)
-        else:
-            st.session_state["last_searched_stock"] = None
+        # 💡 Watchlist와 완벽하게 동일한 팝업 트리거 방식
+        if 's_dialog_payload' in st.session_state and st.session_state['s_dialog_payload'] is not None:
+            payload = st.session_state['s_dialog_payload']
+            st.session_state['s_dialog_payload'] = None
+            show_detail_dialog(payload, supabase)
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
