@@ -49,6 +49,11 @@ def load_krx_list_from_db(_supabase):
         pass
     return pd.DataFrame(columns=["Symbol", "Name", "SearchStr"])
 
+@st.cache_data(ttl=1800)
+def load_kospi_cached(start_date_str):
+    """KOSPI 지수 데이터는 30분 캐시. 매 rerun마다 재조회되지 않도록 함."""
+    return fdr.DataReader('KS11', start_date_str)
+
 def calculate_exit_risk(curr, entry, stop):
     if curr <= 0 or entry <= 0 or stop <= 0: return 0
     buffer = entry - stop if entry > stop else curr * 0.15
@@ -674,7 +679,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         end_date = now_kst()
         start_date = end_date - timedelta(days=30)
 
-        df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
+        df_kospi = load_kospi_cached(start_date.strftime('%Y-%m-%d'))
         if not df_kospi.empty:
             df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
         else:
@@ -720,7 +725,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
             fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
             if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
 
     # ────────────────────────────────────────────────────────
     # 탭 2: Watchlist & Confirmed
@@ -813,40 +818,60 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
 
         if selected_stock_str:
-            search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-            stock_name = selected_stock_str.split(" (")[0]
+            # 💡 [핵심 해결 포인트] 같은 종목 무한 팝업 루프 방지 장치 추가
+            if st.session_state.get("last_searched_stock") != selected_stock_str:
+                st.session_state["last_searched_stock"] = selected_stock_str
 
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            
-            # 💡 [핵심 패치] 버튼을 클릭해야만 팝업 다이얼로그가 뜨게 하여 탭 레이아웃 붕괴를 완벽 방지!
-            if st.button(f"📊 '{html.escape(stock_name)}' 실시간 분석 리포트 열기", type="primary", width="stretch"):
+                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+                stock_name = selected_stock_str.split(" (")[0]
+
                 all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
 
                 if search_query in all_cached_stocks:
-                    sel = all_cached_stocks[search_query]
+                    with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
+                        sel = all_cached_stocks[search_query]
+
+                        if "price_cache" not in st.session_state: st.session_state.price_cache = {}
+                        if search_query not in st.session_state.price_cache:
+                            df_price = load_price_from_db(supabase, search_query)
+                            if df_price.empty:
+                                df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
+                            st.session_state.price_cache[search_query] = df_price
+
+                        df_price = st.session_state.price_cache[search_query]
+
+                        if 'ret_1m' not in sel or sel['ret_1m'] == 0:
+                            if df_price is not None and len(df_price) >= 21:
+                                sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
+
+                    # 💡 탭 하단에 직접 그려서 붕괴되는 현상을 막기 위해, 즉시 팝업(Dialog)을 호출합니다!
                     show_detail_dialog(sel, supabase)
+
                 else:
-                    # 차트와 데이터를 먼저 백그라운드에서 조용히 불러옵니다.
                     with st.spinner(f"'{stock_name}' 실시간 데이터 동기화 및 퀀트 분석 중..."):
                         df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, search_query, stock_name)
 
                     if df_price is None or df_price.empty:
                         st.error("해당 종목의 차트 데이터를 찾을 수 없습니다.")
+                        st.session_state["last_searched_stock"] = None # 에러 시 리셋
                     else:
                         sel = {
                             'symbol': search_query, 'name': stock_name,
                             'current_price': df_price['Close'].iloc[-1] if not df_price.empty else 0,
-                            'ret_1m': 0.0,
-                            'region': 'KR',
-                            'factor_score': live_score,
-                            'filter_details': live_gates
+                            'ret_1m': (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100 if len(df_price)>=21 else 0
                         }
-                        if len(df_price) >= 21:
-                            sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
                         if live_fund: sel.update(live_fund)
+                        sel['factor_score'] = live_score
+                        sel['filter_details'] = live_gates
                         
-                        # 스피너가 끝난 뒤, 안전하게 다이얼로그(팝업)를 호출합니다.
+                        if "price_cache" not in st.session_state: st.session_state.price_cache = {}
+                        st.session_state.price_cache[search_query] = df_price
+
+                        # 💡 탭 하단에 직접 그려서 붕괴되는 현상을 막기 위해, 즉시 팝업(Dialog)을 호출합니다!
                         show_detail_dialog(sel, supabase)
+        else:
+            # 선택을 지웠을 때 다음 검색을 위해 상태 초기화
+            st.session_state["last_searched_stock"] = None
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
