@@ -48,6 +48,11 @@ def load_krx_list_from_db(_supabase):
         pass
     return pd.DataFrame(columns=["Symbol", "Name", "SearchStr"])
 
+@st.cache_data(ttl=1800)
+def load_kospi_cached(start_date_str):
+    """KOSPI 지수 데이터는 30분 캐시. 다른 탭 조작으로 인한 rerun마다 재조회되지 않도록 함."""
+    return fdr.DataReader('KS11', start_date_str)
+
 def calculate_exit_risk(curr, entry, stop):
     if curr <= 0 or entry <= 0 or stop <= 0: return 0
     buffer = entry - stop if entry > stop else curr * 0.15
@@ -613,7 +618,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         end_date = now_kst()
         start_date = end_date - timedelta(days=30)
 
-        df_kospi = fdr.DataReader('KS11', start_date.strftime('%Y-%m-%d'))
+        df_kospi = load_kospi_cached(start_date.strftime('%Y-%m-%d'))
         if not df_kospi.empty:
             df_kospi['kospi_cum'] = df_kospi['Close'].pct_change().fillna(0).cumsum() * 100
         else:
@@ -757,8 +762,13 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
     # ────────────────────────────────────────────────────────
     # 탭 4: Stock Search (주식 조회)
+    # 🌟 [성능/버그 수정] @st.fragment로 감싸서, 이 탭 안의 셀렉트박스가 rerun을
+    # 일으켜도 Portfolio/Watchlist/History 등 다른 탭의 무거운 코드(특히 KOSPI 데이터
+    # 재조회 등 캐시 없는 외부 API 호출)가 매번 같이 다시 실행되지 않게 합니다.
+    # 이게 바로 "탭이 잠깐 어긋나 보이던" 현상의 근본 원인이었습니다.
     # ────────────────────────────────────────────────────────
-    with tab_search:
+    @st.fragment
+    def render_stock_search_tab():
         st.markdown("### 🔍 Stock Search & Report")
         st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
 
@@ -784,16 +794,16 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             if search_query in all_cached_stocks:
                 with st.spinner("캐시된 스크리닝 데이터를 불러오는 중..."):
                     sel = all_cached_stocks[search_query]
-                    
+
                     if "price_cache" not in st.session_state: st.session_state.price_cache = {}
                     if search_query not in st.session_state.price_cache:
                         df_price = load_price_from_db(supabase, search_query)
                         if df_price.empty:
                             df_price = fdr.DataReader(search_query, (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
                         st.session_state.price_cache[search_query] = df_price
-                        
+
                     df_price = st.session_state.price_cache[search_query]
-                    
+
                     if 'ret_1m' not in sel or sel['ret_1m'] == 0:
                         if df_price is not None and len(df_price) >= 21:
                             sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
@@ -817,6 +827,9 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     }
                     if live_fund: sel.update(live_fund)
                     render_detailed_report_content(sel, df_price=df_price, fund=live_fund, factor_score=live_score, gates=live_gates)
+
+    with tab_search:
+        render_stock_search_tab()
                     
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
