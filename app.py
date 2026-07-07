@@ -14,10 +14,6 @@ import bcrypt
 from cryptography.fernet import Fernet
 import time  # ⏳ 토큰 만료 시간 계산용 추가
 
-# 🌟 배치(Batch) 스케줄러용 라이브러리 추가
-import schedule
-import threading
-
 # 초기 설정 (가장 먼저 실행되어야 함)
 st.set_page_config(page_title="QUANT DESK", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
 
@@ -31,34 +27,6 @@ def init_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase: Client = init_supabase()
-
-# ==========================================
-# 🕒 [핵심] 백그라운드 자동 수합 스케줄러 추가
-# ==========================================
-@st.cache_resource
-def start_background_scheduler():
-    """Streamlit이 실행될 때 단 한 번만 백그라운드 스레드를 생성하여 평생 배치 작업을 수행합니다."""
-    def run_schedule():
-        while True:
-            schedule.run_pending()
-            time.sleep(30) # 30초마다 설정된 시간이 되었는지 확인
-
-    # 🌟 핫 리로드 시 스케줄이 중복 등록되거나 꼬이는 현상을 완벽히 방지하기 위해 초기화
-    schedule.clear()
-
-    # 8:32, 15:32, 22:32에 뉴스 수합 스크립트 실행
-    schedule.every().day.at("08:32").do(sync_news_to_supabase.run_sync)
-    schedule.every().day.at("15:32").do(sync_news_to_supabase.run_sync)
-    schedule.every().day.at("22:32").do(sync_news_to_supabase.run_sync)
-
-    # UI를 멈추지 않게 백그라운드 스레드(Daemon)로 분리 실행
-    thread = threading.Thread(target=run_schedule, daemon=True)
-    thread.start()
-    return thread
-
-# 최초 앱 구동 시 스케줄러 자동 가동
-start_background_scheduler()
-# ==========================================
 
 # 대칭키 암호화 (API Key 보관용) 마스터 키 세팅
 if "ENCRYPTION_KEY" in st.secrets:
