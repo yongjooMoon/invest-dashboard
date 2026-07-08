@@ -605,10 +605,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     </style>
     """, unsafe_allow_html=True)
 
-    tab_port, tab_watch, tab_hist, tab_docs = st.tabs([
+    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
         "매도 히스토리 (History)",
+        "🔍 Stock Search",
         "📖 Algo Whitepaper"
     ])
 
@@ -728,12 +729,65 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
 
         if not chart_df.empty:
             chart_df['Alpha'] = chart_df['Portfolio'] - chart_df['KOSPI']
-            chart_df['Alpha_Color'] = chart_df['Alpha'].apply(lambda x: '#00B464' if x >= 0 else '#F04452')
+            
+            # 💡 [모던 차트 개선 1] 포트폴리오 수익률에 따라 선/배경 색상 동적 변경 (수익=빨강, 손실=파랑)
+            port_color = '#F04452' if cum_ret >= 0 else '#3182F6'
+            bg_rgba = 'rgba(240, 68, 82, 0.1)' if cum_ret >= 0 else 'rgba(49, 130, 246, 0.1)'
+            
+            # 💡 [소수점 버그 픽스] 자바스크립트 소수점 오차를 원천 차단하기 위해 파이썬에서 완벽히 문자열로 굳혀서 전달!
+            kospi_str = chart_df['KOSPI'].map('{:+.2f}%'.format)
+            alpha_str = chart_df['Alpha'].map('{:+.2f}%'.format)
+            alpha_color = chart_df['Alpha'].apply(lambda x: '#F04452' if x >= 0 else '#3182F6')
+            
+            custom_data = np.column_stack((kospi_str, alpha_str, alpha_color))
             fig = go.Figure()
-            custom_data = np.column_stack((chart_df['KOSPI'], chart_df['Alpha'], chart_df['Alpha_Color']))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Portfolio'], mode='lines+markers', name='Portfolio', line=dict(color='#F04452', width=2.5), fill='tozeroy', fillcolor='rgba(240, 68, 82, 0.05)', customdata=custom_data, hovertemplate="<span style='color:#AEC1D4; font-size:12px;'>%{x|%Y.%m.%d}</span><br><br><span style='color:#3182F6;'>●</span> Portfolio &nbsp;&nbsp;&nbsp;<b>%{y:.2f}%</b><br><span style='color:#8B95A1;'>●</span> KOSPI &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>%{customdata[0]:.2f}%</b><br>─────────────────<br><span style='color:#8B95A1;'>α</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='color:%{customdata[2]};'>%{customdata[1]:+.2f}%</b><extra></extra>"))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['KOSPI'], mode='lines+markers', name='KOSPI', line=dict(color='#8B95A1', width=1.5, dash='dot'), hoverinfo='skip'))
-            fig.update_layout(hovermode='x', xaxis=dict(showgrid=False, zeroline=False, tickformat="%Y-%m-%d"), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', ticksuffix="%"), hoverlabel=dict(bgcolor="#191F28", font_color="white"), margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
+            
+            # 💡 [모던 차트 개선 2] KOSPI 선을 매끄러운 스플라인 곡선으로 변경하고 점(마커) 제거
+            fig.add_trace(go.Scatter(
+                x=chart_df.index, y=chart_df['KOSPI'], 
+                mode='lines', name='KOSPI', 
+                line=dict(color='#475569', width=2, dash='dot', shape='spline', smoothing=1.0), 
+                hoverinfo='skip'
+            ))
+            
+            # 💡 [모던 차트 개선 3] 포트폴리오 선을 부드럽게 만들고 하단 그라데이션 및 트렌디한 툴팁 팝업 적용
+            fig.add_trace(go.Scatter(
+                x=chart_df.index, y=chart_df['Portfolio'], 
+                mode='lines', name='Portfolio', 
+                line=dict(color=port_color, width=3.5, shape='spline', smoothing=1.0), 
+                fill='tozeroy', fillcolor=bg_rgba, 
+                customdata=custom_data, 
+                hovertemplate=(
+                    "<div style='padding:2px;'>"
+                    "<span style='color:#94A3B8; font-size:11px; font-weight:600;'>%{x|%Y.%m.%d}</span><br><br>"
+                    "<span style='color:" + port_color + "; font-size:14px;'>●</span> <span style='font-size:13px; font-weight:bold; color:white;'>Portfolio</span>"
+                    "&nbsp;&nbsp;<b style='font-size:14px; color:" + port_color + ";'>%{y:+.2f}%</b><br>"
+                    "<span style='color:#475569; font-size:14px;'>●</span> <span style='font-size:12px; color:#94A3B8;'>KOSPI</span>"
+                    "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='font-size:12px; color:#94A3B8;'>%{customdata[0]}</b><br>"
+                    "<hr style='border:none; border-top:1px dashed rgba(255,255,255,0.2); margin:8px 0;'>"
+                    "<span style='color:#94A3B8; font-size:12px;'>Alpha (α)</span>"
+                    "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b style='font-size:13px; color:%{customdata[2]};'>%{customdata[1]}</b>"
+                    "</div><extra></extra>"
+                )
+            ))
+            
+            # 💡 [모던 차트 개선 4] 토스증권/로빈후드 스타일의 Unified Hover (세로선 추적) 레이아웃 적용
+            fig.update_layout(
+                hovermode='x unified',
+                xaxis=dict(
+                    showgrid=False, zeroline=False, tickformat="%m-%d",
+                    showspikes=True, spikecolor="rgba(255,255,255,0.2)", spikethickness=1, spikedash="solid", spikemode="across",
+                    tickfont=dict(color="#64748B", size=11)
+                ), 
+                yaxis=dict(
+                    showgrid=True, gridcolor='rgba(255,255,255,0.04)', zeroline=True, zerolinecolor='rgba(255,255,255,0.1)', ticksuffix="%",
+                    tickfont=dict(color="#64748B", size=11)
+                ), 
+                hoverlabel=dict(
+                    bgcolor="rgba(15,23,42,0.9)", bordercolor="rgba(255,255,255,0.1)", font=dict(color="white"), borderpad=10
+                ), 
+                margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False
+            )
             if len(chart_df) == 1: fig.update_layout(xaxis=dict(tickformat="%Y-%m-%d", tickmode='array', tickvals=[chart_df.index[0]]))
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
@@ -806,6 +860,42 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
+
+    # ────────────────────────────────────────────────────────
+    # 탭 4: Stock Search (주식 조회)
+    # ────────────────────────────────────────────────────────
+    with tab_search:
+        st.markdown("### 🔍 Stock Search & Report")
+        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
+
+        with st.spinner("KRX 종목 마스터 로드 중..."):
+            krx_df = load_krx_list_from_db(supabase)
+
+        if krx_df.empty:
+            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
+            options = [""]
+        else:
+            options = [""] + krx_df["SearchStr"].tolist()
+
+        col_search, _ = st.columns([2, 1])
+        with col_search:
+            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
+
+        if selected_stock_str:
+            if st.session_state.get("last_searched_stock") != selected_stock_str:
+                st.session_state["last_searched_stock"] = selected_stock_str
+
+                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
+                stock_name = selected_stock_str.split(" (")[0]
+                
+                # 최소한의 정보만 모아서 넘깁니다. 
+                # (메시지 없이 조용히 팝업 내부에서 알아서 처리됩니다)
+                sel_payload = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
+                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
+                
+                show_detail_dialog(sel_payload, supabase, all_cached_stocks)
+        else:
+            st.session_state["last_searched_stock"] = None
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
