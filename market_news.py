@@ -362,7 +362,7 @@ def run_news_page(supabase):
                         st.session_state.dialog_news_index = actual_idx
                         st.rerun() 
     else:
-        st.info("오늘 수집된 새로운 주요 뉴스가 없습니다. (배치 대기 중)")
+        st.info("오늘 수집된 새로운 주요 뉴스가 없습니다.")
         
     st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         
