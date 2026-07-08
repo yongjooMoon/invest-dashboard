@@ -605,11 +605,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     </style>
     """, unsafe_allow_html=True)
 
-    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
+    tab_port, tab_watch, tab_hist, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
         "매도 히스토리 (History)",
-        "🔍 Stock Search",
         "📖 Algo Whitepaper"
     ])
 
@@ -807,42 +806,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.dataframe(styled_t, hide_index=True, use_container_width=True)
         else:
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
-
-    # ────────────────────────────────────────────────────────
-    # 탭 4: Stock Search (주식 조회)
-    # ────────────────────────────────────────────────────────
-    with tab_search:
-        st.markdown("### 🔍 Stock Search & Report")
-        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
-
-        with st.spinner("KRX 종목 마스터 로드 중..."):
-            krx_df = load_krx_list_from_db(supabase)
-
-        if krx_df.empty:
-            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
-            options = [""]
-        else:
-            options = [""] + krx_df["SearchStr"].tolist()
-
-        col_search, _ = st.columns([2, 1])
-        with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
-
-        if selected_stock_str:
-            if st.session_state.get("last_searched_stock") != selected_stock_str:
-                st.session_state["last_searched_stock"] = selected_stock_str
-
-                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-                stock_name = selected_stock_str.split(" (")[0]
-                
-                # 최소한의 정보만 모아서 넘깁니다. 
-                # (메시지 없이 조용히 팝업 내부에서 알아서 처리됩니다)
-                sel_payload = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
-                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
-                
-                show_detail_dialog(sel_payload, supabase, all_cached_stocks)
-        else:
-            st.session_state["last_searched_stock"] = None
 
     # ────────────────────────────────────────────────────────
     # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
