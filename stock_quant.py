@@ -454,6 +454,8 @@ def render_watchlist_grid(items, title, color_code, anchor_id):
     # 해당 테이블에만 독립적인 가로 스크롤 CSS를 입히기 위해 고유 앵커 ID 주입
     st.markdown(f'<div id="{anchor_id}"></div>', unsafe_allow_html=True)
     
+    clicked_item = None
+    
     with st.container():
         c1, c2, c3, c4, c5, c6 = st.columns([1, 2.5, 2, 1.5, 1.5, 2])
         c1.markdown("<div class='grid-header'>순위</div>", unsafe_allow_html=True)
@@ -477,7 +479,9 @@ def render_watchlist_grid(items, title, color_code, anchor_id):
             c5.markdown(f"<div class='grid-row' style='color:{color_code}; font-weight:bold;'>{w.get('factor_score', 0):.2f}점</div>", unsafe_allow_html=True)
             with c6:
                 if st.button("📊 리포트", key=f"w_det_{w['symbol']}", use_container_width=True):
-                    st.session_state['w_dialog_payload'] = w
+                    clicked_item = w
+                    
+    return clicked_item
 
 # ══════════════════════════════════════════
 # [Main Entry Point]
@@ -775,15 +779,22 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     with tab_watch:
         st.markdown(f"**마지막 스크리닝:** {last_updated or '미실행'}")
 
+        dialog_payload = None
+
         if filtered_confirmed:
-            render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464", "watchlist-confirmed-anchor")
+            res = render_watchlist_grid(filtered_confirmed, "🏆 스크리닝 통과 종목 (6/6 완벽 달성)", "#00B464", "watchlist-confirmed-anchor")
+            if res: dialog_payload = res
             st.divider()
 
         if filtered_watchlist:
-            render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4", "watchlist-reserve-anchor")
+            res = render_watchlist_grid(filtered_watchlist[:20], "👀 예비 관심 종목 (4/6 조건 이상)", "#AEC1D4", "watchlist-reserve-anchor")
+            if res: dialog_payload = res
             if len(filtered_watchlist) > 20: st.caption("...그 외 다수 종목 생략됨")
         else:
             if not filtered_confirmed: st.info("WatchList 대기 종목이 없습니다.")
+
+        if dialog_payload:
+            show_detail_dialog(dialog_payload, supabase)
 
     # ────────────────────────────────────────────────────────
     # 탭 3: 매도 히스토리
