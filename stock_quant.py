@@ -520,7 +520,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             
             start_time = time.time()
             
-            for key in ["quant_portfolio", "quant_screening", "price_cache", "quant_report_payload"]:
+            for key in ["quant_portfolio", "quant_screening", "price_cache"]:
                 if key in st.session_state:
                     del st.session_state[key]
             
@@ -541,91 +541,6 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
         with st.spinner("👀 스크리닝 데이터를 최초 1회 로드 중입니다..."):
             st.session_state.quant_screening = load_screening_result(supabase)
 
-    # 🌟 [해결의 핵심 1] "탑 메뉴 방식" 리포트 단독 화면 라우터 추가!
-    if st.session_state.get('quant_report_payload'):
-        payload = st.session_state['quant_report_payload']
-        
-        # --- 🌟 질문자님이 요청하신 작고 세련된 "탑 메뉴 (뒤로 가기)" 버튼 디자인 ---
-        st.markdown("""
-        <style>
-        .back-btn-container button {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            border: 1px solid rgba(255, 255, 255, 0.1) !important;
-            color: #AEC1D4 !important;
-            font-weight: 600 !important;
-            border-radius: 8px !important;
-            height: 35px !important;
-            min-height: 35px !important;
-            padding: 0 15px !important;
-        }
-        .back-btn-container button:hover {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-            color: #FFFFFF !important;
-            border-color: rgba(255, 255, 255, 0.3) !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        col_back, _ = st.columns([1.5, 8.5])
-        with col_back:
-            st.markdown("<div class='back-btn-container'>", unsafe_allow_html=True)
-            if st.button("⬅️ 목록으로 돌아가기", use_container_width=True):
-                st.session_state['quant_report_payload'] = None
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-        
-        st.divider()
-
-        sel = dict(payload)
-        with st.spinner(f"'{sel.get('name', '')}' 종목의 데이터를 불러오고 분석 중입니다..."):
-            c_list, w_list, _ = load_screening_result(supabase)
-            all_cached_stocks = {item['symbol']: item for item in c_list + w_list}
-            
-            if 'factor_score' not in sel or 'filter_details' not in sel:
-                if sel['symbol'] in all_cached_stocks:
-                    sel.update(all_cached_stocks[sel['symbol']])
-                else:
-                    df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
-                    if df_price is None or df_price.empty:
-                        st.error("해당 종목의 차트/데이터를 찾을 수 없습니다.")
-                        return
-                    
-                    sel['current_price'] = df_price['Close'].iloc[-1]
-                    if len(df_price) >= 21:
-                        sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-                    else:
-                        sel['ret_1m'] = 0.0
-                        
-                    if live_fund: sel.update(live_fund)
-                    sel['factor_score'] = live_score
-                    sel['filter_details'] = live_gates
-                    
-                    if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-                    st.session_state.price_cache[sel['symbol']] = df_price
-
-            original_score = sel.get('factor_score', 0)
-
-            if "price_cache" not in st.session_state: 
-                st.session_state.price_cache = {}
-            if sel['symbol'] not in st.session_state.price_cache:
-                df_price = load_price_from_db(supabase, sel['symbol'])
-                if df_price.empty:
-                    df_price = fdr.DataReader(sel['symbol'], (now_kst() - timedelta(days=300)).strftime('%Y-%m-%d'))
-                st.session_state.price_cache[sel['symbol']] = df_price
-                
-            df_price = st.session_state.price_cache[sel['symbol']]
-
-            if 'ret_1m' not in sel or sel['ret_1m'] == 0:
-                if df_price is not None and len(df_price) >= 21:
-                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-
-        render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
-        return
-
-
-    # =====================================================================
-    # 여기서부터는 평소에 보이는 "기본 탭 뷰" 입니다.
-    # =====================================================================
     holdings, trades, history = st.session_state.quant_portfolio
     confirmed, watchlist, last_updated = st.session_state.quant_screening
 
@@ -738,8 +653,11 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                                 render_exit_risk_content(h, supabase)
                         with bc2:
                             if st.button("📊 리포트", key=f"det_{h['symbol']}", use_container_width=True):
-                                st.session_state['quant_report_payload'] = h
-                                st.rerun()
+                                dialog_trigger = "detail"
+                                dialog_payload = h
+
+            if dialog_trigger == "detail" and dialog_payload:
+                show_detail_dialog(dialog_payload, supabase)
 
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
@@ -795,12 +713,17 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             port_color = '#F04452'
             bg_rgba = 'rgba(240, 68, 82, 0.1)'
             
+            # 💡 [소수점 버그 픽스] 자바스크립트의 무한 소수점 오류 방지를 위해, 
+            # Portfolio 값 자체를 Python 단계에서 문자열(String) 두 자리로 완벽 포맷팅해서 넘겨줍니다!
+            port_str = chart_df['Portfolio'].map('{:+.2f}%'.format)
             kospi_str = chart_df['KOSPI'].map('{:+.2f}%'.format)
             alpha_str = chart_df['Alpha'].map('{:+.2f}%'.format)
+            
             # Alpha(초과수익)는 직관성을 위해 +면 빨강, -면 파랑으로 유지
             alpha_color = chart_df['Alpha'].apply(lambda x: '#F04452' if x >= 0 else '#3182F6')
             
-            custom_data = np.column_stack((kospi_str, alpha_str, alpha_color))
+            # 툴팁에 표시될 모든 텍스트 요소를 커스텀 데이터에 담아서 넘깁니다.
+            custom_data = np.column_stack((port_str, kospi_str, alpha_str, alpha_color))
             fig = go.Figure()
             
             fig.add_trace(go.Scatter(
@@ -819,10 +742,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                 customdata=custom_data, 
                 hovertemplate=(
                     "<b>%{x|%Y.%m.%d}</b><br><br>"
-                    "<span style='color:" + port_color + "'>●</span> <b>Portfolio</b> &nbsp; <b>%{y:+.2f}%</b><br>"
-                    "<span style='color:#94A3B8'>●</span> KOSPI &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; %{customdata[0]}<br>"
+                    "<span style='color:" + port_color + "'>●</span> <b>Portfolio</b> &nbsp; <b>%{customdata[0]}</b><br>"
+                    "<span style='color:#94A3B8'>●</span> KOSPI &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; %{customdata[1]}<br>"
                     "────────────────<br>"
-                    "Alpha (α) &nbsp;&nbsp;&nbsp;&nbsp; <b style='color:%{customdata[2]}'>%{customdata[1]}</b>"
+                    "Alpha (α) &nbsp;&nbsp;&nbsp;&nbsp; <b style='color:%{customdata[3]}'>%{customdata[2]}</b>"
                     "<extra></extra>"
                 )
             ))
