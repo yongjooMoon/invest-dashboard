@@ -415,38 +415,23 @@ def render_detailed_report_content(sel, df_price=None, fund=None, factor_score=N
     else:
         st.info("가격 데이터가 로드되지 않았습니다.")
 
-# 💡 [핵심 버그 픽스] 모든 알림(st.success)을 제거하고, 팝업 안에 완벽한 로딩(spinner)과 조회(live_evaluate_stock)를 연동했습니다.
 @st.dialog("📈 퀀트 평가 상세 리포트", width="large")
-def show_detail_dialog(sel, supabase, all_cached_stocks=None):
-    with st.spinner(f"'{sel.get('name', '종목')}' 데이터를 불러오고 분석 중입니다..."):
+def show_detail_dialog(sel, supabase):
+    with st.spinner("캐시된 데이터를 불러오는 중..."):
         
-        # 1. 팩터 스코어나 필터 디테일이 없는 경우 (검색창을 통해 신규 진입 시)
         if 'filter_details' not in sel or sel.get('factor_score', 0) == 0:
-            if all_cached_stocks is None:
-                c_list, w_list, _ = load_screening_result(supabase)
-                all_cached_stocks = {item['symbol']: item for item in c_list + w_list}
+            c_list, w_list, _ = load_screening_result(supabase)
+            found = False
+            for item in c_list + w_list:
+                if item['symbol'] == sel['symbol']:
+                    sel.update(item)
+                    found = True
+                    break
             
-            if sel['symbol'] in all_cached_stocks:
-                sel.update(all_cached_stocks[sel['symbol']])
-            else:
-                # 🌟 [완벽 복구] 캐시에 없는 신규 종목일 경우 이 안에서 API를 호출하고 완벽하게 DB에 저장합니다!
-                df_price, live_fund, live_score, live_gates = live_evaluate_stock(supabase, sel['symbol'], sel['name'])
-                if df_price is None or df_price.empty:
-                    st.error("해당 종목의 차트/데이터를 찾을 수 없습니다.")
-                    return
-                
-                sel['current_price'] = df_price['Close'].iloc[-1]
-                if len(df_price) >= 21:
-                    sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
-                else:
-                    sel['ret_1m'] = 0.0
-                    
-                if live_fund: sel.update(live_fund)
-                sel['factor_score'] = live_score
-                sel['filter_details'] = live_gates
-                
-                if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-                st.session_state.price_cache[sel['symbol']] = df_price
+            if not found:
+                fund_db = load_fundamental_from_db(supabase, sel['symbol'])
+                if fund_db:
+                    sel.update(fund_db)
 
         original_score = sel.get('factor_score', 0)
 
@@ -464,8 +449,7 @@ def show_detail_dialog(sel, supabase, all_cached_stocks=None):
             if df_price is not None and len(df_price) >= 21:
                 sel['ret_1m'] = (df_price['Close'].iloc[-1] - df_price['Close'].iloc[-21]) / df_price['Close'].iloc[-21] * 100
 
-    # 3. 데이터 준비가 완벽히 끝나면 조용하게(메시지 없이) 예쁜 리포트만 그려줍니다.
-    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=sel.get('filter_details'))
+    render_detailed_report_content(sel, df_price=df_price, fund=sel, factor_score=original_score, gates=None)
 
 # 🌟 모바일에서도 테이블 구조가 유지되도록 카드를 랜더링해주는 헬퍼 함수 🌟
 def render_watchlist_grid(items, title, color_code, anchor_id):
@@ -605,11 +589,10 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
     </style>
     """, unsafe_allow_html=True)
 
-    tab_port, tab_watch, tab_hist, tab_search, tab_docs = st.tabs([
+    tab_port, tab_watch, tab_hist, tab_docs = st.tabs([
         f"Portfolio ({len(holdings)})",
         f"Watchlist ({len(filtered_confirmed) + len(filtered_watchlist)})",
         "매도 히스토리 (History)",
-        "🔍 Stock Search",
         "📖 Algo Whitepaper"
     ])
 
@@ -784,7 +767,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
                     tickfont=dict(color="#64748B", size=11)
                 ), 
                 hoverlabel=dict(
-                    bgcolor="rgba(15,23,42,0.9)", bordercolor="rgba(255,255,255,0.1)", font=dict(color="white"), borderpad=10
+                    bgcolor="rgba(15,23,42,0.9)", bordercolor="rgba(255,255,255,0.1)", font=dict(color="white")
                 ), 
                 margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', showlegend=False
             )
@@ -862,43 +845,7 @@ def run_stock_quant_page(supabase, username: str = "admin", **kwargs):
             st.info("최근 매도(이탈) 이력이 없습니다. 배치가 돌면서 매도가 발생하면 통계가 나타납니다.")
 
     # ────────────────────────────────────────────────────────
-    # 탭 4: Stock Search (주식 조회)
-    # ────────────────────────────────────────────────────────
-    with tab_search:
-        st.markdown("### 🔍 Stock Search & Report")
-        st.caption("종목명 또는 코드를 콤보박스에서 검색하여 실시간 퀀트 분석을 진행합니다.")
-
-        with st.spinner("KRX 종목 마스터 로드 중..."):
-            krx_df = load_krx_list_from_db(supabase)
-
-        if krx_df.empty:
-            st.error("⚠️ 종목 마스터 데이터를 불러오지 못했습니다. (DB 캐시 확인 필요)")
-            options = [""]
-        else:
-            options = [""] + krx_df["SearchStr"].tolist()
-
-        col_search, _ = st.columns([2, 1])
-        with col_search:
-            selected_stock_str = st.selectbox("🔎 종목 검색 (종목명 또는 코드 자동완성)", options=options)
-
-        if selected_stock_str:
-            if st.session_state.get("last_searched_stock") != selected_stock_str:
-                st.session_state["last_searched_stock"] = selected_stock_str
-
-                search_query = selected_stock_str.split("(")[-1].replace(")", "").strip()
-                stock_name = selected_stock_str.split(" (")[0]
-                
-                # 최소한의 정보만 모아서 넘깁니다. 
-                # (메시지 없이 조용히 팝업 내부에서 알아서 처리됩니다)
-                sel_payload = {'symbol': search_query, 'name': stock_name, 'region': 'KR'}
-                all_cached_stocks = {item['symbol']: item for item in holdings + confirmed + watchlist}
-                
-                show_detail_dialog(sel_payload, supabase, all_cached_stocks)
-        else:
-            st.session_state["last_searched_stock"] = None
-
-    # ────────────────────────────────────────────────────────
-    # 탭 5: 알고리즘 백서 (Detailed Algorithm Strategy)
+    # 탭 4: 알고리즘 백서 (Detailed Algorithm Strategy)
     # ────────────────────────────────────────────────────────
     with tab_docs:
         st.markdown("## 🧠 Chase Momentum Algorithm Whitepaper")
