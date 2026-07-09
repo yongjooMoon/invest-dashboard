@@ -111,16 +111,7 @@ def generate_excel_data(api_key, district_code, district_name, target_dong, star
     for deal_ymd in master_scan_months:
         for url_endpoint in trade_api_urls:
             trade_params = {'serviceKey': api_key, 'LAWD_CD': district_code, 'DEAL_YMD': deal_ymd, 'numOfRows': '10000'}
-            try:
-                # 🌟 requests가 실제로 전송할 자동 인코딩 완료된 최종 URL 추출 로직
-                req_obj = requests.models.PreparedRequest()
-                req_obj.prepare_url(url_endpoint, trade_params)
-                final_request_url = req_obj.url  # requests가 내부적으로 인코딩을 끝낸 URL
-                
-                # 💻 실시간 로그 전송 (화면에 출력됨)
-                log_text += f"\n📡 [오리지널방식] 국토부 전송 URL:\n{final_request_url}\n"
-                yield "log", log_text
-                
+            try:                
                 res_trade = requests.get(url_endpoint, params=trade_params, timeout=10)
                 count_trade_api += 1
 
