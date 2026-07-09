@@ -13,7 +13,7 @@ def get_region_style(region):
     elif "JP" in r: return "#34D399", "rgba(52, 211, 153, 0.15)"    # 일본: 그린
     elif "HK" in r or "CN" in r: return "#FBBF24", "rgba(251, 191, 36, 0.15)" # 홍콩/중국: 옐로우
     elif "GLOBAL" in r: return "#A78BFA", "rgba(167, 139, 250, 0.15)"# 글로벌: 퍼플
-    else: return "#94A3B8", "rgba(148, 163, 184, 0.15)"             # 기타: 그레이
+    else: return "#94A3B8", "rgba(148, 163, 184, 0.15)"              # 기타: 그레이
 
 def get_kst_time(utc_time_str):
     """DB의 시간을 변환 없이 원래 시간대로 파싱하여 가져옵니다."""
@@ -385,21 +385,32 @@ def run_news_page(supabase):
                 render_news_row(news, key_prefix="search", news_list=news_list)
 
     else:
-        sectors = ["전체"]
-        unique_sectors = set([n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset'] for n in news_list])
-        sectors.extend(sorted(list(unique_sectors)))
-        sectors.append("🔥 주요뉴스")
+        # 1. 중분류 카테고리 매핑 사전 정의
+        CATEGORY_MAPPING = {
+            "📊 거시경제/지수": ["Macro", "Index"],
+            "🏢 주식/산업": ["Stock", "Sector", "Tech", "Banking & Finance"],
+            "🛢️ 원자재/에너지": ["Commodity", "Commodities", "Energy"],
+            "💱 외환/금리": ["FX"],
+            "🏘️ 대체/기타 자산": ["Real Estate", "Asset"]
+        }
+        
+        # 데이터에 있는 실제 섹터들을 기반으로 '기타' 카테고리로 빼기 위한 평탄화
+        mapped_sectors = [sector for sublist in CATEGORY_MAPPING.values() for sector in sublist]
 
-        tabs = st.tabs(sectors)
+        # 2. 탭 구성 (전체 + 주요뉴스 + 중분류 탭)
+        tabs_names = ["전체", "🔥 주요뉴스"] + list(CATEGORY_MAPPING.keys()) + ["기타"]
+        
+        tabs = st.tabs(tabs_names)
 
         for i, tab in enumerate(tabs):
             with tab:
-                current_sector = sectors[i]
+                current_tab_name = tabs_names[i]
 
-                if current_sector == "🔥 주요뉴스":
+                if current_tab_name == "🔥 주요뉴스":
+                    # (기존 주요뉴스 렌더링 코드 유지 - 달력 나오는 부분)
                     if "history_date" not in st.session_state:
                         st.session_state.history_date = (datetime.utcnow() + timedelta(hours=9)).date()
-
+                    
                     c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
                     with c1:
                         st.markdown("<div class='date-nav-btn'>", unsafe_allow_html=True)
@@ -459,15 +470,27 @@ def run_news_page(supabase):
                                     st.rerun()
 
                 else:
+                    # 3. 탭에 맞는 뉴스 필터링
                     tab_filtered_news = []
                     for n in news_list:
-                        n_sector_group = n['sector_asset'].split('-')[0] if '-' in n['sector_asset'] else n['sector_asset']
-                        if current_sector == "전체" or n_sector_group == current_sector:
+                        # n_sector_group 은 기존처럼 "-" 앞부분만 추출
+                        n_sector_group = n['sector_asset'].split('-')[0].strip() if '-' in n['sector_asset'] else n.get('sector_asset', '').strip()
+                        
+                        if current_tab_name == "전체":
                             tab_filtered_news.append(n)
+                        elif current_tab_name in CATEGORY_MAPPING:
+                            # 현재 뉴스의 섹터가 중분류 매핑 리스트 안에 포함되어 있으면 추가
+                            if n_sector_group in CATEGORY_MAPPING[current_tab_name]:
+                                tab_filtered_news.append(n)
+                        elif current_tab_name == "기타":
+                            # 매핑되지 않은 새로운 섹터 데이터는 '기타' 탭에서 보여줌
+                            if n_sector_group not in mapped_sectors:
+                                tab_filtered_news.append(n)
 
+                    # 4. 결과 렌더링
                     if not tab_filtered_news:
-                        st.warning("해당 섹터의 뉴스가 없습니다.")
+                        st.warning(f"해당 카테고리의 뉴스가 없습니다.")
                         continue
 
                     for news in tab_filtered_news:
-                        render_news_row(news, key_prefix=f"list_{current_sector}", news_list=news_list)
+                        render_news_row(news, key_prefix=f"list_{current_tab_name}", news_list=news_list)
