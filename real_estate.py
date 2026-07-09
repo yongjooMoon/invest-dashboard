@@ -430,13 +430,6 @@ def run_real_estate_page(rtms_key):
     if st.button("✨ 부동산 데이터 대시보드 빌드", type="primary", width="stretch"):
         target_dong = "전체" if dong_name.startswith("전체") else dong_name
         apt_filters = [t.strip() for t in filter_text.split(',')] if filter_text.strip() else []
-
-        yield f"data: {json.dumps({'status': 'log', 'message': rtms_key})}\n\n"
-        yield f"data: {json.dumps({'status': 'log', 'message': gu_code})}\n\n"
-        yield f"data: {json.dumps({'status': 'log', 'message': gu_name})}\n\n"
-        yield f"data: {json.dumps({'status': 'log', 'message': dong})}\n\n"
-        yield f"data: {json.dumps({'status': 'log', 'message': start_date})}\n\n"
-        yield f"data: {json.dumps({'status': 'log', 'message': end_date})}\n\n"
         
         log_area = st.empty()
         result_excel = None
